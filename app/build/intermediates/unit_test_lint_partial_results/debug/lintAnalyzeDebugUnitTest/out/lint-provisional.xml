@@ -1,0 +1,274 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<incidents format="6" by="lint 8.7.3" type="conditional_incidents">
+
+    <incident
+        id="UnspecifiedRegisterReceiverFlag"
+        severity="error"
+        message="`capture(slot&lt;BroadcastReceiver>())` is missing `RECEIVER_EXPORTED` or `RECEIVER_NOT_EXPORTED` flag for unprotected broadcasts registered for an IntentFilter that cannot be inspected by lint">
+        <fix-alternatives>
+            <fix-replace
+                description="Add RECEIVER_NOT_EXPORTED (preferred)"
+                oldString="_lint_insert_end_"
+                replacement=", android.content.Context.RECEIVER_NOT_EXPORTED"
+                shortenNames="true"
+                reformat="value"
+                priority="0">
+                <range
+                    file="${:app*debug*UNIT_TEST*testSourceProvider*0*javaDir*0}/com/continuousauth/detection/AnomalyDetectorIntegrationTest.kt"
+                    startOffset="1657"
+                    endOffset="1662"/>
+            </fix-replace>
+            <fix-replace
+                description="Add RECEIVER_EXPORTED"
+                oldString="_lint_insert_end_"
+                replacement=", android.content.Context.RECEIVER_EXPORTED"
+                shortenNames="true"
+                reformat="value"
+                priority="0">
+                <range
+                    file="${:app*debug*UNIT_TEST*testSourceProvider*0*javaDir*0}/com/continuousauth/detection/AnomalyDetectorIntegrationTest.kt"
+                    startOffset="1657"
+                    endOffset="1662"/>
+            </fix-replace>
+        </fix-alternatives>
+        <location
+            file="${:app*debug*UNIT_TEST*testSourceProvider*0*javaDir*0}/com/continuousauth/detection/AnomalyDetectorIntegrationTest.kt"
+            line="51"
+            column="17"
+            startOffset="1592"
+            endLine="51"
+            endColumn="88"
+            endOffset="1663"/>
+        <map>
+            <entry
+                name="hasUnprotected"
+                boolean="false"/>
+        </map>
+    </incident>
+
+    <incident
+        id="UnspecifiedRegisterReceiverFlag"
+        severity="error"
+        message="`any()` is missing `RECEIVER_EXPORTED` or `RECEIVER_NOT_EXPORTED` flag for unprotected broadcasts registered for an IntentFilter that cannot be inspected by lint">
+        <fix-alternatives>
+            <fix-replace
+                description="Add RECEIVER_NOT_EXPORTED (preferred)"
+                oldString="_lint_insert_end_"
+                replacement=", android.content.Context.RECEIVER_NOT_EXPORTED"
+                shortenNames="true"
+                reformat="value"
+                priority="0">
+                <range
+                    file="${:app*debug*UNIT_TEST*testSourceProvider*0*javaDir*0}/com/continuousauth/detection/AnomalyDetectorIntegrationTest.kt"
+                    startOffset="2653"
+                    endOffset="2658"/>
+            </fix-replace>
+            <fix-replace
+                description="Add RECEIVER_EXPORTED"
+                oldString="_lint_insert_end_"
+                replacement=", android.content.Context.RECEIVER_EXPORTED"
+                shortenNames="true"
+                reformat="value"
+                priority="0">
+                <range
+                    file="${:app*debug*UNIT_TEST*testSourceProvider*0*javaDir*0}/com/continuousauth/detection/AnomalyDetectorIntegrationTest.kt"
+                    startOffset="2653"
+                    endOffset="2658"/>
+            </fix-replace>
+        </fix-alternatives>
+        <location
+            file="${:app*debug*UNIT_TEST*testSourceProvider*0*javaDir*0}/com/continuousauth/detection/AnomalyDetectorIntegrationTest.kt"
+            line="88"
+            column="18"
+            startOffset="2617"
+            endLine="88"
+            endColumn="60"
+            endOffset="2659"/>
+        <map>
+            <entry
+                name="hasUnprotected"
+                boolean="false"/>
+        </map>
+    </incident>
+
+    <incident
+        id="UnspecifiedRegisterReceiverFlag"
+        severity="error"
+        message="`any()` is missing `RECEIVER_EXPORTED` or `RECEIVER_NOT_EXPORTED` flag for unprotected broadcasts registered for an IntentFilter that cannot be inspected by lint">
+        <fix-alternatives>
+            <fix-replace
+                description="Add RECEIVER_NOT_EXPORTED (preferred)"
+                oldString="_lint_insert_end_"
+                replacement=", android.content.Context.RECEIVER_NOT_EXPORTED"
+                shortenNames="true"
+                reformat="value"
+                priority="0">
+                <range
+                    file="${:app*debug*UNIT_TEST*testSourceProvider*0*javaDir*0}/com/continuousauth/detection/AnomalyDetectorIntegrationTest.kt"
+                    startOffset="9936"
+                    endOffset="9941"/>
+            </fix-replace>
+            <fix-replace
+                description="Add RECEIVER_EXPORTED"
+                oldString="_lint_insert_end_"
+                replacement=", android.content.Context.RECEIVER_EXPORTED"
+                shortenNames="true"
+                reformat="value"
+                priority="0">
+                <range
+                    file="${:app*debug*UNIT_TEST*testSourceProvider*0*javaDir*0}/com/continuousauth/detection/AnomalyDetectorIntegrationTest.kt"
+                    startOffset="9936"
+                    endOffset="9941"/>
+            </fix-replace>
+        </fix-alternatives>
+        <location
+            file="${:app*debug*UNIT_TEST*testSourceProvider*0*javaDir*0}/com/continuousauth/detection/AnomalyDetectorIntegrationTest.kt"
+            line="320"
+            column="31"
+            startOffset="9900"
+            endLine="320"
+            endColumn="73"
+            endOffset="9942"/>
+        <map>
+            <entry
+                name="hasUnprotected"
+                boolean="false"/>
+        </map>
+    </incident>
+
+    <incident
+        id="UnspecifiedRegisterReceiverFlag"
+        severity="error"
+        message="`any()` is missing `RECEIVER_EXPORTED` or `RECEIVER_NOT_EXPORTED` flag for unprotected broadcasts registered for an IntentFilter that cannot be inspected by lint">
+        <fix-alternatives>
+            <fix-replace
+                description="Add RECEIVER_NOT_EXPORTED (preferred)"
+                oldString="_lint_insert_end_"
+                replacement=", android.content.Context.RECEIVER_NOT_EXPORTED"
+                shortenNames="true"
+                reformat="value"
+                priority="0">
+                <range
+                    file="${:app*debug*UNIT_TEST*testSourceProvider*0*javaDir*0}/com/continuousauth/detection/AnomalyDetectorIntegrationTest.kt"
+                    startOffset="11784"
+                    endOffset="11789"/>
+            </fix-replace>
+            <fix-replace
+                description="Add RECEIVER_EXPORTED"
+                oldString="_lint_insert_end_"
+                replacement=", android.content.Context.RECEIVER_EXPORTED"
+                shortenNames="true"
+                reformat="value"
+                priority="0">
+                <range
+                    file="${:app*debug*UNIT_TEST*testSourceProvider*0*javaDir*0}/com/continuousauth/detection/AnomalyDetectorIntegrationTest.kt"
+                    startOffset="11784"
+                    endOffset="11789"/>
+            </fix-replace>
+        </fix-alternatives>
+        <location
+            file="${:app*debug*UNIT_TEST*testSourceProvider*0*javaDir*0}/com/continuousauth/detection/AnomalyDetectorIntegrationTest.kt"
+            line="387"
+            column="18"
+            startOffset="11748"
+            endLine="387"
+            endColumn="60"
+            endOffset="11790"/>
+        <map>
+            <entry
+                name="hasUnprotected"
+                boolean="false"/>
+        </map>
+    </incident>
+
+    <incident
+        id="UnspecifiedRegisterReceiverFlag"
+        severity="error"
+        message="`any()` is missing `RECEIVER_EXPORTED` or `RECEIVER_NOT_EXPORTED` flag for unprotected broadcasts registered for an IntentFilter that cannot be inspected by lint">
+        <fix-alternatives>
+            <fix-replace
+                description="Add RECEIVER_NOT_EXPORTED (preferred)"
+                oldString="_lint_insert_end_"
+                replacement=", android.content.Context.RECEIVER_NOT_EXPORTED"
+                shortenNames="true"
+                reformat="value"
+                priority="0">
+                <range
+                    file="${:app*debug*UNIT_TEST*testSourceProvider*0*javaDir*0}/com/continuousauth/detection/AnomalyDetectorUnitTest.kt"
+                    startOffset="1460"
+                    endOffset="1465"/>
+            </fix-replace>
+            <fix-replace
+                description="Add RECEIVER_EXPORTED"
+                oldString="_lint_insert_end_"
+                replacement=", android.content.Context.RECEIVER_EXPORTED"
+                shortenNames="true"
+                reformat="value"
+                priority="0">
+                <range
+                    file="${:app*debug*UNIT_TEST*testSourceProvider*0*javaDir*0}/com/continuousauth/detection/AnomalyDetectorUnitTest.kt"
+                    startOffset="1460"
+                    endOffset="1465"/>
+            </fix-replace>
+        </fix-alternatives>
+        <location
+            file="${:app*debug*UNIT_TEST*testSourceProvider*0*javaDir*0}/com/continuousauth/detection/AnomalyDetectorUnitTest.kt"
+            line="46"
+            column="17"
+            startOffset="1424"
+            endLine="46"
+            endColumn="59"
+            endOffset="1466"/>
+        <map>
+            <entry
+                name="hasUnprotected"
+                boolean="false"/>
+        </map>
+    </incident>
+
+    <incident
+        id="UnspecifiedRegisterReceiverFlag"
+        severity="error"
+        message="`any()` is missing `RECEIVER_EXPORTED` or `RECEIVER_NOT_EXPORTED` flag for unprotected broadcasts registered for an IntentFilter that cannot be inspected by lint">
+        <fix-alternatives>
+            <fix-replace
+                description="Add RECEIVER_NOT_EXPORTED (preferred)"
+                oldString="_lint_insert_end_"
+                replacement=", android.content.Context.RECEIVER_NOT_EXPORTED"
+                shortenNames="true"
+                reformat="value"
+                priority="0">
+                <range
+                    file="${:app*debug*UNIT_TEST*testSourceProvider*0*javaDir*0}/com/continuousauth/detection/AnomalyDetectorUnitTest.kt"
+                    startOffset="2141"
+                    endOffset="2146"/>
+            </fix-replace>
+            <fix-replace
+                description="Add RECEIVER_EXPORTED"
+                oldString="_lint_insert_end_"
+                replacement=", android.content.Context.RECEIVER_EXPORTED"
+                shortenNames="true"
+                reformat="value"
+                priority="0">
+                <range
+                    file="${:app*debug*UNIT_TEST*testSourceProvider*0*javaDir*0}/com/continuousauth/detection/AnomalyDetectorUnitTest.kt"
+                    startOffset="2141"
+                    endOffset="2146"/>
+            </fix-replace>
+        </fix-alternatives>
+        <location
+            file="${:app*debug*UNIT_TEST*testSourceProvider*0*javaDir*0}/com/continuousauth/detection/AnomalyDetectorUnitTest.kt"
+            line="75"
+            column="18"
+            startOffset="2105"
+            endLine="75"
+            endColumn="60"
+            endOffset="2147"/>
+        <map>
+            <entry
+                name="hasUnprotected"
+                boolean="false"/>
+        </map>
+    </incident>
+
+</incidents>

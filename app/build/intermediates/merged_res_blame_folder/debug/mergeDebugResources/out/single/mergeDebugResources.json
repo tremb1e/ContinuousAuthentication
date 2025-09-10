@@ -1,0 +1,130 @@
+[
+    {
+        "merged": "com.continuousauth.app-debug-4:/drawable_status_background.xml.flat",
+        "source": "com.continuousauth.app-main-6:/drawable/status_background.xml"
+    },
+    {
+        "merged": "com.continuousauth.app-debug-4:/drawable_ic_network_check.xml.flat",
+        "source": "com.continuousauth.app-main-6:/drawable/ic_network_check.xml"
+    },
+    {
+        "merged": "com.continuousauth.app-debug-4:/mipmap-anydpi-v26_ic_launcher_round.xml.flat",
+        "source": "com.continuousauth.app-main-6:/mipmap-anydpi-v26/ic_launcher_round.xml"
+    },
+    {
+        "merged": "com.continuousauth.app-debug-4:/drawable_ic_sensor_status.xml.flat",
+        "source": "com.continuousauth.app-main-6:/drawable/ic_sensor_status.xml"
+    },
+    {
+        "merged": "com.continuousauth.app-debug-4:/menu_bottom_navigation_menu.xml.flat",
+        "source": "com.continuousauth.app-main-6:/menu/bottom_navigation_menu.xml"
+    },
+    {
+        "merged": "com.continuousauth.app-debug-4:/menu_menu_main.xml.flat",
+        "source": "com.continuousauth.app-main-6:/menu/menu_main.xml"
+    },
+    {
+        "merged": "com.continuousauth.app-debug-4:/navigation_nav_graph.xml.flat",
+        "source": "com.continuousauth.app-main-6:/navigation/nav_graph.xml"
+    },
+    {
+        "merged": "com.continuousauth.app-debug-4:/drawable_ic_play_arrow.xml.flat",
+        "source": "com.continuousauth.app-main-6:/drawable/ic_play_arrow.xml"
+    },
+    {
+        "merged": "com.continuousauth.app-debug-4:/drawable_ic_battery_optimization.xml.flat",
+        "source": "com.continuousauth.app-main-6:/drawable/ic_battery_optimization.xml"
+    },
+    {
+        "merged": "com.continuousauth.app-debug-4:/drawable_ic_info.xml.flat",
+        "source": "com.continuousauth.app-main-6:/drawable/ic_info.xml"
+    },
+    {
+        "merged": "com.continuousauth.app-debug-4:/drawable_ic_permission.xml.flat",
+        "source": "com.continuousauth.app-main-6:/drawable/ic_permission.xml"
+    },
+    {
+        "merged": "com.continuousauth.app-debug-4:/drawable_ic_notification.xml.flat",
+        "source": "com.continuousauth.app-main-6:/drawable/ic_notification.xml"
+    },
+    {
+        "merged": "com.continuousauth.app-debug-4:/drawable_ic_stop.xml.flat",
+        "source": "com.continuousauth.app-main-6:/drawable/ic_stop.xml"
+    },
+    {
+        "merged": "com.continuousauth.app-debug-4:/layout_fragment_detailed_info.xml.flat",
+        "source": "com.continuousauth.app-main-6:/layout/fragment_detailed_info.xml"
+    },
+    {
+        "merged": "com.continuousauth.app-debug-4:/layout_fragment_sensor_data.xml.flat",
+        "source": "com.continuousauth.app-main-6:/layout/fragment_sensor_data.xml"
+    },
+    {
+        "merged": "com.continuousauth.app-debug-4:/layout_activity_main.xml.flat",
+        "source": "com.continuousauth.app-main-6:/layout/activity_main.xml"
+    },
+    {
+        "merged": "com.continuousauth.app-debug-4:/drawable_ic_expand_more.xml.flat",
+        "source": "com.continuousauth.app-main-6:/drawable/ic_expand_more.xml"
+    },
+    {
+        "merged": "com.continuousauth.app-debug-4:/mipmap-anydpi-v26_ic_launcher.xml.flat",
+        "source": "com.continuousauth.app-main-6:/mipmap-anydpi-v26/ic_launcher.xml"
+    },
+    {
+        "merged": "com.continuousauth.app-debug-4:/layout_item_recent_app.xml.flat",
+        "source": "com.continuousauth.app-main-6:/layout/item_recent_app.xml"
+    },
+    {
+        "merged": "com.continuousauth.app-debug-4:/drawable_ic_settings.xml.flat",
+        "source": "com.continuousauth.app-main-6:/drawable/ic_settings.xml"
+    },
+    {
+        "merged": "com.continuousauth.app-debug-4:/xml_backup_rules.xml.flat",
+        "source": "com.continuousauth.app-main-6:/xml/backup_rules.xml"
+    },
+    {
+        "merged": "com.continuousauth.app-debug-4:/xml_network_security_config.xml.flat",
+        "source": "com.continuousauth.app-main-6:/xml/network_security_config.xml"
+    },
+    {
+        "merged": "com.continuousauth.app-debug-4:/drawable_ic_sensors.xml.flat",
+        "source": "com.continuousauth.app-main-6:/drawable/ic_sensors.xml"
+    },
+    {
+        "merged": "com.continuousauth.app-debug-4:/drawable_circle_shape.xml.flat",
+        "source": "com.continuousauth.app-main-6:/drawable/circle_shape.xml"
+    },
+    {
+        "merged": "com.continuousauth.app-debug-4:/layout_activity_main_nav.xml.flat",
+        "source": "com.continuousauth.app-main-6:/layout/activity_main_nav.xml"
+    },
+    {
+        "merged": "com.continuousauth.app-debug-4:/layout_fragment_server_config.xml.flat",
+        "source": "com.continuousauth.app-main-6:/layout/fragment_server_config.xml"
+    },
+    {
+        "merged": "com.continuousauth.app-debug-4:/layout_chart_container.xml.flat",
+        "source": "com.continuousauth.app-main-6:/layout/chart_container.xml"
+    },
+    {
+        "merged": "com.continuousauth.app-debug-4:/drawable_ic_debug.xml.flat",
+        "source": "com.continuousauth.app-main-6:/drawable/ic_debug.xml"
+    },
+    {
+        "merged": "com.continuousauth.app-debug-4:/xml_data_extraction_rules.xml.flat",
+        "source": "com.continuousauth.app-main-6:/xml/data_extraction_rules.xml"
+    },
+    {
+        "merged": "com.continuousauth.app-debug-4:/drawable_ic_launcher_background.xml.flat",
+        "source": "com.continuousauth.app-main-6:/drawable/ic_launcher_background.xml"
+    },
+    {
+        "merged": "com.continuousauth.app-debug-4:/drawable_ic_visualization.xml.flat",
+        "source": "com.continuousauth.app-main-6:/drawable/ic_visualization.xml"
+    },
+    {
+        "merged": "com.continuousauth.app-debug-4:/drawable_ic_launcher_foreground.xml.flat",
+        "source": "com.continuousauth.app-main-6:/drawable/ic_launcher_foreground.xml"
+    }
+]

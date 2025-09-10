@@ -1,0 +1,242 @@
+1<?xml version="1.0" encoding="utf-8"?>
+2<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+3    package="com.continuousauth"
+4    android:versionCode="1"
+5    android:versionName="1.0" >
+6
+7    <uses-sdk
+8        android:minSdkVersion="30"
+9        android:targetSdkVersion="35" />
+10
+11    <!-- 必要权限 -->
+12    <uses-permission android:name="android.permission.INTERNET" />
+12-->C:\SyncData\Code\Android\ContinuousAuthentication\app\src\main\AndroidManifest.xml:6:5-67
+12-->C:\SyncData\Code\Android\ContinuousAuthentication\app\src\main\AndroidManifest.xml:6:22-64
+13    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+13-->C:\SyncData\Code\Android\ContinuousAuthentication\app\src\main\AndroidManifest.xml:7:5-79
+13-->C:\SyncData\Code\Android\ContinuousAuthentication\app\src\main\AndroidManifest.xml:7:22-76
+14    <uses-permission android:name="android.permission.WAKE_LOCK" />
+14-->C:\SyncData\Code\Android\ContinuousAuthentication\app\src\main\AndroidManifest.xml:8:5-68
+14-->C:\SyncData\Code\Android\ContinuousAuthentication\app\src\main\AndroidManifest.xml:8:22-65
+15    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+15-->C:\SyncData\Code\Android\ContinuousAuthentication\app\src\main\AndroidManifest.xml:9:5-95
+15-->C:\SyncData\Code\Android\ContinuousAuthentication\app\src\main\AndroidManifest.xml:9:22-92
+16    <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS" />
+16-->C:\SyncData\Code\Android\ContinuousAuthentication\app\src\main\AndroidManifest.xml:10:5-11:47
+16-->C:\SyncData\Code\Android\ContinuousAuthentication\app\src\main\AndroidManifest.xml:10:22-75
+17
+18    <!-- 传感器权限 -->
+19    <uses-permission android:name="android.permission.HIGH_SAMPLING_RATE_SENSORS" />
+19-->C:\SyncData\Code\Android\ContinuousAuthentication\app\src\main\AndroidManifest.xml:14:5-85
+19-->C:\SyncData\Code\Android\ContinuousAuthentication\app\src\main\AndroidManifest.xml:14:22-82
+20
+21    <!-- 特性要求 -->
+22    <uses-feature
+22-->C:\SyncData\Code\Android\ContinuousAuthentication\app\src\main\AndroidManifest.xml:17:5-19:35
+23        android:name="android.hardware.sensor.accelerometer"
+23-->C:\SyncData\Code\Android\ContinuousAuthentication\app\src\main\AndroidManifest.xml:18:9-61
+24        android:required="true" />
+24-->C:\SyncData\Code\Android\ContinuousAuthentication\app\src\main\AndroidManifest.xml:19:9-32
+25    <uses-feature
+25-->C:\SyncData\Code\Android\ContinuousAuthentication\app\src\main\AndroidManifest.xml:20:5-22:35
+26        android:name="android.hardware.sensor.gyroscope"
+26-->C:\SyncData\Code\Android\ContinuousAuthentication\app\src\main\AndroidManifest.xml:21:9-57
+27        android:required="true" />
+27-->C:\SyncData\Code\Android\ContinuousAuthentication\app\src\main\AndroidManifest.xml:22:9-32
+28    <uses-feature
+28-->C:\SyncData\Code\Android\ContinuousAuthentication\app\src\main\AndroidManifest.xml:23:5-25:35
+29        android:name="android.hardware.sensor.compass"
+29-->C:\SyncData\Code\Android\ContinuousAuthentication\app\src\main\AndroidManifest.xml:24:9-55
+30        android:required="true" />
+30-->C:\SyncData\Code\Android\ContinuousAuthentication\app\src\main\AndroidManifest.xml:25:9-32
+31
+32    <permission
+32-->[androidx.core:core:1.15.0] C:\Users\Tremb1e\.gradle\caches\9.0.0\transforms\56340a2652402251137fd15e667dc391\transformed\core-1.15.0\AndroidManifest.xml:22:5-24:47
+33        android:name="com.continuousauth.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION"
+33-->[androidx.core:core:1.15.0] C:\Users\Tremb1e\.gradle\caches\9.0.0\transforms\56340a2652402251137fd15e667dc391\transformed\core-1.15.0\AndroidManifest.xml:23:9-81
+34        android:protectionLevel="signature" />
+34-->[androidx.core:core:1.15.0] C:\Users\Tremb1e\.gradle\caches\9.0.0\transforms\56340a2652402251137fd15e667dc391\transformed\core-1.15.0\AndroidManifest.xml:24:9-44
+35
+36    <uses-permission android:name="com.continuousauth.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION" />
+36-->[androidx.core:core:1.15.0] C:\Users\Tremb1e\.gradle\caches\9.0.0\transforms\56340a2652402251137fd15e667dc391\transformed\core-1.15.0\AndroidManifest.xml:26:5-97
+36-->[androidx.core:core:1.15.0] C:\Users\Tremb1e\.gradle\caches\9.0.0\transforms\56340a2652402251137fd15e667dc391\transformed\core-1.15.0\AndroidManifest.xml:26:22-94
+37
+38    <application
+38-->C:\SyncData\Code\Android\ContinuousAuthentication\app\src\main\AndroidManifest.xml:27:5-74:19
+39        android:name="com.continuousauth.ContinuousAuthApplication"
+39-->C:\SyncData\Code\Android\ContinuousAuthentication\app\src\main\AndroidManifest.xml:28:9-50
+40        android:allowBackup="true"
+40-->C:\SyncData\Code\Android\ContinuousAuthentication\app\src\main\AndroidManifest.xml:29:9-35
+41        android:appComponentFactory="androidx.core.app.CoreComponentFactory"
+41-->[androidx.core:core:1.15.0] C:\Users\Tremb1e\.gradle\caches\9.0.0\transforms\56340a2652402251137fd15e667dc391\transformed\core-1.15.0\AndroidManifest.xml:28:18-86
+42        android:dataExtractionRules="@xml/data_extraction_rules"
+42-->C:\SyncData\Code\Android\ContinuousAuthentication\app\src\main\AndroidManifest.xml:30:9-65
+43        android:extractNativeLibs="false"
+44        android:fullBackupContent="@xml/backup_rules"
+44-->C:\SyncData\Code\Android\ContinuousAuthentication\app\src\main\AndroidManifest.xml:31:9-54
+45        android:icon="@mipmap/ic_launcher"
+45-->C:\SyncData\Code\Android\ContinuousAuthentication\app\src\main\AndroidManifest.xml:32:9-43
+46        android:label="@string/app_name"
+46-->C:\SyncData\Code\Android\ContinuousAuthentication\app\src\main\AndroidManifest.xml:33:9-41
+47        android:networkSecurityConfig="@xml/network_security_config"
+47-->C:\SyncData\Code\Android\ContinuousAuthentication\app\src\main\AndroidManifest.xml:38:9-69
+48        android:roundIcon="@mipmap/ic_launcher_round"
+48-->C:\SyncData\Code\Android\ContinuousAuthentication\app\src\main\AndroidManifest.xml:34:9-54
+49        android:supportsRtl="true"
+49-->C:\SyncData\Code\Android\ContinuousAuthentication\app\src\main\AndroidManifest.xml:35:9-35
+50        android:theme="@style/Theme.ContinuousAuthentication" >
+50-->C:\SyncData\Code\Android\ContinuousAuthentication\app\src\main\AndroidManifest.xml:36:9-62
+51
+52        <!-- 新的 Compose 主活动 (默认启动) -->
+53        <activity
+53-->C:\SyncData\Code\Android\ContinuousAuthentication\app\src\main\AndroidManifest.xml:41:9-49:20
+54            android:name="com.continuousauth.ui.compose.MainComposeActivity"
+54-->C:\SyncData\Code\Android\ContinuousAuthentication\app\src\main\AndroidManifest.xml:42:13-59
+55            android:exported="true"
+55-->C:\SyncData\Code\Android\ContinuousAuthentication\app\src\main\AndroidManifest.xml:43:13-36
+56            android:theme="@style/Theme.ContinuousAuthentication" >
+56-->C:\SyncData\Code\Android\ContinuousAuthentication\app\src\main\AndroidManifest.xml:44:13-66
+57            <intent-filter>
+57-->C:\SyncData\Code\Android\ContinuousAuthentication\app\src\main\AndroidManifest.xml:45:13-48:29
+58                <action android:name="android.intent.action.MAIN" />
+58-->C:\SyncData\Code\Android\ContinuousAuthentication\app\src\main\AndroidManifest.xml:46:17-69
+58-->C:\SyncData\Code\Android\ContinuousAuthentication\app\src\main\AndroidManifest.xml:46:25-66
+59
+60                <category android:name="android.intent.category.LAUNCHER" />
+60-->C:\SyncData\Code\Android\ContinuousAuthentication\app\src\main\AndroidManifest.xml:47:17-77
+60-->C:\SyncData\Code\Android\ContinuousAuthentication\app\src\main\AndroidManifest.xml:47:27-74
+61            </intent-filter>
+62        </activity>
+63
+64        <!-- 旧的导航活动 (保留但不作为启动器) -->
+65        <activity
+65-->C:\SyncData\Code\Android\ContinuousAuthentication\app\src\main\AndroidManifest.xml:52:9-55:69
+66            android:name="com.continuousauth.ui.MainActivityNav"
+66-->C:\SyncData\Code\Android\ContinuousAuthentication\app\src\main\AndroidManifest.xml:53:13-47
+67            android:exported="false"
+67-->C:\SyncData\Code\Android\ContinuousAuthentication\app\src\main\AndroidManifest.xml:54:13-37
+68            android:theme="@style/Theme.ContinuousAuthentication" />
+68-->C:\SyncData\Code\Android\ContinuousAuthentication\app\src\main\AndroidManifest.xml:55:13-66
+69
+70        <!-- 数据采集前台服务 -->
+71        <service
+71-->C:\SyncData\Code\Android\ContinuousAuthentication\app\src\main\AndroidManifest.xml:58:9-62:56
+72            android:name="com.continuousauth.service.DataCollectionService"
+72-->C:\SyncData\Code\Android\ContinuousAuthentication\app\src\main\AndroidManifest.xml:59:13-58
+73            android:enabled="true"
+73-->C:\SyncData\Code\Android\ContinuousAuthentication\app\src\main\AndroidManifest.xml:60:13-35
+74            android:exported="false"
+74-->C:\SyncData\Code\Android\ContinuousAuthentication\app\src\main\AndroidManifest.xml:61:13-37
+75            android:foregroundServiceType="dataSync" />
+75-->C:\SyncData\Code\Android\ContinuousAuthentication\app\src\main\AndroidManifest.xml:62:13-53
+76
+77        <!-- 接收设备解锁广播 -->
+78        <receiver
+78-->C:\SyncData\Code\Android\ContinuousAuthentication\app\src\main\AndroidManifest.xml:65:9-73:20
+79            android:name="com.continuousauth.receiver.DeviceUnlockReceiver"
+79-->C:\SyncData\Code\Android\ContinuousAuthentication\app\src\main\AndroidManifest.xml:66:13-58
+80            android:enabled="true"
+80-->C:\SyncData\Code\Android\ContinuousAuthentication\app\src\main\AndroidManifest.xml:67:13-35
+81            android:exported="false" >
+81-->C:\SyncData\Code\Android\ContinuousAuthentication\app\src\main\AndroidManifest.xml:68:13-37
+82            <intent-filter>
+82-->C:\SyncData\Code\Android\ContinuousAuthentication\app\src\main\AndroidManifest.xml:69:13-72:29
+83                <action android:name="android.intent.action.USER_PRESENT" />
+83-->C:\SyncData\Code\Android\ContinuousAuthentication\app\src\main\AndroidManifest.xml:70:17-77
+83-->C:\SyncData\Code\Android\ContinuousAuthentication\app\src\main\AndroidManifest.xml:70:25-74
+84                <action android:name="android.intent.action.SCREEN_ON" />
+84-->C:\SyncData\Code\Android\ContinuousAuthentication\app\src\main\AndroidManifest.xml:71:17-74
+84-->C:\SyncData\Code\Android\ContinuousAuthentication\app\src\main\AndroidManifest.xml:71:25-71
+85            </intent-filter>
+86        </receiver>
+87
+88        <provider
+88-->[androidx.lifecycle:lifecycle-process:2.8.7] C:\Users\Tremb1e\.gradle\caches\9.0.0\transforms\332f0b557da12c8d0f661b8d634b67f9\transformed\jetified-lifecycle-process-2.8.7\AndroidManifest.xml:24:9-32:20
+89            android:name="androidx.startup.InitializationProvider"
+89-->[androidx.lifecycle:lifecycle-process:2.8.7] C:\Users\Tremb1e\.gradle\caches\9.0.0\transforms\332f0b557da12c8d0f661b8d634b67f9\transformed\jetified-lifecycle-process-2.8.7\AndroidManifest.xml:25:13-67
+90            android:authorities="com.continuousauth.androidx-startup"
+90-->[androidx.lifecycle:lifecycle-process:2.8.7] C:\Users\Tremb1e\.gradle\caches\9.0.0\transforms\332f0b557da12c8d0f661b8d634b67f9\transformed\jetified-lifecycle-process-2.8.7\AndroidManifest.xml:26:13-68
+91            android:exported="false" >
+91-->[androidx.lifecycle:lifecycle-process:2.8.7] C:\Users\Tremb1e\.gradle\caches\9.0.0\transforms\332f0b557da12c8d0f661b8d634b67f9\transformed\jetified-lifecycle-process-2.8.7\AndroidManifest.xml:27:13-37
+92            <meta-data
+92-->[androidx.lifecycle:lifecycle-process:2.8.7] C:\Users\Tremb1e\.gradle\caches\9.0.0\transforms\332f0b557da12c8d0f661b8d634b67f9\transformed\jetified-lifecycle-process-2.8.7\AndroidManifest.xml:29:13-31:52
+93                android:name="androidx.lifecycle.ProcessLifecycleInitializer"
+93-->[androidx.lifecycle:lifecycle-process:2.8.7] C:\Users\Tremb1e\.gradle\caches\9.0.0\transforms\332f0b557da12c8d0f661b8d634b67f9\transformed\jetified-lifecycle-process-2.8.7\AndroidManifest.xml:30:17-78
+94                android:value="androidx.startup" />
+94-->[androidx.lifecycle:lifecycle-process:2.8.7] C:\Users\Tremb1e\.gradle\caches\9.0.0\transforms\332f0b557da12c8d0f661b8d634b67f9\transformed\jetified-lifecycle-process-2.8.7\AndroidManifest.xml:31:17-49
+95            <meta-data
+95-->[androidx.emoji2:emoji2:1.3.0] C:\Users\Tremb1e\.gradle\caches\9.0.0\transforms\ab5c6b9613674843fc223770842e982b\transformed\jetified-emoji2-1.3.0\AndroidManifest.xml:29:13-31:52
+96                android:name="androidx.emoji2.text.EmojiCompatInitializer"
+96-->[androidx.emoji2:emoji2:1.3.0] C:\Users\Tremb1e\.gradle\caches\9.0.0\transforms\ab5c6b9613674843fc223770842e982b\transformed\jetified-emoji2-1.3.0\AndroidManifest.xml:30:17-75
+97                android:value="androidx.startup" />
+97-->[androidx.emoji2:emoji2:1.3.0] C:\Users\Tremb1e\.gradle\caches\9.0.0\transforms\ab5c6b9613674843fc223770842e982b\transformed\jetified-emoji2-1.3.0\AndroidManifest.xml:31:17-49
+98            <meta-data
+98-->[androidx.profileinstaller:profileinstaller:1.4.0] C:\Users\Tremb1e\.gradle\caches\9.0.0\transforms\f4a2991fc8370ce781e3a184ad0be1e4\transformed\jetified-profileinstaller-1.4.0\AndroidManifest.xml:29:13-31:52
+99                android:name="androidx.profileinstaller.ProfileInstallerInitializer"
+99-->[androidx.profileinstaller:profileinstaller:1.4.0] C:\Users\Tremb1e\.gradle\caches\9.0.0\transforms\f4a2991fc8370ce781e3a184ad0be1e4\transformed\jetified-profileinstaller-1.4.0\AndroidManifest.xml:30:17-85
+100                android:value="androidx.startup" />
+100-->[androidx.profileinstaller:profileinstaller:1.4.0] C:\Users\Tremb1e\.gradle\caches\9.0.0\transforms\f4a2991fc8370ce781e3a184ad0be1e4\transformed\jetified-profileinstaller-1.4.0\AndroidManifest.xml:31:17-49
+101        </provider>
+102
+103        <uses-library
+103-->[androidx.window:window:1.0.0] C:\Users\Tremb1e\.gradle\caches\9.0.0\transforms\f84d0f8ad6f8eee8adbfaf0e2d3ade77\transformed\jetified-window-1.0.0\AndroidManifest.xml:25:9-27:40
+104            android:name="androidx.window.extensions"
+104-->[androidx.window:window:1.0.0] C:\Users\Tremb1e\.gradle\caches\9.0.0\transforms\f84d0f8ad6f8eee8adbfaf0e2d3ade77\transformed\jetified-window-1.0.0\AndroidManifest.xml:26:13-54
+105            android:required="false" />
+105-->[androidx.window:window:1.0.0] C:\Users\Tremb1e\.gradle\caches\9.0.0\transforms\f84d0f8ad6f8eee8adbfaf0e2d3ade77\transformed\jetified-window-1.0.0\AndroidManifest.xml:27:13-37
+106        <uses-library
+106-->[androidx.window:window:1.0.0] C:\Users\Tremb1e\.gradle\caches\9.0.0\transforms\f84d0f8ad6f8eee8adbfaf0e2d3ade77\transformed\jetified-window-1.0.0\AndroidManifest.xml:28:9-30:40
+107            android:name="androidx.window.sidecar"
+107-->[androidx.window:window:1.0.0] C:\Users\Tremb1e\.gradle\caches\9.0.0\transforms\f84d0f8ad6f8eee8adbfaf0e2d3ade77\transformed\jetified-window-1.0.0\AndroidManifest.xml:29:13-51
+108            android:required="false" />
+108-->[androidx.window:window:1.0.0] C:\Users\Tremb1e\.gradle\caches\9.0.0\transforms\f84d0f8ad6f8eee8adbfaf0e2d3ade77\transformed\jetified-window-1.0.0\AndroidManifest.xml:30:13-37
+109
+110        <service
+110-->[androidx.room:room-runtime:2.6.1] C:\Users\Tremb1e\.gradle\caches\9.0.0\transforms\8c24622330abf3d9f44f38807a32b7c7\transformed\room-runtime-2.6.1\AndroidManifest.xml:24:9-28:63
+111            android:name="androidx.room.MultiInstanceInvalidationService"
+111-->[androidx.room:room-runtime:2.6.1] C:\Users\Tremb1e\.gradle\caches\9.0.0\transforms\8c24622330abf3d9f44f38807a32b7c7\transformed\room-runtime-2.6.1\AndroidManifest.xml:25:13-74
+112            android:directBootAware="true"
+112-->[androidx.room:room-runtime:2.6.1] C:\Users\Tremb1e\.gradle\caches\9.0.0\transforms\8c24622330abf3d9f44f38807a32b7c7\transformed\room-runtime-2.6.1\AndroidManifest.xml:26:13-43
+113            android:exported="false" />
+113-->[androidx.room:room-runtime:2.6.1] C:\Users\Tremb1e\.gradle\caches\9.0.0\transforms\8c24622330abf3d9f44f38807a32b7c7\transformed\room-runtime-2.6.1\AndroidManifest.xml:27:13-37
+114
+115        <receiver
+115-->[androidx.profileinstaller:profileinstaller:1.4.0] C:\Users\Tremb1e\.gradle\caches\9.0.0\transforms\f4a2991fc8370ce781e3a184ad0be1e4\transformed\jetified-profileinstaller-1.4.0\AndroidManifest.xml:34:9-52:20
+116            android:name="androidx.profileinstaller.ProfileInstallReceiver"
+116-->[androidx.profileinstaller:profileinstaller:1.4.0] C:\Users\Tremb1e\.gradle\caches\9.0.0\transforms\f4a2991fc8370ce781e3a184ad0be1e4\transformed\jetified-profileinstaller-1.4.0\AndroidManifest.xml:35:13-76
+117            android:directBootAware="false"
+117-->[androidx.profileinstaller:profileinstaller:1.4.0] C:\Users\Tremb1e\.gradle\caches\9.0.0\transforms\f4a2991fc8370ce781e3a184ad0be1e4\transformed\jetified-profileinstaller-1.4.0\AndroidManifest.xml:36:13-44
+118            android:enabled="true"
+118-->[androidx.profileinstaller:profileinstaller:1.4.0] C:\Users\Tremb1e\.gradle\caches\9.0.0\transforms\f4a2991fc8370ce781e3a184ad0be1e4\transformed\jetified-profileinstaller-1.4.0\AndroidManifest.xml:37:13-35
+119            android:exported="true"
+119-->[androidx.profileinstaller:profileinstaller:1.4.0] C:\Users\Tremb1e\.gradle\caches\9.0.0\transforms\f4a2991fc8370ce781e3a184ad0be1e4\transformed\jetified-profileinstaller-1.4.0\AndroidManifest.xml:38:13-36
+120            android:permission="android.permission.DUMP" >
+120-->[androidx.profileinstaller:profileinstaller:1.4.0] C:\Users\Tremb1e\.gradle\caches\9.0.0\transforms\f4a2991fc8370ce781e3a184ad0be1e4\transformed\jetified-profileinstaller-1.4.0\AndroidManifest.xml:39:13-57
+121            <intent-filter>
+121-->[androidx.profileinstaller:profileinstaller:1.4.0] C:\Users\Tremb1e\.gradle\caches\9.0.0\transforms\f4a2991fc8370ce781e3a184ad0be1e4\transformed\jetified-profileinstaller-1.4.0\AndroidManifest.xml:40:13-42:29
+122                <action android:name="androidx.profileinstaller.action.INSTALL_PROFILE" />
+122-->[androidx.profileinstaller:profileinstaller:1.4.0] C:\Users\Tremb1e\.gradle\caches\9.0.0\transforms\f4a2991fc8370ce781e3a184ad0be1e4\transformed\jetified-profileinstaller-1.4.0\AndroidManifest.xml:41:17-91
+122-->[androidx.profileinstaller:profileinstaller:1.4.0] C:\Users\Tremb1e\.gradle\caches\9.0.0\transforms\f4a2991fc8370ce781e3a184ad0be1e4\transformed\jetified-profileinstaller-1.4.0\AndroidManifest.xml:41:25-88
+123            </intent-filter>
+124            <intent-filter>
+124-->[androidx.profileinstaller:profileinstaller:1.4.0] C:\Users\Tremb1e\.gradle\caches\9.0.0\transforms\f4a2991fc8370ce781e3a184ad0be1e4\transformed\jetified-profileinstaller-1.4.0\AndroidManifest.xml:43:13-45:29
+125                <action android:name="androidx.profileinstaller.action.SKIP_FILE" />
+125-->[androidx.profileinstaller:profileinstaller:1.4.0] C:\Users\Tremb1e\.gradle\caches\9.0.0\transforms\f4a2991fc8370ce781e3a184ad0be1e4\transformed\jetified-profileinstaller-1.4.0\AndroidManifest.xml:44:17-85
+125-->[androidx.profileinstaller:profileinstaller:1.4.0] C:\Users\Tremb1e\.gradle\caches\9.0.0\transforms\f4a2991fc8370ce781e3a184ad0be1e4\transformed\jetified-profileinstaller-1.4.0\AndroidManifest.xml:44:25-82
+126            </intent-filter>
+127            <intent-filter>
+127-->[androidx.profileinstaller:profileinstaller:1.4.0] C:\Users\Tremb1e\.gradle\caches\9.0.0\transforms\f4a2991fc8370ce781e3a184ad0be1e4\transformed\jetified-profileinstaller-1.4.0\AndroidManifest.xml:46:13-48:29
+128                <action android:name="androidx.profileinstaller.action.SAVE_PROFILE" />
+128-->[androidx.profileinstaller:profileinstaller:1.4.0] C:\Users\Tremb1e\.gradle\caches\9.0.0\transforms\f4a2991fc8370ce781e3a184ad0be1e4\transformed\jetified-profileinstaller-1.4.0\AndroidManifest.xml:47:17-88
+128-->[androidx.profileinstaller:profileinstaller:1.4.0] C:\Users\Tremb1e\.gradle\caches\9.0.0\transforms\f4a2991fc8370ce781e3a184ad0be1e4\transformed\jetified-profileinstaller-1.4.0\AndroidManifest.xml:47:25-85
+129            </intent-filter>
+130            <intent-filter>
+130-->[androidx.profileinstaller:profileinstaller:1.4.0] C:\Users\Tremb1e\.gradle\caches\9.0.0\transforms\f4a2991fc8370ce781e3a184ad0be1e4\transformed\jetified-profileinstaller-1.4.0\AndroidManifest.xml:49:13-51:29
+131                <action android:name="androidx.profileinstaller.action.BENCHMARK_OPERATION" />
+131-->[androidx.profileinstaller:profileinstaller:1.4.0] C:\Users\Tremb1e\.gradle\caches\9.0.0\transforms\f4a2991fc8370ce781e3a184ad0be1e4\transformed\jetified-profileinstaller-1.4.0\AndroidManifest.xml:50:17-95
+131-->[androidx.profileinstaller:profileinstaller:1.4.0] C:\Users\Tremb1e\.gradle\caches\9.0.0\transforms\f4a2991fc8370ce781e3a184ad0be1e4\transformed\jetified-profileinstaller-1.4.0\AndroidManifest.xml:50:25-92
+132            </intent-filter>
+133        </receiver>
+134    </application>
+135
+136</manifest>

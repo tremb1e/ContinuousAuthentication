@@ -1,0 +1,1035 @@
+package com.continuousauth.ui.compose.screens
+
+import androidx.compose.animation.*
+import androidx.compose.animation.core.*
+import androidx.compose.foundation.*
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.outlined.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.res.stringResource
+import androidx.compose.runtime.livedata.observeAsState
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.draw.scale
+import androidx.compose.ui.graphics.*
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
+import com.continuousauth.R
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.continuousauth.ui.MainViewModel
+import com.continuousauth.ui.theme.ExtendedColors
+import com.continuousauth.network.ConnectionStatus
+import com.continuousauth.storage.QueueStats
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+
+/**
+ * 服务器配置页面
+ * 美观的服务器设置和连接管理界面
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ServerConfigScreen(viewModel: MainViewModel) {
+    val scrollState = rememberScrollState()
+    val scope = rememberCoroutineScope()
+    val clipboardManager = LocalClipboardManager.current
+    
+    // 观察 ViewModel 状态
+    val connectionStatus by viewModel.connectionStatus.observeAsState(ConnectionStatus.DISCONNECTED)
+    val isCollectionRunning by viewModel.isCollectionRunning.observeAsState(false)
+    val isEncryptedUploading by viewModel.isEncryptedUploading.observeAsState(false)
+    val userId by viewModel.userId.observeAsState("")
+    val sessionId by viewModel.sessionId.observeAsState(null)
+    val sessionStartTime by viewModel.sessionStartTime.observeAsState(0L)
+    val sessionDuration by viewModel.sessionDuration.observeAsState("00:00")
+    val serverTestResult by viewModel.serverTestResult.observeAsState(null)
+    val transmissionStats by viewModel.transmissionStats.observeAsState(null)
+    val fileQueueStats by viewModel.fileQueueStats.observeAsState(null)
+    
+    // 本地状态
+    var serverIp by remember { mutableStateOf("192.168.1.100") }
+    var serverPort by remember { mutableStateOf("50051") }
+    var isTestingConnection by remember { mutableStateOf(false) }
+    
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(scrollState)
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            // 连接状态卡片
+            ConnectionStatusCard(connectionStatus, serverIp, serverPort)
+            
+            // ID 信息卡片（仅显示用户ID）
+            IdentificationCard(
+                userId = userId,
+                onCopyUserId = {
+                    clipboardManager.setText(AnnotatedString(userId))
+                }
+            )
+            
+            // 服务器配置卡片
+            ServerSettingsCard(
+                serverIp = serverIp,
+                serverPort = serverPort,
+                onIpChange = { serverIp = it },
+                onPortChange = { serverPort = it },
+                isTestingConnection = isTestingConnection,
+                serverTestResult = serverTestResult,
+                onTestConnection = {
+                    isTestingConnection = true
+                    viewModel.testServerConnection(serverIp, serverPort)
+                    scope.launch {
+                        delay(3500) // 等待测试完成
+                        isTestingConnection = false
+                    }
+                }
+            )
+            
+            // 加密数据上传控制卡片
+            EncryptedUploadControlCard(
+                isEncryptedUploading = isEncryptedUploading,
+                connectionStatus = connectionStatus,
+                sessionId = sessionId,
+                sessionStartTime = sessionStartTime,
+                sessionDuration = sessionDuration,
+                transmissionStats = transmissionStats,
+                fileQueueStats = fileQueueStats,
+                onToggleUpload = {
+                    if (isEncryptedUploading) {
+                        viewModel.stopEncryptedUpload()
+                    } else {
+                        viewModel.startEncryptedUpload()
+                    }
+                }
+            )
+            
+            // 文件队列统计卡片
+            fileQueueStats?.let { stats ->
+                FileQueueCard(
+                    queueStats = stats,
+                    onClearQueue = { viewModel.clearFileQueue() }
+                )
+            }
+            
+            Spacer(modifier = Modifier.height(80.dp))
+        }
+    }
+}
+
+/**
+ * 连接状态卡片
+ */
+@Composable
+fun ConnectionStatusCard(
+    connectionStatus: ConnectionStatus,
+    serverIp: String,
+    serverPort: String
+) {
+    val statusColor = when (connectionStatus) {
+        ConnectionStatus.CONNECTED -> ExtendedColors.success
+        ConnectionStatus.CONNECTING, ConnectionStatus.RECONNECTING -> ExtendedColors.warning
+        ConnectionStatus.DISCONNECTED -> ExtendedColors.error
+        else -> Color.Gray
+    }
+    
+    val context = LocalContext.current
+    val statusText = when (connectionStatus) {
+        ConnectionStatus.CONNECTED -> context.getString(R.string.connected)
+        ConnectionStatus.CONNECTING -> context.getString(R.string.connecting)
+        ConnectionStatus.RECONNECTING -> context.getString(R.string.reconnecting)
+        ConnectionStatus.DISCONNECTED -> context.getString(R.string.disconnected)
+        else -> context.getString(R.string.not_available)
+    }
+    
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(24.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = statusColor.copy(alpha = 0.1f)
+        )
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(
+                    Brush.linearGradient(
+                        colors = listOf(
+                            statusColor.copy(alpha = 0.05f),
+                            statusColor.copy(alpha = 0.15f)
+                        )
+                    )
+                )
+                .padding(24.dp)
+        ) {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                // 动画连接图标
+                AnimatedConnectionIcon(
+                    isConnected = connectionStatus == ConnectionStatus.CONNECTED,
+                    color = statusColor
+                )
+                
+                Spacer(modifier = Modifier.height(16.dp))
+                
+                Text(
+                    text = statusText,
+                    style = MaterialTheme.typography.headlineSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = statusColor
+                )
+                
+                if (connectionStatus == ConnectionStatus.CONNECTED) {
+                    Text(
+                        text = "$serverIp:$serverPort",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                        modifier = Modifier.padding(top = 4.dp)
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 动画连接图标
+ */
+@Composable
+fun AnimatedConnectionIcon(
+    isConnected: Boolean,
+    color: Color
+) {
+    val infiniteTransition = rememberInfiniteTransition(label = "connection")
+    
+    if (isConnected) {
+        val scale by infiniteTransition.animateFloat(
+            initialValue = 0.8f,
+            targetValue = 1.2f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(1500),
+                repeatMode = RepeatMode.Reverse
+            ),
+            label = "scale"
+        )
+        
+        Box(contentAlignment = Alignment.Center) {
+            repeat(3) { index ->
+                Box(
+                    modifier = Modifier
+                        .size(60.dp + (index * 20).dp)
+                        .scale(scale)
+                        .clip(CircleShape)
+                        .background(color.copy(alpha = 0.1f - index * 0.03f))
+                )
+            }
+            
+            Icon(
+                imageVector = Icons.Filled.CloudDone,
+                contentDescription = null,
+                modifier = Modifier.size(48.dp),
+                tint = color
+            )
+        }
+    } else {
+        Icon(
+            imageVector = Icons.Filled.CloudOff,
+            contentDescription = null,
+            modifier = Modifier.size(48.dp),
+            tint = color
+        )
+    }
+}
+
+/**
+ * 身份信息卡片（仅显示用户ID）
+ */
+@Composable
+fun IdentificationCard(
+    userId: String,
+    onCopyUserId: () -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(20.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
+    ) {
+        Column(
+            modifier = Modifier.padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Text(
+                text = stringResource(R.string.identity_label),
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold
+            )
+            
+            // 用户ID
+            IdRow(
+                icon = Icons.Outlined.Person,
+                label = stringResource(R.string.user_id_label),
+                value = userId,
+                onCopy = onCopyUserId
+            )
+        }
+    }
+}
+
+/**
+ * ID 行组件
+ */
+@OptIn(ExperimentalAnimationApi::class)
+@Composable
+fun IdRow(
+    icon: ImageVector,
+    label: String,
+    value: String,
+    onCopy: () -> Unit
+) {
+    var copied by remember { mutableStateOf(false) }
+    
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.size(20.dp)
+        )
+        
+        Spacer(modifier = Modifier.width(12.dp))
+        
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Text(
+                text = value,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Medium
+            )
+        }
+        
+        IconButton(
+            onClick = {
+                onCopy()
+                copied = true
+            }
+        ) {
+            AnimatedContent(
+                targetState = copied,
+                transitionSpec = {
+                    scaleIn() + fadeIn() with scaleOut() + fadeOut()
+                },
+                label = "copy"
+            ) { isCopied ->
+                Icon(
+                    imageVector = if (isCopied) Icons.Filled.Check else Icons.Outlined.ContentCopy,
+                    contentDescription = stringResource(R.string.copy),
+                    tint = if (isCopied) ExtendedColors.success else MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+        
+        LaunchedEffect(copied) {
+            if (copied) {
+                delay(2000)
+                copied = false
+            }
+        }
+    }
+}
+
+/**
+ * 服务器设置卡片
+ */
+@Composable
+fun ServerSettingsCard(
+    serverIp: String,
+    serverPort: String,
+    onIpChange: (String) -> Unit,
+    onPortChange: (String) -> Unit,
+    isTestingConnection: Boolean,
+    serverTestResult: String?,
+    onTestConnection: () -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(20.dp)
+    ) {
+        Column(
+            modifier = Modifier.padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            Text(
+                text = stringResource(R.string.server_settings),
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold
+            )
+            
+            // IP 地址输入
+            OutlinedTextField(
+                value = serverIp,
+                onValueChange = onIpChange,
+                label = { Text(stringResource(R.string.server_ip_label)) },
+                leadingIcon = {
+                    Icon(Icons.Outlined.Computer, contentDescription = null)
+                },
+                keyboardOptions = KeyboardOptions(
+                    keyboardType = KeyboardType.Number,
+                    imeAction = ImeAction.Next
+                ),
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(12.dp),
+                singleLine = true
+            )
+            
+            // 端口输入
+            OutlinedTextField(
+                value = serverPort,
+                onValueChange = onPortChange,
+                label = { Text(stringResource(R.string.port_label)) },
+                leadingIcon = {
+                    Icon(Icons.Outlined.Router, contentDescription = null)
+                },
+                keyboardOptions = KeyboardOptions(
+                    keyboardType = KeyboardType.Number,
+                    imeAction = ImeAction.Done
+                ),
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(12.dp),
+                singleLine = true
+            )
+            
+            // 测试连接按钮
+            Button(
+                onClick = onTestConnection,
+                modifier = Modifier.fillMaxWidth(),
+                enabled = !isTestingConnection,
+                shape = RoundedCornerShape(12.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.secondary
+                )
+            ) {
+                if (isTestingConnection) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(16.dp),
+                        strokeWidth = 2.dp,
+                        color = MaterialTheme.colorScheme.onSecondary
+                    )
+                } else {
+                    Icon(
+                        imageVector = Icons.Outlined.NetworkCheck,
+                        contentDescription = null,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = if (isTestingConnection) stringResource(R.string.testing_server) else stringResource(R.string.detect_server),
+                    style = MaterialTheme.typography.labelLarge
+                )
+            }
+            
+            // 显示测试结果
+            serverTestResult?.let { result ->
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 8.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = if (result.startsWith("✓")) 
+                            ExtendedColors.success.copy(alpha = 0.1f)
+                        else 
+                            ExtendedColors.error.copy(alpha = 0.1f)
+                    ),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Text(
+                        text = result,
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.padding(12.dp),
+                        color = if (result.startsWith("✓")) 
+                            ExtendedColors.success
+                        else 
+                            ExtendedColors.error
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 加密数据上传控制卡片
+ */
+@Composable
+fun EncryptedUploadControlCard(
+    isEncryptedUploading: Boolean,
+    connectionStatus: ConnectionStatus,
+    sessionId: String?,
+    sessionStartTime: Long,
+    sessionDuration: String,
+    transmissionStats: com.continuousauth.ui.TransmissionStats?,
+    fileQueueStats: QueueStats?,
+    onToggleUpload: () -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = if (isEncryptedUploading) 
+                ExtendedColors.success.copy(alpha = 0.1f)
+            else 
+                MaterialTheme.colorScheme.surface
+        )
+    ) {
+        Column(
+            modifier = Modifier.padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.Lock,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(24.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = stringResource(R.string.encrypted_data_upload),
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+            
+            // 会话信息和上传状态
+            if (isEncryptedUploading && sessionId != null) {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                    ),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            text = stringResource(R.string.current_session_info),
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Medium
+                        )
+                        
+                        // Session ID
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                text = "Session ID:",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Text(
+                                text = sessionId.take(8) + "...",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
+                        
+                        // 开始时间
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                text = stringResource(R.string.start_time_label),
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Text(
+                                text = if (sessionStartTime > 0) {
+                                    val dateFormat = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault())
+                                    dateFormat.format(java.util.Date(sessionStartTime))
+                                } else "--:--:--",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
+                        
+                        // 已采集时长
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                text = stringResource(R.string.collection_duration_label),
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Text(
+                                text = sessionDuration,
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Medium,
+                                color = ExtendedColors.success
+                            )
+                        }
+                        
+                        // 分隔线
+                        Divider(
+                            modifier = Modifier.padding(vertical = 4.dp),
+                            color = MaterialTheme.colorScheme.outlineVariant
+                        )
+                        
+                        // 传输状态信息
+                        Text(
+                            text = "加密上传状态",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Medium,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        
+                        // 实时上传统计
+                        transmissionStats?.let { stats ->
+                            // 已发送数据包
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                    text = "已发送:",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Text(
+                                    text = "${stats.packetsSent} 个数据包",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontWeight = FontWeight.Medium,
+                                    color = ExtendedColors.success
+                                )
+                            }
+                            
+                            // 待发送数据包
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                    text = "待发送:",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Text(
+                                    text = "${stats.packetsPending} 个数据包",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontWeight = FontWeight.Medium,
+                                    color = if (stats.packetsPending > 0) ExtendedColors.warning else MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            
+                            // 最近ACK延迟
+                            stats.lastAckLatency?.let { latency ->
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text(
+                                        text = "响应延迟:",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    Text(
+                                        text = "$latency ms",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        fontWeight = FontWeight.Medium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                            
+                            // 快速模式状态
+                            if (stats.isFastMode) {
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Card(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    colors = CardDefaults.cardColors(
+                                        containerColor = ExtendedColors.warning.copy(alpha = 0.2f)
+                                    ),
+                                    shape = RoundedCornerShape(8.dp)
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Filled.Speed,
+                                            contentDescription = null,
+                                            tint = ExtendedColors.warning,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                        Text(
+                                            text = "快速模式已启用",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            fontWeight = FontWeight.Bold,
+                                            color = ExtendedColors.warning
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                        
+                        // 文件队列状态
+                        fileQueueStats?.let { queueStats ->
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                    text = "待上传队列:",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Text(
+                                    text = "${queueStats.pendingPackets}/${queueStats.totalPackets} (${formatBytes(queueStats.totalSizeBytes)})",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontWeight = FontWeight.Medium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            
+                            // 上传进度条
+                            if (queueStats.totalPackets > 0) {
+                                val progress = queueStats.uploadedPackets.toFloat() / queueStats.totalPackets
+                                LinearProgressIndicator(
+                                    progress = { progress },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(4.dp)
+                                        .clip(RoundedCornerShape(2.dp)),
+                                    color = ExtendedColors.success,
+                                    trackColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                                )
+                            }
+                        }
+                        
+                        // 加密状态提示
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.Center,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.Lock,
+                                contentDescription = null,
+                                tint = ExtendedColors.success,
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = "数据已加密传输",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = ExtendedColors.success,
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
+                    }
+                }
+            }
+            
+            // 开始/停止按钮组
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                // 开始按钮
+                Button(
+                    onClick = {
+                        if (!isEncryptedUploading) {
+                            onToggleUpload()
+                        }
+                    },
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(56.dp),
+                    enabled = !isEncryptedUploading && connectionStatus == ConnectionStatus.CONNECTED,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = ExtendedColors.success
+                    ),
+                    shape = RoundedCornerShape(16.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.PlayArrow,
+                        contentDescription = null,
+                        modifier = Modifier.size(24.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = stringResource(R.string.start_button),
+                        style = MaterialTheme.typography.labelLarge,
+                        fontSize = 16.sp
+                    )
+                }
+                
+                // 停止按钮
+                Button(
+                    onClick = {
+                        if (isEncryptedUploading) {
+                            onToggleUpload()
+                        }
+                    },
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(56.dp),
+                    enabled = isEncryptedUploading,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = ExtendedColors.error
+                    ),
+                    shape = RoundedCornerShape(16.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Stop,
+                        contentDescription = null,
+                        modifier = Modifier.size(24.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = stringResource(R.string.stop_button),
+                        style = MaterialTheme.typography.labelLarge,
+                        fontSize = 16.sp
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 状态芯片
+ */
+@Composable
+fun StatusChip(
+    icon: ImageVector,
+    label: String,
+    value: String,
+    color: Color
+) {
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = color.copy(alpha = 0.1f)
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = color,
+                modifier = Modifier.size(20.dp)
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Text(
+                text = value,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Bold,
+                color = color
+            )
+        }
+    }
+}
+
+/**
+ * 文件队列统计卡片
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun FileQueueCard(
+    queueStats: QueueStats,
+    onClearQueue: () -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surface
+        ),
+        shape = RoundedCornerShape(20.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+    ) {
+        Column(
+            modifier = Modifier
+                .padding(20.dp)
+                .fillMaxWidth()
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.FolderOpen,
+                        contentDescription = stringResource(R.string.file_queue),
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(24.dp)
+                    )
+                    Text(
+                        text = stringResource(R.string.file_queue),
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+                
+                // 清空按钮
+                if (queueStats.totalPackets > 0) {
+                    TextButton(
+                        onClick = onClearQueue,
+                        colors = ButtonDefaults.textButtonColors(
+                            contentColor = MaterialTheme.colorScheme.error
+                        )
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Delete,
+                            contentDescription = stringResource(R.string.clear_queue),
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(stringResource(R.string.clear_queue))
+                    }
+                }
+            }
+            
+            Spacer(modifier = Modifier.height(16.dp))
+            
+            // 统计信息网格
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceEvenly
+            ) {
+                StatusChip(
+                    icon = Icons.Default.Inventory,
+                    label = stringResource(R.string.total_packets),
+                    value = queueStats.totalPackets.toString(),
+                    color = MaterialTheme.colorScheme.primary
+                )
+                StatusChip(
+                    icon = Icons.Default.Schedule,
+                    label = stringResource(R.string.pending_upload),
+                    value = queueStats.pendingPackets.toString(),
+                    color = if (queueStats.pendingPackets > 0) ExtendedColors.warning else Color.Gray
+                )
+                StatusChip(
+                    icon = Icons.Default.CloudDone,
+                    label = stringResource(R.string.uploaded),
+                    value = queueStats.uploadedPackets.toString(),
+                    color = ExtendedColors.success
+                )
+            }
+            
+            Spacer(modifier = Modifier.height(12.dp))
+            
+            // 存储空间信息
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceEvenly
+            ) {
+                StatusChip(
+                    icon = Icons.Default.Storage,
+                    label = stringResource(R.string.queue_size_label),
+                    value = formatBytes(queueStats.totalSizeBytes),
+                    color = MaterialTheme.colorScheme.secondary
+                )
+                StatusChip(
+                    icon = Icons.Default.BrokenImage,
+                    label = stringResource(R.string.corrupted_packets),
+                    value = queueStats.corruptedPackets.toString(),
+                    color = if (queueStats.corruptedPackets > 0) ExtendedColors.error else Color.Gray
+                )
+            }
+            
+            // 进度条
+            if (queueStats.totalPackets > 0) {
+                Spacer(modifier = Modifier.height(12.dp))
+                
+                val progress = if (queueStats.totalPackets > 0) {
+                    queueStats.uploadedPackets.toFloat() / queueStats.totalPackets
+                } else 0f
+                
+                LinearProgressIndicator(
+                    progress = { progress },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(6.dp)
+                        .clip(RoundedCornerShape(3.dp)),
+                    color = ExtendedColors.success,
+                    trackColor = MaterialTheme.colorScheme.surfaceVariant
+                )
+                
+                Text(
+                    text = stringResource(R.string.upload_progress_format, (progress * 100).toInt()),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 4.dp)
+                )
+            }
+        }
+    }
+}
+
+/**
+ * 格式化字节数为可读字符串
+ */
+private fun formatBytes(bytes: Long): String {
+    return when {
+        bytes < 1024 -> "$bytes B"
+        bytes < 1024 * 1024 -> String.format("%.1f KB", bytes / 1024.0)
+        bytes < 1024 * 1024 * 1024 -> String.format("%.1f MB", bytes / (1024.0 * 1024.0))
+        else -> String.format("%.1f GB", bytes / (1024.0 * 1024.0 * 1024.0))
+    }
+}
+
+

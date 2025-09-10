@@ -1,0 +1,630 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<incidents format="6" by="lint 8.7.3" type="conditional_incidents">
+
+    <incident
+        id="MissingPermission"
+        severity="error"
+        message="">
+        <fix-data missing="android.permission.READ_PHONE_STATE" message="Missing permissions required by TelephonyManager.getNetworkType: %1$s" lastApi="2147483647"/>
+        <location
+            file="${:app*debug*MAIN*sourceProvider*0*javaDir*0}/com/continuousauth/network/NetworkEnvironmentDetector.kt"
+            line="234"
+            column="19"
+            startOffset="7431"
+            endLine="234"
+            endColumn="47"
+            endOffset="7459"/>
+        <map>
+            <entry
+                name="message"
+                string="Missing permissions required by TelephonyManager.getNetworkType: %1$s"/>
+            <entry
+                name="requirement"
+                string="android.permission.READ_PHONE_STATE"/>
+        </map>
+    </incident>
+
+    <incident
+        id="MissingPermission"
+        severity="error"
+        message="">
+        <fix-data missing="android.permission.READ_PHONE_STATE" message="Missing permissions required by TelephonyManager.getNetworkType: %1$s" lastApi="2147483647"/>
+        <location
+            file="${:app*debug*MAIN*sourceProvider*0*javaDir*0}/com/continuousauth/network/NetworkEnvironmentDetector.kt"
+            line="255"
+            column="29"
+            startOffset="8453"
+            endLine="255"
+            endColumn="57"
+            endOffset="8481"/>
+        <map>
+            <entry
+                name="message"
+                string="Missing permissions required by TelephonyManager.getNetworkType: %1$s"/>
+            <entry
+                name="requirement"
+                string="android.permission.READ_PHONE_STATE"/>
+        </map>
+    </incident>
+
+    <incident
+        id="NotificationPermission"
+        severity="error"
+        message="When targeting Android 13 or higher, posting a permission requires holding the `POST_NOTIFICATIONS` permission">
+        <fix-data missing="android.permission.POST_NOTIFICATIONS"/>
+        <location
+            file="${:app*debug*MAIN*sourceProvider*0*javaDir*0}/com/continuousauth/service/DataCollectionService.kt"
+            line="351"
+            column="9"
+            startOffset="10068"
+            endLine="351"
+            endColumn="67"
+            endOffset="10126"/>
+    </incident>
+
+    <incident
+        id="HighSamplingRate"
+        severity="warning"
+        message="Most apps don&apos;t need access to high sensor sampling rate.">
+        <location
+            file="${:app*debug*MAIN*sourceProvider*0*manifest*0}"
+            line="14"
+            column="36"
+            startOffset="669"
+            endLine="14"
+            endColumn="81"
+            endOffset="714"/>
+        <map>
+            <condition targetGE="31"/>
+        </map>
+    </incident>
+
+    <incident
+        id="VectorRaster"
+        severity="warning"
+        message="">
+        <location
+            file="${:app*debug*MAIN*sourceProvider*0*resDir*0}/drawable/ic_battery_optimization.xml"
+            line="7"
+            column="19"
+            startOffset="238"
+            endLine="7"
+            endColumn="33"
+            endOffset="252"/>
+        <map>
+            <entry
+                name="containsFillType"
+                boolean="false"/>
+            <entry
+                name="containsGradient"
+                boolean="false"/>
+            <entry
+                name="folderVersion"
+                int="-1"/>
+            <entry
+                name="message"
+                string="Resource references will not work correctly in images generated for this vector icon for API &lt; %1$d; check generated icon to make sure it looks acceptable"/>
+        </map>
+    </incident>
+
+    <incident
+        id="VectorRaster"
+        severity="warning"
+        message="">
+        <location
+            file="${:app*debug*MAIN*sourceProvider*0*resDir*0}/drawable/ic_battery_optimization.xml"
+            line="9"
+            column="26"
+            startOffset="288"
+            endLine="9"
+            endColumn="46"
+            endOffset="308"/>
+        <map>
+            <entry
+                name="containsFillType"
+                boolean="false"/>
+            <entry
+                name="containsGradient"
+                boolean="false"/>
+            <entry
+                name="folderVersion"
+                int="-1"/>
+            <entry
+                name="message"
+                string="Resource references will not work correctly in images generated for this vector icon for API &lt; %1$d; check generated icon to make sure it looks acceptable"/>
+        </map>
+    </incident>
+
+    <incident
+        id="VectorRaster"
+        severity="warning"
+        message="">
+        <location
+            file="${:app*debug*MAIN*sourceProvider*0*resDir*0}/drawable/ic_battery_optimization.xml"
+            line="12"
+            column="26"
+            startOffset="457"
+            endLine="12"
+            endColumn="46"
+            endOffset="477"/>
+        <map>
+            <entry
+                name="containsFillType"
+                boolean="false"/>
+            <entry
+                name="containsGradient"
+                boolean="false"/>
+            <entry
+                name="folderVersion"
+                int="-1"/>
+            <entry
+                name="message"
+                string="Resource references will not work correctly in images generated for this vector icon for API &lt; %1$d; check generated icon to make sure it looks acceptable"/>
+        </map>
+    </incident>
+
+    <incident
+        id="VectorRaster"
+        severity="warning"
+        message="">
+        <location
+            file="${:app*debug*MAIN*sourceProvider*0*resDir*0}/drawable/ic_debug.xml"
+            line="7"
+            column="19"
+            startOffset="238"
+            endLine="7"
+            endColumn="33"
+            endOffset="252"/>
+        <map>
+            <entry
+                name="containsFillType"
+                boolean="false"/>
+            <entry
+                name="containsGradient"
+                boolean="false"/>
+            <entry
+                name="folderVersion"
+                int="-1"/>
+            <entry
+                name="message"
+                string="Resource references will not work correctly in images generated for this vector icon for API &lt; %1$d; check generated icon to make sure it looks acceptable"/>
+        </map>
+    </incident>
+
+    <incident
+        id="VectorRaster"
+        severity="warning"
+        message="">
+        <location
+            file="${:app*debug*MAIN*sourceProvider*0*resDir*0}/drawable/ic_debug.xml"
+            line="9"
+            column="26"
+            startOffset="288"
+            endLine="9"
+            endColumn="46"
+            endOffset="308"/>
+        <map>
+            <entry
+                name="containsFillType"
+                boolean="false"/>
+            <entry
+                name="containsGradient"
+                boolean="false"/>
+            <entry
+                name="folderVersion"
+                int="-1"/>
+            <entry
+                name="message"
+                string="Resource references will not work correctly in images generated for this vector icon for API &lt; %1$d; check generated icon to make sure it looks acceptable"/>
+        </map>
+    </incident>
+
+    <incident
+        id="VectorRaster"
+        severity="warning"
+        message="">
+        <location
+            file="${:app*debug*MAIN*sourceProvider*0*resDir*0}/drawable/ic_debug.xml"
+            line="12"
+            column="26"
+            startOffset="685"
+            endLine="12"
+            endColumn="46"
+            endOffset="705"/>
+        <map>
+            <entry
+                name="containsFillType"
+                boolean="false"/>
+            <entry
+                name="containsGradient"
+                boolean="false"/>
+            <entry
+                name="folderVersion"
+                int="-1"/>
+            <entry
+                name="message"
+                string="Resource references will not work correctly in images generated for this vector icon for API &lt; %1$d; check generated icon to make sure it looks acceptable"/>
+        </map>
+    </incident>
+
+    <incident
+        id="VectorRaster"
+        severity="warning"
+        message="">
+        <location
+            file="${:app*debug*MAIN*sourceProvider*0*resDir*0}/drawable/ic_network_check.xml"
+            line="10"
+            column="28"
+            startOffset="292"
+            endLine="10"
+            endColumn="55"
+            endOffset="319"/>
+        <map>
+            <entry
+                name="containsFillType"
+                boolean="false"/>
+            <entry
+                name="containsGradient"
+                boolean="false"/>
+            <entry
+                name="folderVersion"
+                int="-1"/>
+            <entry
+                name="message"
+                string="Resource references will not work correctly in images generated for this vector icon for API &lt; %1$d; check generated icon to make sure it looks acceptable"/>
+        </map>
+    </incident>
+
+    <incident
+        id="VectorRaster"
+        severity="warning"
+        message="">
+        <location
+            file="${:app*debug*MAIN*sourceProvider*0*resDir*0}/drawable/ic_notification.xml"
+            line="9"
+            column="28"
+            startOffset="271"
+            endLine="9"
+            endColumn="48"
+            endOffset="291"/>
+        <map>
+            <entry
+                name="containsFillType"
+                boolean="false"/>
+            <entry
+                name="containsGradient"
+                boolean="false"/>
+            <entry
+                name="folderVersion"
+                int="-1"/>
+            <entry
+                name="message"
+                string="Resource references will not work correctly in images generated for this vector icon for API &lt; %1$d; check generated icon to make sure it looks acceptable"/>
+        </map>
+    </incident>
+
+    <incident
+        id="VectorRaster"
+        severity="warning"
+        message="">
+        <location
+            file="${:app*debug*MAIN*sourceProvider*0*resDir*0}/drawable/ic_permission.xml"
+            line="7"
+            column="19"
+            startOffset="238"
+            endLine="7"
+            endColumn="33"
+            endOffset="252"/>
+        <map>
+            <entry
+                name="containsFillType"
+                boolean="false"/>
+            <entry
+                name="containsGradient"
+                boolean="false"/>
+            <entry
+                name="folderVersion"
+                int="-1"/>
+            <entry
+                name="message"
+                string="Resource references will not work correctly in images generated for this vector icon for API &lt; %1$d; check generated icon to make sure it looks acceptable"/>
+        </map>
+    </incident>
+
+    <incident
+        id="VectorRaster"
+        severity="warning"
+        message="">
+        <location
+            file="${:app*debug*MAIN*sourceProvider*0*resDir*0}/drawable/ic_permission.xml"
+            line="9"
+            column="26"
+            startOffset="288"
+            endLine="9"
+            endColumn="46"
+            endOffset="308"/>
+        <map>
+            <entry
+                name="containsFillType"
+                boolean="false"/>
+            <entry
+                name="containsGradient"
+                boolean="false"/>
+            <entry
+                name="folderVersion"
+                int="-1"/>
+            <entry
+                name="message"
+                string="Resource references will not work correctly in images generated for this vector icon for API &lt; %1$d; check generated icon to make sure it looks acceptable"/>
+        </map>
+    </incident>
+
+    <incident
+        id="VectorRaster"
+        severity="warning"
+        message="">
+        <location
+            file="${:app*debug*MAIN*sourceProvider*0*resDir*0}/drawable/ic_settings.xml"
+            line="7"
+            column="19"
+            startOffset="238"
+            endLine="7"
+            endColumn="33"
+            endOffset="252"/>
+        <map>
+            <entry
+                name="containsFillType"
+                boolean="false"/>
+            <entry
+                name="containsGradient"
+                boolean="false"/>
+            <entry
+                name="folderVersion"
+                int="-1"/>
+            <entry
+                name="message"
+                string="Resource references will not work correctly in images generated for this vector icon for API &lt; %1$d; check generated icon to make sure it looks acceptable"/>
+        </map>
+    </incident>
+
+    <incident
+        id="VectorRaster"
+        severity="warning"
+        message="">
+        <location
+            file="${:app*debug*MAIN*sourceProvider*0*resDir*0}/drawable/ic_settings.xml"
+            line="9"
+            column="26"
+            startOffset="288"
+            endLine="9"
+            endColumn="46"
+            endOffset="308"/>
+        <map>
+            <entry
+                name="containsFillType"
+                boolean="false"/>
+            <entry
+                name="containsGradient"
+                boolean="false"/>
+            <entry
+                name="folderVersion"
+                int="-1"/>
+            <entry
+                name="message"
+                string="Resource references will not work correctly in images generated for this vector icon for API &lt; %1$d; check generated icon to make sure it looks acceptable"/>
+        </map>
+    </incident>
+
+    <incident
+        id="VectorRaster"
+        severity="warning"
+        message="">
+        <location
+            file="${:app*debug*MAIN*sourceProvider*0*resDir*0}/drawable/ic_visualization.xml"
+            line="7"
+            column="19"
+            startOffset="238"
+            endLine="7"
+            endColumn="33"
+            endOffset="252"/>
+        <map>
+            <entry
+                name="containsFillType"
+                boolean="false"/>
+            <entry
+                name="containsGradient"
+                boolean="false"/>
+            <entry
+                name="folderVersion"
+                int="-1"/>
+            <entry
+                name="message"
+                string="Resource references will not work correctly in images generated for this vector icon for API &lt; %1$d; check generated icon to make sure it looks acceptable"/>
+        </map>
+    </incident>
+
+    <incident
+        id="VectorRaster"
+        severity="warning"
+        message="">
+        <location
+            file="${:app*debug*MAIN*sourceProvider*0*resDir*0}/drawable/ic_visualization.xml"
+            line="9"
+            column="26"
+            startOffset="288"
+            endLine="9"
+            endColumn="46"
+            endOffset="308"/>
+        <map>
+            <entry
+                name="containsFillType"
+                boolean="false"/>
+            <entry
+                name="containsGradient"
+                boolean="false"/>
+            <entry
+                name="folderVersion"
+                int="-1"/>
+            <entry
+                name="message"
+                string="Resource references will not work correctly in images generated for this vector icon for API &lt; %1$d; check generated icon to make sure it looks acceptable"/>
+        </map>
+    </incident>
+
+    <incident
+        id="ObsoleteSdkInt"
+        severity="warning"
+        message="Unnecessary; SDK_INT is always >= 31">
+        <fix-replace
+            description="Delete tools:targetApi"
+            replacement=""
+            priority="0">
+            <range
+                file="${:app*debug*MAIN*sourceProvider*0*manifest*0}"
+                startOffset="1539"
+                endOffset="1559"/>
+        </fix-replace>
+        <location
+            file="${:app*debug*MAIN*sourceProvider*0*manifest*0}"
+            line="37"
+            column="9"
+            startOffset="1539"
+            endLine="37"
+            endColumn="29"
+            endOffset="1559"/>
+        <map>
+            <condition minGE="ffffffffc0000000"/>
+        </map>
+    </incident>
+
+    <incident
+        id="ObsoleteSdkInt"
+        severity="warning"
+        message="Unnecessary; SDK_INT is always >= 22">
+        <fix-replace
+            description="Delete @RequiresApi"
+            replacement=""
+            priority="0">
+            <range
+                file="${:app*debug*MAIN*sourceProvider*0*javaDir*0}/com/continuousauth/detection/AnomalyDetectorImpl.kt"
+                startOffset="6443"
+                endOffset="6489"/>
+        </fix-replace>
+        <location
+            file="${:app*debug*MAIN*sourceProvider*0*javaDir*0}/com/continuousauth/detection/AnomalyDetectorImpl.kt"
+            line="234"
+            column="5"
+            startOffset="6443"
+            endLine="234"
+            endColumn="51"
+            endOffset="6489"/>
+        <map>
+            <condition minGE="ffffffffffe00000"/>
+        </map>
+    </incident>
+
+    <incident
+        id="ObsoleteSdkInt"
+        severity="warning"
+        message="Unnecessary; SDK_INT is always >= 29">
+        <fix-replace
+            description="Delete @RequiresApi"
+            replacement=""
+            priority="0">
+            <range
+                file="${:app*debug*MAIN*sourceProvider*0*javaDir*0}/com/continuousauth/detection/AnomalyDetectorImpl.kt"
+                startOffset="7709"
+                endOffset="7744"/>
+        </fix-replace>
+        <location
+            file="${:app*debug*MAIN*sourceProvider*0*javaDir*0}/com/continuousauth/detection/AnomalyDetectorImpl.kt"
+            line="269"
+            column="5"
+            startOffset="7709"
+            endLine="269"
+            endColumn="40"
+            endOffset="7744"/>
+        <map>
+            <condition minGE="fffffffff0000000"/>
+        </map>
+    </incident>
+
+    <incident
+        id="ObsoleteSdkInt"
+        severity="warning"
+        message="Unnecessary; SDK_INT is always >= 24">
+        <fix-replace
+            description="Delete @RequiresApi"
+            replacement=""
+            priority="0">
+            <range
+                file="${:app*debug*MAIN*sourceProvider*0*javaDir*0}/com/continuousauth/security/KeyAttestationManager.kt"
+                startOffset="7314"
+                endOffset="7349"/>
+        </fix-replace>
+        <location
+            file="${:app*debug*MAIN*sourceProvider*0*javaDir*0}/com/continuousauth/security/KeyAttestationManager.kt"
+            line="213"
+            column="5"
+            startOffset="7314"
+            endLine="213"
+            endColumn="40"
+            endOffset="7349"/>
+        <map>
+            <condition minGE="ffffffffff800000"/>
+        </map>
+    </incident>
+
+    <incident
+        id="ObsoleteSdkInt"
+        severity="warning"
+        message="Unnecessary; SDK_INT is always >= 24">
+        <fix-replace
+            description="Delete @RequiresApi"
+            replacement=""
+            priority="0">
+            <range
+                file="${:app*debug*MAIN*sourceProvider*0*javaDir*0}/com/continuousauth/network/NetworkEnvironmentDetector.kt"
+                startOffset="2023"
+                endOffset="2058"/>
+        </fix-replace>
+        <location
+            file="${:app*debug*MAIN*sourceProvider*0*javaDir*0}/com/continuousauth/network/NetworkEnvironmentDetector.kt"
+            line="69"
+            column="5"
+            startOffset="2023"
+            endLine="69"
+            endColumn="40"
+            endOffset="2058"/>
+        <map>
+            <condition minGE="ffffffffff800000"/>
+        </map>
+    </incident>
+
+    <incident
+        id="ObsoleteSdkInt"
+        severity="warning"
+        message="Unnecessary; SDK_INT is always >= 21">
+        <fix-replace
+            description="Delete tools:targetApi"
+            replacement=""
+            priority="0">
+            <range
+                file="${:app*debug*MAIN*sourceProvider*0*resDir*0}/values/themes.xml"
+                startOffset="740"
+                endOffset="759"/>
+        </fix-replace>
+        <location
+            file="${:app*debug*MAIN*sourceProvider*0*resDir*0}/values/themes.xml"
+            line="14"
+            column="45"
+            startOffset="740"
+            endLine="14"
+            endColumn="64"
+            endOffset="759"/>
+        <map>
+            <condition minGE="fffffffffff00000"/>
+        </map>
+    </incident>
+
+</incidents>

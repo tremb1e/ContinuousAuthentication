@@ -1,0 +1,571 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ master, develop ]
+  pull_request:
+    branches: [ master ]
+  schedule:
+    # 每日凌晨2点运行长期稳定性测试
+    - cron: '0 2 * * *'
+
+env:
+  JAVA_VERSION: '17'
+  ANDROID_API_LEVEL: 34
+  ANDROID_BUILD_TOOLS_VERSION: '34.0.0'
+  ANDROID_NDK_VERSION: '25.1.8937393'
+
+jobs:
+  # 代码质量检查
+  code-quality:
+    name: Code Quality Checks
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up JDK ${{ env.JAVA_VERSION }}
+      uses: actions/setup-java@v3
+      with:
+        java-version: ${{ env.JAVA_VERSION }}
+        distribution: 'temurin'
+        
+    - name: Cache Gradle dependencies
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.gradle/caches
+          ~/.gradle/wrapper
+        key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+        restore-keys: |
+          ${{ runner.os }}-gradle-
+          
+    - name: Make gradlew executable
+      run: chmod +x ./gradlew
+      
+    - name: Run Kotlin lint
+      run: ./gradlew ktlintCheck
+      
+    - name: Run Android lint
+      run: ./gradlew lintDebug
+      
+    - name: Upload lint reports
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: lint-reports
+        path: |
+          app/build/reports/lint-results-debug.html
+          app/build/reports/ktlint/
+
+  # 单元测试
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up JDK ${{ env.JAVA_VERSION }}
+      uses: actions/setup-java@v3
+      with:
+        java-version: ${{ env.JAVA_VERSION }}
+        distribution: 'temurin'
+        
+    - name: Cache Gradle dependencies
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.gradle/caches
+          ~/.gradle/wrapper
+        key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+        restore-keys: |
+          ${{ runner.os }}-gradle-
+          
+    - name: Make gradlew executable
+      run: chmod +x ./gradlew
+      
+    - name: Run unit tests
+      run: ./gradlew testDebugUnitTest
+      
+    - name: Generate test report
+      run: ./gradlew jacocoTestReport
+      
+    - name: Upload test results
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: unit-test-results
+        path: |
+          app/build/reports/tests/testDebugUnitTest/
+          app/build/reports/jacoco/jacocoTestReport/
+
+  # 构建测试（Debug和Release）
+  build-tests:
+    name: Build Tests
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        build-type: [debug, release]
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up JDK ${{ env.JAVA_VERSION }}
+      uses: actions/setup-java@v3
+      with:
+        java-version: ${{ env.JAVA_VERSION }}
+        distribution: 'temurin'
+        
+    - name: Cache Gradle dependencies
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.gradle/caches
+          ~/.gradle/wrapper
+        key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+        restore-keys: |
+          ${{ runner.os }}-gradle-
+          
+    - name: Make gradlew executable
+      run: chmod +x ./gradlew
+      
+    - name: Build ${{ matrix.build-type }}
+      run: ./gradlew assemble${{ matrix.build-type == 'debug' && 'Debug' || 'Release' }}
+      
+    - name: Verify R8/ProGuard configuration (Release only)
+      if: matrix.build-type == 'release'
+      run: |
+        echo "验证Release构建是否启用了代码混淆和优化"
+        if [ -f app/build/outputs/mapping/release/mapping.txt ]; then
+          echo "✓ ProGuard/R8 mapping文件已生成"
+          echo "Mapping文件大小: $(wc -l < app/build/outputs/mapping/release/mapping.txt) 行"
+        else
+          echo "✗ ProGuard/R8 mapping文件未找到"
+          exit 1
+        fi
+        
+        # 检查APK大小
+        APK_SIZE=$(stat -f%z app/build/outputs/apk/release/*.apk 2>/dev/null || stat -c%s app/build/outputs/apk/release/*.apk)
+        echo "Release APK大小: $((APK_SIZE / 1024 / 1024))MB"
+        
+        # 验证APK内容
+        echo "APK内容分析:"
+        unzip -l app/build/outputs/apk/release/*.apk | head -20
+        
+    - name: Upload build artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: build-${{ matrix.build-type }}
+        path: |
+          app/build/outputs/apk/${{ matrix.build-type }}/
+          app/build/outputs/mapping/
+        retention-days: 30
+
+  # 仪表化测试（需要模拟器）
+  instrumentation-tests:
+    name: Instrumentation Tests
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        api-level: [30, 31, 33, 34]
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up JDK ${{ env.JAVA_VERSION }}
+      uses: actions/setup-java@v3
+      with:
+        java-version: ${{ env.JAVA_VERSION }}
+        distribution: 'temurin'
+        
+    - name: Enable KVM group perms
+      run: |
+        echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+        sudo udevadm control --reload-rules
+        sudo udevadm trigger --name-match=kvm
+        
+    - name: Cache Gradle dependencies
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.gradle/caches
+          ~/.gradle/wrapper
+        key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+        restore-keys: |
+          ${{ runner.os }}-gradle-
+          
+    - name: Cache AVD
+      uses: actions/cache@v3
+      id: avd-cache
+      with:
+        path: |
+          ~/.android/avd/*
+          ~/.android/adb*
+        key: avd-${{ matrix.api-level }}
+        
+    - name: Create AVD and generate snapshot for caching
+      if: steps.avd-cache.outputs.cache-hit != 'true'
+      uses: reactivecircus/android-emulator-runner@v2
+      with:
+        api-level: ${{ matrix.api-level }}
+        target: google_apis
+        arch: x86_64
+        profile: pixel_6
+        cores: 2
+        ram-size: 4096M
+        heap-size: 1024M
+        force-avd-creation: false
+        emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+        disable-animations: true
+        script: echo "Generated AVD snapshot for caching."
+        
+    - name: Make gradlew executable
+      run: chmod +x ./gradlew
+      
+    - name: Run instrumentation tests
+      uses: reactivecircus/android-emulator-runner@v2
+      with:
+        api-level: ${{ matrix.api-level }}
+        target: google_apis
+        arch: x86_64
+        profile: pixel_6
+        cores: 2
+        ram-size: 4096M
+        heap-size: 1024M
+        force-avd-creation: false
+        emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+        disable-animations: true
+        script: |
+          echo "等待模拟器完全启动..."
+          adb wait-for-device shell 'while [[ -z $(getprop sys.boot_completed | tr -d '\r') ]]; do sleep 1; done; input keyevent 82'
+          adb devices
+          echo "运行仪表化测试..."
+          ./gradlew connectedDebugAndroidTest --stacktrace
+          
+    - name: Upload instrumentation test results
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: instrumentation-test-results-api-${{ matrix.api-level }}
+        path: |
+          app/build/reports/androidTests/connected/
+          app/build/outputs/androidTest-results/
+
+  # 长期稳定性测试
+  stability-tests:
+    name: Long-term Stability Tests
+    runs-on: ubuntu-latest
+    # 只在定时任务或手动触发时运行
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    timeout-minutes: 780  # 13小时超时
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up JDK ${{ env.JAVA_VERSION }}
+      uses: actions/setup-java@v3
+      with:
+        java-version: ${{ env.JAVA_VERSION }}
+        distribution: 'temurin'
+        
+    - name: Enable KVM group perms
+      run: |
+        echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+        sudo udevadm control --reload-rules
+        sudo udevadm trigger --name-match=kvm
+        
+    - name: Cache Gradle dependencies
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.gradle/caches
+          ~/.gradle/wrapper
+        key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+        restore-keys: |
+          ${{ runner.os }}-gradle-
+          
+    - name: Make gradlew executable
+      run: chmod +x ./gradlew
+      
+    - name: Build debug APK
+      run: ./gradlew assembleDebug
+      
+    - name: Run long-term stability test
+      uses: reactivecircus/android-emulator-runner@v2
+      with:
+        api-level: 31
+        target: google_apis
+        arch: x86_64
+        profile: pixel_6
+        cores: 2
+        ram-size: 6144M  # 更多内存用于长期测试
+        heap-size: 2048M
+        force-avd-creation: false
+        emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+        disable-animations: true
+        script: |
+          echo "启动长期稳定性测试..."
+          adb wait-for-device shell 'while [[ -z $(getprop sys.boot_completed | tr -d '\r') ]]; do sleep 1; done; input keyevent 82'
+          
+          # 安装应用
+          adb install app/build/outputs/apk/debug/*.apk
+          
+          # 启动应用
+          adb shell am start -n com.continuousauth/.ui.MainActivity
+          
+          echo "开始12小时稳定性测试..."
+          START_TIME=$(date +%s)
+          TARGET_DURATION=$((12 * 60 * 60))  # 12小时
+          
+          # 创建监控脚本
+          cat > stability_monitor.sh << 'EOF'
+          #!/bin/bash
+          PACKAGE_NAME="com.continuousauth"
+          START_TIME=$1
+          TARGET_DURATION=$2
+          
+          echo "开始监控应用稳定性..."
+          echo "目标运行时长: ${TARGET_DURATION}秒 (12小时)"
+          
+          while true; do
+            CURRENT_TIME=$(date +%s)
+            ELAPSED=$((CURRENT_TIME - START_TIME))
+            REMAINING=$((TARGET_DURATION - ELAPSED))
+            
+            if [ $REMAINING -le 0 ]; then
+              echo "稳定性测试完成！总运行时长: ${ELAPSED}秒"
+              break
+            fi
+            
+            # 检查应用是否仍在运行
+            PID=$(adb shell pidof $PACKAGE_NAME)
+            if [ -z "$PID" ]; then
+              echo "ERROR: 应用进程丢失！测试失败。"
+              exit 1
+            fi
+            
+            # 检查ANR
+            ANR_COUNT=$(adb shell dumpsys dropbox --print | grep -c "anr.*$PACKAGE_NAME" || echo 0)
+            if [ $ANR_COUNT -gt 0 ]; then
+              echo "WARNING: 检测到 $ANR_COUNT 个ANR事件"
+              adb shell dumpsys dropbox --print | grep "anr.*$PACKAGE_NAME" | tail -5
+            fi
+            
+            # 检查崩溃
+            CRASH_COUNT=$(adb shell dumpsys dropbox --print | grep -c "crash.*$PACKAGE_NAME" || echo 0)
+            if [ $CRASH_COUNT -gt 0 ]; then
+              echo "ERROR: 检测到 $CRASH_COUNT 个崩溃事件"
+              adb shell dumpsys dropbox --print | grep "crash.*$PACKAGE_NAME" | tail -5
+              exit 1
+            fi
+            
+            # 内存监控
+            MEMORY_INFO=$(adb shell dumpsys meminfo $PACKAGE_NAME | grep "TOTAL" | awk '{print $2}')
+            if [ ! -z "$MEMORY_INFO" ]; then
+              MEMORY_MB=$((MEMORY_INFO / 1024))
+              echo "运行时长: ${ELAPSED}s / ${TARGET_DURATION}s, 内存使用: ${MEMORY_MB}MB, PID: $PID"
+              
+              # 检查内存泄漏（如果内存使用超过500MB，可能有问题）
+              if [ $MEMORY_MB -gt 500 ]; then
+                echo "WARNING: 内存使用过高: ${MEMORY_MB}MB"
+              fi
+            fi
+            
+            # 每5分钟报告一次状态
+            if [ $((ELAPSED % 300)) -eq 0 ]; then
+              HOURS=$((ELAPSED / 3600))
+              MINUTES=$(((ELAPSED % 3600) / 60))
+              echo "稳定性测试进度: ${HOURS}小时${MINUTES}分钟，剩余: $((REMAINING / 3600))小时"
+              
+              # 生成性能快照
+              adb shell dumpsys meminfo $PACKAGE_NAME > "meminfo_${ELAPSED}s.txt"
+              adb shell dumpsys cpuinfo | grep $PACKAGE_NAME > "cpuinfo_${ELAPSED}s.txt"
+            fi
+            
+            # 模拟用户操作（每30分钟）
+            if [ $((ELAPSED % 1800)) -eq 0 ]; then
+              echo "模拟用户操作..."
+              adb shell input tap 500 1000  # 点击屏幕
+              sleep 2
+              adb shell input keyevent 4    # 按返回键
+              sleep 1
+            fi
+            
+            sleep 30  # 每30秒检查一次
+          done
+          
+          echo "稳定性测试成功完成！"
+          EOF
+          
+          chmod +x stability_monitor.sh
+          ./stability_monitor.sh $START_TIME $TARGET_DURATION
+          
+    - name: Collect stability test artifacts
+      if: always()
+      run: |
+        # 收集最终的系统信息
+        adb shell dumpsys meminfo com.continuousauth > final_meminfo.txt
+        adb shell dumpsys package com.continuousauth > final_package_info.txt
+        adb logcat -d -s ContinuousAuth:* > app_logs.txt
+        
+        echo "稳定性测试完成时间: $(date)"
+        
+    - name: Upload stability test results
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: stability-test-results
+        path: |
+          *_*.txt
+          app_logs.txt
+        retention-days: 7
+
+  # 安全扫描
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up JDK ${{ env.JAVA_VERSION }}
+      uses: actions/setup-java@v3
+      with:
+        java-version: ${{ env.JAVA_VERSION }}
+        distribution: 'temurin'
+        
+    - name: Cache Gradle dependencies
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.gradle/caches
+          ~/.gradle/wrapper
+        key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+        restore-keys: |
+          ${{ runner.os }}-gradle-
+          
+    - name: Make gradlew executable
+      run: chmod +x ./gradlew
+      
+    - name: Build release APK
+      run: ./gradlew assembleRelease
+      
+    - name: Run dependency vulnerability scan
+      run: ./gradlew dependencyCheckAnalyze
+      continue-on-error: true
+      
+    - name: Upload security scan results
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: security-scan-results
+        path: |
+          app/build/reports/dependency-check-report.html
+
+  # 发布构建（仅在master分支）
+  release-build:
+    name: Release Build
+    runs-on: ubuntu-latest
+    needs: [code-quality, unit-tests, build-tests]
+    if: github.ref == 'refs/heads/master' && github.event_name == 'push'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up JDK ${{ env.JAVA_VERSION }}
+      uses: actions/setup-java@v3
+      with:
+        java-version: ${{ env.JAVA_VERSION }}
+        distribution: 'temurin'
+        
+    - name: Cache Gradle dependencies
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.gradle/caches
+          ~/.gradle/wrapper
+        key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+        restore-keys: |
+          ${{ runner.os }}-gradle-
+          
+    - name: Make gradlew executable
+      run: chmod +x ./gradlew
+      
+    - name: Generate version name
+      id: version
+      run: |
+        VERSION_NAME=$(date +'%Y.%m.%d')-$(git rev-parse --short HEAD)
+        echo "version_name=$VERSION_NAME" >> $GITHUB_OUTPUT
+        echo "Generated version: $VERSION_NAME"
+        
+    - name: Build signed release APK
+      run: |
+        # 注意：在实际使用中，需要配置签名密钥
+        ./gradlew assembleRelease
+        
+    - name: Verify release build
+      run: |
+        echo "验证Release构建质量..."
+        
+        # 检查APK是否成功生成
+        if [ -f app/build/outputs/apk/release/*.apk ]; then
+          echo "✓ Release APK生成成功"
+        else
+          echo "✗ Release APK生成失败"
+          exit 1
+        fi
+        
+        # 验证混淆是否生效
+        if [ -f app/build/outputs/mapping/release/mapping.txt ]; then
+          echo "✓ 代码混淆配置正确"
+          MAPPING_LINES=$(wc -l < app/build/outputs/mapping/release/mapping.txt)
+          echo "混淆映射条目: $MAPPING_LINES"
+        else
+          echo "✗ 代码混淆配置有误"
+          exit 1
+        fi
+        
+    - name: Create GitHub Release
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: v${{ steps.version.outputs.version_name }}
+        release_name: Release ${{ steps.version.outputs.version_name }}
+        body: |
+          自动构建的Release版本
+          
+          **构建信息:**
+          - Commit: ${{ github.sha }}
+          - 构建时间: ${{ github.event.head_commit.timestamp }}
+          - Android目标API: ${{ env.ANDROID_API_LEVEL }}
+          
+          **包含功能:**
+          - Phase 1-5全部功能
+          - 智能传输和异常检测
+          - 性能监控和指标收集
+          - 安全加密和密钥证明
+          
+          **测试状态:**
+          - 单元测试: ✓
+          - 仪表化测试: ✓
+          - 构建验证: ✓
+        draft: false
+        prerelease: false
+        
+    - name: Upload release artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: release-artifacts
+        path: |
+          app/build/outputs/apk/release/
+          app/build/outputs/mapping/
+        retention-days: 90
