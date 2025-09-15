@@ -1,9 +1,0 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<incidents format="6" by="lint 8.7.3" type="partial_results">
-    <map id="UnusedResources">
-        <entry
-            name="model"
-            string="id[btnToggleCollection(R),btnToggleChart(R),tvCollectionStatus(R),tvConnectionStatus(R),tvNetworkQuality(R),tvAccelerometerStatus(R),tvGyroscopeStatus(R),tvMagnetometerStatus(R),tvTransmissionMode(R),tvPacketsSent(R),tvPacketsPending(R),chartContainer(R),action_debug(R),cardDebugInfo(R),action_visualization(R),cardVisualization(R)],string[status_stopped(R),start_collection(R),stop_collection(R),show_chart(R),hide_chart(R),wifi_excellent(R),wifi_good(R),wifi_poor(R),cellular_excellent(R),cellular_good(R),cellular_poor(R),disconnected(R),connected(R),connecting(R),reconnecting(R),sensor_active(R),sensor_inactive(R)];;;;"/>
-    </map>
-
-</incidents>
