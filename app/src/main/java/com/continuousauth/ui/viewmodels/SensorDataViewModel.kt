@@ -118,30 +118,20 @@ class SensorDataViewModel @Inject constructor(
                     }
                 }
             }
-            
+
             // 定期获取前台应用（优化性能）
             appDetectionJob = launch {
-                val recentAppsList = mutableListOf<RecentApp>()
                 while (_sensorsActive.value == true) {
                     try {
                         val currentApp = foregroundAppDetector.getCurrentForegroundApp()
                         if (currentApp.isNotEmpty()) {
                             // 获取应用名称（从包名中提取）
                             val appName = getAppNameFromPackage(currentApp)
-                            val app = RecentApp(
-                                packageName = currentApp,
-                                appName = appName,
-                                timestamp = System.currentTimeMillis()
-                            )
-                            
-                            // 如果是新应用或与最后一个不同，添加到列表
-                            if (recentAppsList.isEmpty() || recentAppsList.last().packageName != currentApp) {
-                                recentAppsList.add(app)
-                                // 只保留最近10个
-                                if (recentAppsList.size > 10) {
-                                    recentAppsList.removeAt(0)
-                                }
-                                _recentApps.update { recentAppsList.toList() }
+
+                            // 检查是否与最后一个应用不同
+                            val currentList = _recentApps.value
+                            if (currentList.isEmpty() || currentList.last().packageName != currentApp) {
+                                addRecentApp(currentApp, appName)
                             }
                         }
                     } catch (e: Exception) {
@@ -150,9 +140,31 @@ class SensorDataViewModel @Inject constructor(
                     delay(1000) // 每秒检查一次
                 }
             }
+
         }
     }
-    
+    /**
+     * 更新最近应用列表，确保唯一性和正确排序
+     */
+    private fun updateRecentAppsList(newApp: RecentApp) {
+        val currentList = _recentApps.value.toMutableList()
+
+        // 移除相同包名的旧记录
+        currentList.removeAll { it.packageName == newApp.packageName }
+
+        // 添加新记录到列表末尾
+        currentList.add(newApp)
+
+        // 只保留最近10个应用
+        while (currentList.size > 10) {
+            currentList.removeAt(0)
+        }
+
+        // 更新状态流
+        _recentApps.value = currentList
+    }
+
+
     /**
      * 停止传感器数据收集
      */
@@ -217,4 +229,19 @@ class SensorDataViewModel @Inject constructor(
         super.onCleared()
         stopSensorCollection()
     }
+    /**
+     * 添加最近使用的应用到列表中，确保唯一性和正确排序
+     */
+    private fun addRecentApp(packageName: String, appName: String) {
+        val currentTime = System.currentTimeMillis()
+        val newApp = RecentApp(
+            packageName = packageName,
+            appName = appName,
+            timestamp = currentTime
+        )
+
+        // 更新最近应用列表
+        updateRecentAppsList(newApp)
+    }
+
 }

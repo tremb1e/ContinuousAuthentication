@@ -60,7 +60,10 @@ fun DetailedInfoScreen(
     val latencyHistory by viewModel.latencyHistory.collectAsStateWithLifecycle()
     
     val decimalFormat = remember { DecimalFormat("#.##") }
-    
+    // 添加控制NTP时间同步卡片显示的变量
+    var showNtpSyncCard by remember { mutableStateOf(false) }
+    // 添加控制传输状态卡片显示的变量
+    var showTransmissionStatusCard by remember { mutableStateOf(false) }
     Box(
         modifier = Modifier.fillMaxSize()
     ) {
@@ -70,22 +73,23 @@ fun DetailedInfoScreen(
             contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            // 传输状态卡片
-            item {
-                InfoCard(
-                    title = "传输状态",
-                    icon = Icons.AutoMirrored.Filled.Send
-                ) {
-                    InfoRow("传输策略", transmissionStatus.currentProfile)
-                    InfoRow("连接状态", 
-                        if (transmissionStatus.isConnected) "已连接" else "未连接",
-                        textColor = if (transmissionStatus.isConnected) 
-                            MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
-                    )
-                    InfoRow("上传队列", "${transmissionStatus.uploadQueueSize} 个数据包")
+            if(showTransmissionStatusCard){
+                // 传输状态卡片
+                item {
+                    InfoCard(
+                        title = "传输状态",
+                        icon = Icons.AutoMirrored.Filled.Send
+                    ) {
+                        InfoRow("传输策略", transmissionStatus.currentProfile)
+                        InfoRow("连接状态",
+                            if (transmissionStatus.isConnected) "已连接" else "未连接",
+                            textColor = if (transmissionStatus.isConnected)
+                                MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
+                        )
+                        InfoRow("上传队列", "${transmissionStatus.uploadQueueSize} 个数据包")
+                    }
                 }
             }
-            
             // gRPC连接状态卡片
             item {
                 InfoCard(
@@ -128,35 +132,38 @@ fun DetailedInfoScreen(
                     InfoRow("磁盘队列大小", "${decimalFormat.format(bufferStats.diskQueueSizeMB)} MB")
                 }
             }
-            
-            // NTP时间同步卡片
-            item {
-                InfoCard(
-                    title = "NTP时间同步",
-                    icon = Icons.Default.Schedule
-                ) {
-                    InfoRow("同步状态", 
-                        timeSyncStatus.syncStatus,
-                        textColor = when (timeSyncStatus.syncStatus) {
-                            "SUCCESS" -> Color(0xFF4CAF50)
-                            "SYNCING" -> Color(0xFFFF9800)
-                            "ERROR" -> MaterialTheme.colorScheme.error
-                            else -> MaterialTheme.colorScheme.onSurface
+            // 条件显示NTP时间同步卡片
+            if (showNtpSyncCard) {
+                // NTP时间同步卡片
+                item {
+                    InfoCard(
+                        title = "NTP时间同步",
+                        icon = Icons.Default.Schedule
+                    ) {
+                        InfoRow("同步状态",
+                            timeSyncStatus.syncStatus,
+                            textColor = when (timeSyncStatus.syncStatus) {
+                                "SUCCESS" -> Color(0xFF4CAF50)
+                                "SYNCING" -> Color(0xFFFF9800)
+                                "ERROR" -> MaterialTheme.colorScheme.error
+                                else -> MaterialTheme.colorScheme.onSurface
+                            }
+                        )
+                        InfoRow("同步有效",
+                            if (timeSyncStatus.isNtpSyncValid) "是" else "否",
+                            textColor = if (timeSyncStatus.isNtpSyncValid)
+                                Color(0xFF4CAF50) else MaterialTheme.colorScheme.error
+                        )
+                        InfoRow("NTP偏移量", "${timeSyncStatus.ntpOffsetMs} ms")
+                        InfoRow("同步精度", "${timeSyncStatus.syncAccuracyMs} ms")
+                        if (timeSyncStatus.lastSyncTime > 0) {
+                            val timeSinceSync = (System.currentTimeMillis() - timeSyncStatus.lastSyncTime) / 1000
+                            InfoRow("上次同步", "${timeSinceSync} 秒前")
                         }
-                    )
-                    InfoRow("同步有效", 
-                        if (timeSyncStatus.isNtpSyncValid) "是" else "否",
-                        textColor = if (timeSyncStatus.isNtpSyncValid) 
-                            Color(0xFF4CAF50) else MaterialTheme.colorScheme.error
-                    )
-                    InfoRow("NTP偏移量", "${timeSyncStatus.ntpOffsetMs} ms")
-                    InfoRow("同步精度", "${timeSyncStatus.syncAccuracyMs} ms")
-                    if (timeSyncStatus.lastSyncTime > 0) {
-                        val timeSinceSync = (System.currentTimeMillis() - timeSyncStatus.lastSyncTime) / 1000
-                        InfoRow("上次同步", "${timeSinceSync} 秒前")
                     }
                 }
             }
+
             
             // 传感器信息卡片
             item {

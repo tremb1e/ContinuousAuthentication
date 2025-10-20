@@ -10,6 +10,7 @@ import androidx.lifecycle.MutableLiveData
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.continuousauth.monitor.MemoryMonitor
+import com.continuousauth.monitor.SystemMonitor
 import com.continuousauth.network.ConnectionStatus
 import com.continuousauth.network.NetworkEnvironmentDetector
 import com.continuousauth.network.NetworkState
@@ -29,6 +30,9 @@ import com.continuousauth.privacy.DeletionState
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import java.security.KeyStore
 import javax.inject.Inject
@@ -50,7 +54,8 @@ class MainViewModel @Inject constructor(
     private val serverConnectionTester: ServerConnectionTester,
     private val fileQueueManager: FileQueueManager,
     private val tlsSecurityManager: TlsSecurityManager,
-    private val privacyManager: PrivacyManager
+    private val privacyManager: PrivacyManager,
+    private val systemMonitor: SystemMonitor
 ) : ViewModel() {
     
     companion object {
@@ -137,7 +142,21 @@ class MainViewModel @Inject constructor(
     // 上传策略状态
     private val _uploadPolicyWiFiOnly = MutableLiveData<Boolean>()
     val uploadPolicyWiFiOnly: LiveData<Boolean> = _uploadPolicyWiFiOnly
-    
+
+    // 传输状态
+    val transmissionStatus: StateFlow<SystemMonitor.TransmissionStatus> =
+        systemMonitor.transmissionStatus.stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = SystemMonitor.TransmissionStatus()
+        )
+    // 时间同步状态
+    val timeSyncStatus: StateFlow<SystemMonitor.TimeSyncStatus> =
+        systemMonitor.timeSyncStatus.stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = SystemMonitor.TimeSyncStatus()
+        )
     init {
         // 初始化状态
         _collectionStatus.value = "STOPPED"

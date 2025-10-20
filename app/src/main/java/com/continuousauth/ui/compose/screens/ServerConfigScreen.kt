@@ -8,10 +8,12 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.res.stringResource
 import androidx.compose.runtime.livedata.observeAsState
 import androidx.compose.ui.Alignment
@@ -31,9 +33,12 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.continuousauth.ui.MainViewModel
 import com.continuousauth.ui.theme.ExtendedColors
 import com.continuousauth.network.ConnectionStatus
+import com.continuousauth.privacy.ConsentState
+import com.continuousauth.privacy.DeletionState
 import com.continuousauth.storage.QueueStats
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -65,7 +70,40 @@ fun ServerConfigScreen(viewModel: MainViewModel) {
     var serverIp by remember { mutableStateOf("192.168.1.100") }
     var serverPort by remember { mutableStateOf("50051") }
     var isTestingConnection by remember { mutableStateOf(false) }
-    
+
+    // 观察隐私相关状态
+    val consentState by viewModel.consentState.observeAsState(initial = ConsentState.UNKNOWN)
+    val deletionState by viewModel.deletionState.observeAsState(initial = DeletionState.IDLE)
+    // 本地状态
+    var showWithdrawDialog by remember { mutableStateOf(false) }
+    var showPrivacyPolicy by remember { mutableStateOf(false) }
+    var dataRetentionDays by remember { mutableIntStateOf(30) }
+
+    val transmissionStatus by viewModel.transmissionStatus.collectAsStateWithLifecycle()
+    val timeSyncStatus by viewModel.timeSyncStatus.collectAsStateWithLifecycle()
+    // 添加控制NTP时间同步卡片显示的变量
+    var showNtpSyncCard by remember { mutableStateOf(true) }
+    // 添加控制传输状态卡片显示的变量
+    var showTransmissionStatusCard by remember { mutableStateOf(true) }
+    // 撤回同意确认对话框
+    if (showWithdrawDialog) {
+        WithdrawConsentDialog(
+            onConfirm = {
+                scope.launch {
+                    viewModel.withdrawConsentAndDeleteData()
+                }
+                showWithdrawDialog = false
+            },
+            onDismiss = { showWithdrawDialog = false }
+        )
+    }
+
+    // 隐私政策对话框
+    if (showPrivacyPolicy) {
+        PrivacyPolicyDialog(
+            onDismiss = { showPrivacyPolicy = false }
+        )
+    }
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -132,12 +170,124 @@ fun ServerConfigScreen(viewModel: MainViewModel) {
                     onClearQueue = { viewModel.clearFileQueue() }
                 )
             }
-            
-            Spacer(modifier = Modifier.height(80.dp))
+            // 数据管理卡片
+            DataManagementCard(
+                onWithdrawConsent = { showWithdrawDialog = true },
+                onViewPrivacyPolicy = { showPrivacyPolicy = true },
+                isDeleting = deletionState == DeletionState.IN_PROGRESS
+            )
+            // 加密状态卡片
+            EncryptionStatusCard()
+            if(showTransmissionStatusCard){
+                // 传输状态卡片
+                InfoCard(
+                    title = "传输状态",
+                    icon = Icons.AutoMirrored.Filled.Send
+                ) {
+                    InfoRow("传输策略", transmissionStatus.currentProfile)
+                    InfoRow("连接状态",
+                        if (transmissionStatus.isConnected) "已连接" else "未连接",
+                        textColor = if (transmissionStatus.isConnected)
+                            MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
+                    )
+                    InfoRow("上传队列", "${transmissionStatus.uploadQueueSize} 个数据包")
+                }
+            }
+
+            // 条件显示NTP时间同步卡片
+            if (showNtpSyncCard) {
+                // NTP时间同步卡片
+                InfoCard(
+                    title = "NTP时间同步",
+                    icon = Icons.Default.Schedule
+                ) {
+                    InfoRow("同步状态",
+                        timeSyncStatus.syncStatus,
+                        textColor = when (timeSyncStatus.syncStatus) {
+                            "SUCCESS" -> Color(0xFF4CAF50)
+                            "SYNCING" -> Color(0xFFFF9800)
+                            "ERROR" -> MaterialTheme.colorScheme.error
+                            else -> MaterialTheme.colorScheme.onSurface
+                        }
+                    )
+                    InfoRow("同步有效",
+                        if (timeSyncStatus.isNtpSyncValid) "是" else "否",
+                        textColor = if (timeSyncStatus.isNtpSyncValid)
+                            Color(0xFF4CAF50) else MaterialTheme.colorScheme.error
+                    )
+                    InfoRow("NTP偏移量", "${timeSyncStatus.ntpOffsetMs} ms")
+                    InfoRow("同步精度", "${timeSyncStatus.syncAccuracyMs} ms")
+                    if (timeSyncStatus.lastSyncTime > 0) {
+                        val timeSinceSync = (System.currentTimeMillis() - timeSyncStatus.lastSyncTime) / 1000
+                        InfoRow("上次同步", "${timeSinceSync} 秒前")
+                    }
+                }
+            }
+
         }
     }
 }
 
+/**
+ * 加密状态卡片
+ */
+@Composable
+private fun EncryptionStatusCard() {
+    Card(
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp)
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Lock,
+                    contentDescription = null,
+                    tint = Color(0xFF4CAF50),
+                    modifier = Modifier.size(24.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "加密状态",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            PrivacyInfoRow("加密算法", "AES-256-GCM with StreamingAEAD")
+            PrivacyInfoRow("密钥管理", "Android Keystore (Tink)")
+            PrivacyInfoRow("传输安全", "TLS 1.3 + 证书固定")
+            PrivacyInfoRow("数据压缩", "GZIP (先压缩后加密)")
+        }
+    }
+}
+/**
+ * 信息行
+ */
+@Composable
+private fun PrivacyInfoRow(label: String, value: String) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp),
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Text(
+            text = value,
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.Medium
+        )
+    }
+}
 /**
  * 连接状态卡片
  */
@@ -526,6 +676,7 @@ fun EncryptedUploadControlCard(
                     modifier = Modifier.size(24.dp)
                 )
                 Spacer(modifier = Modifier.width(8.dp))
+                //加密数据上传
                 Text(
                     text = stringResource(R.string.encrypted_data_upload),
                     style = MaterialTheme.typography.titleLarge,
@@ -913,7 +1064,7 @@ fun FileQueueCard(
                 ) {
                     Icon(
                         imageVector = Icons.Default.FolderOpen,
-                        contentDescription = stringResource(R.string.file_queue),
+                        contentDescription = stringResource(R.string. file_queue),
                         tint = MaterialTheme.colorScheme.primary,
                         modifier = Modifier.size(24.dp)
                     )
@@ -950,18 +1101,21 @@ fun FileQueueCard(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceEvenly
             ) {
+                //总数据包
                 StatusChip(
                     icon = Icons.Default.Inventory,
                     label = stringResource(R.string.total_packets),
                     value = queueStats.totalPackets.toString(),
                     color = MaterialTheme.colorScheme.primary
                 )
+                //待上传
                 StatusChip(
                     icon = Icons.Default.Schedule,
                     label = stringResource(R.string.pending_upload),
                     value = queueStats.pendingPackets.toString(),
                     color = if (queueStats.pendingPackets > 0) ExtendedColors.warning else Color.Gray
                 )
+                //已上传
                 StatusChip(
                     icon = Icons.Default.CloudDone,
                     label = stringResource(R.string.uploaded),
@@ -1019,7 +1173,183 @@ fun FileQueueCard(
         }
     }
 }
+/**
+ * 数据管理卡片
+ */
+@Composable
+private fun DataManagementCard(
+    onWithdrawConsent: () -> Unit,
+    onViewPrivacyPolicy: () -> Unit,
+    isDeleting: Boolean
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp)
+        ) {
+            Text(
+                text = "数据管理",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
 
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // 撤回同意按钮
+            OutlinedButton(
+                onClick = onWithdrawConsent,
+                modifier = Modifier.fillMaxWidth(),
+                enabled = !isDeleting,
+                colors = ButtonDefaults.outlinedButtonColors(
+                    contentColor = Color(0xFFFF5252)
+                )
+            ) {
+                Icon(Icons.Default.Delete, contentDescription = null)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("撤回同意并删除所有数据")
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // 查看隐私政策按钮
+            OutlinedButton(
+                onClick = onViewPrivacyPolicy,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Icon(Icons.Default.Policy, contentDescription = null)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("查看隐私政策")
+            }
+        }
+    }
+}
+
+/**
+ * 隐私政策对话框
+ */
+@Composable
+private fun PrivacyPolicyDialog(
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text("隐私政策")
+        },
+        text = {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState())
+            ) {
+                Text(
+                    text = """
+                        数据收集与使用说明
+                        
+                        1. 数据收集类型
+                        • 传感器数据：加速度计、陀螺仪、磁力计
+                        • 设备信息：设备型号、系统版本
+                        • 应用使用情况：前台应用信息（已加密）
+                        
+                        2. 数据用途
+                        • 用于持续身份认证研究
+                        • 改进认证算法准确性
+                        • 学术研究与分析
+                        
+                        3. 数据保护
+                        • 所有数据均采用 AES-256-GCM 加密
+                        • 使用 HMAC 保护敏感标识符
+                        • 本地缓存自动清理
+                        • 服务器端安全存储
+                        
+                        4. 数据共享
+                        • 不与第三方共享原始数据
+                        • 仅分享聚合统计信息
+                        • 严格遵守数据最小化原则
+                        
+                        5. 用户权利
+                        • 您可以随时撤回同意
+                        • 撤回后将删除所有相关数据
+                        • 支持数据导出请求
+                        • 支持数据修正请求
+                        
+                        6. 数据保留
+                        • 本地缓存：用户可设置1-365天
+                        • 服务器端：遵循研究协议要求
+                        • 自动清理过期数据
+                        
+                        7. 联系方式
+                        邮箱：privacy@continuousauth.com
+                        
+                        最后更新：2024年1月
+                    """.trimIndent(),
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("关闭")
+            }
+        }
+    )
+}
+/**
+ * 撤回同意确认对话框
+ */
+@Composable
+private fun WithdrawConsentDialog(
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = {
+            Icon(
+                imageVector = Icons.Default.Warning,
+                contentDescription = null,
+                tint = Color(0xFFFF5252)
+            )
+        },
+        title = {
+            Text("确认撤回同意")
+        },
+        text = {
+            Column {
+                Text(
+                    text = "撤回同意将会：",
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = FontWeight.Bold
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                Text("• 立即停止所有数据采集")
+                Text("• 删除所有本地缓存数据")
+                Text("• 向服务器发送删除请求")
+                Text("• 清除所有个人信息")
+                Spacer(modifier = Modifier.height(12.dp))
+                Text(
+                    text = "此操作无法撤销！",
+                    color = Color(0xFFFF5252),
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = onConfirm,
+                colors = ButtonDefaults.textButtonColors(
+                    contentColor = Color(0xFFFF5252)
+                )
+            ) {
+                Text("确认删除")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("取消")
+            }
+        }
+    )
+}
 /**
  * 格式化字节数为可读字符串
  */

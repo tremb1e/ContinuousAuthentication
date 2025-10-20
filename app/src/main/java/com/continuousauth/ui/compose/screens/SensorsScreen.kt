@@ -697,7 +697,6 @@ fun InteractiveLineChart(
 fun RecentAppsCard(
     recentApps: List<SensorDataViewModel.RecentApp>
 ) {
-    
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(20.dp)
@@ -711,7 +710,7 @@ fun RecentAppsCard(
                 fontWeight = FontWeight.Bold,
                 modifier = Modifier.padding(bottom = 12.dp)
             )
-            
+
             if (recentApps.isEmpty()) {
                 Box(
                     modifier = Modifier
@@ -726,13 +725,20 @@ fun RecentAppsCard(
                     )
                 }
             } else {
+                // 确保列表唯一性和正确排序
+                val uniqueApps = remember(recentApps) {
+                    recentApps.distinctBy { it.packageName }
+                        .take(10)
+                        .sortedByDescending { it.timestamp }
+                }
+
                 LazyColumn(
                     modifier = Modifier.heightIn(max = 200.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     items(
-                        items = recentApps.takeLast(10).reversed(), // 显示最近10个，最新的在前
-                        key = { it.timestamp }
+                        items = uniqueApps,
+                        key = { it.packageName } // 使用包名作为唯一键
                     ) { app ->
                         AppItem(
                             packageName = app.packageName,

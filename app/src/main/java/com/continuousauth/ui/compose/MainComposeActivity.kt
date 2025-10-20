@@ -341,7 +341,7 @@ class MainComposeActivity : FragmentActivity() {
             Screen.Sensors -> context.getString(R.string.nav_sensor_data)
             Screen.Server -> context.getString(R.string.nav_server_config)
             Screen.Details -> context.getString(R.string.nav_detailed_info)
-            Screen.Privacy -> "隐私设置"
+            Screen.Privacy -> "持续认证"
         }
     }
 
