@@ -358,7 +358,7 @@ fun ValueChip(label: String, value: Float, color: Color) {
     Surface(
         shape = RoundedCornerShape(8.dp),
         color = color.copy(alpha = 0.1f),
-        modifier = Modifier.width(90.dp)
+        modifier = Modifier
     ) {
         Row(
             modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
