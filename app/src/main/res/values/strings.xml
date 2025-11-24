@@ -340,5 +340,7 @@
     <string name="default_value">--</string>
     <string name="excellent">Excellent</string>
     <string name="default_score">100</string>
-    
+    <!-- Notification permission -->
+    <string name="notification_permission_title">Notification permission</string>
+    <string name="notification_permission_message">This application requires notification permission to display foreground service status. This ensures that the application can continue to run in the background and provide identity authentication services.</string>
 </resources>

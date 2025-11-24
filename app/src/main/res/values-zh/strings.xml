@@ -179,7 +179,7 @@
     
     <!-- 电池优化对话框 -->
     <string name="battery_optimization_explanation">为确保可靠的数据采集，此应用需要在后台运行而不受电池优化限制。</string>
-    <string name="battery_optimization_benefits">好处：\\n• 一致的传感器数据采集\\n• 提高认证准确性\\n• 更好的研究数据质量</string>
+    <string name="battery_optimization_benefits">好处：\n• 一致的传感器数据采集\n• 提高认证准确性\n• 更好的研究数据质量</string>
     <string name="battery_optimization_how_to">点击"禁用优化"打开系统设置，然后找到此应用并禁用电池优化。</string>
     <string name="disable_optimization">禁用优化</string>
     
@@ -340,5 +340,7 @@
     <string name="default_value">--</string>
     <string name="excellent">优秀</string>
     <string name="default_score">100</string>
-    
+    <!-- 通知权限 -->
+    <string name="notification_permission_title">通知权限</string>
+    <string name="notification_permission_message">此应用需要通知权限来显示前台服务状态。这确保应用能够在后台持续运行并提供身份认证服务。</string>
 </resources>

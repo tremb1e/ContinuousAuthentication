@@ -1,10 +1,15 @@
 package com.continuousauth.ui
 
+import android.Manifest
+import android.app.AppOpsManager
 import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
 import android.hardware.Sensor
 import android.hardware.SensorManager
 import android.os.Build
 import android.util.Log
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.LiveData
 import androidx.lifecycle.MutableLiveData
 import androidx.lifecycle.ViewModel
@@ -36,6 +41,9 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import java.security.KeyStore
 import javax.inject.Inject
+import androidx.core.app.NotificationManagerCompat
+import android.os.Process
+import com.continuousauth.service.DataCollectionService
 
 /**
  * 主界面ViewModel
@@ -694,10 +702,15 @@ class MainViewModel @Inject constructor(
      * 检查Usage Stats权限
      */
     suspend fun hasUsageStatsPermission(): Boolean {
-        // TODO: 实现实际的权限检查
-        return false
+        return isUsageStatsPermissionGranted()
     }
-    
+    /**
+     * 检查PostNotificationsPermission权限
+     */
+    fun hasPostNotificationsPermission(): Boolean {
+        return isPostNotificationsPermissionGranted()
+    }
+
     /**
      * 检查Usage Stats权限
      */
@@ -708,7 +721,72 @@ class MainViewModel @Inject constructor(
             updateDebugInfo()
         }
     }
-    
+
+    fun startDataCollectionService() {
+        // 创建启动服务的Intent
+        val intent = Intent(context, DataCollectionService::class.java)
+        intent.action = DataCollectionService.ACTION_START_COLLECTION
+
+        // Android 8.0 (API 26)及以上版本必须使用startForegroundService
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            context.startForegroundService(intent)
+        } else {
+            // 旧版本使用普通的startService
+            context.startService(intent)
+        }
+    }
+    /**
+     * 检查 Usage Stats 权限是否已授予
+     */
+    fun isUsageStatsPermissionGranted(): Boolean {
+        return try {
+            val appOpsManager = context.getSystemService(Context.APP_OPS_SERVICE) as AppOpsManager
+            val mode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                appOpsManager.unsafeCheckOpNoThrow(
+                    AppOpsManager.OPSTR_GET_USAGE_STATS,
+                    Process.myUid(),
+                    context.packageName
+                )
+            } else {
+                @Suppress("DEPRECATION")
+                appOpsManager.checkOpNoThrow(
+                    AppOpsManager.OPSTR_GET_USAGE_STATS,
+                    Process.myUid(),
+                    context.packageName
+                )
+            }
+            mode == AppOpsManager.MODE_ALLOWED
+        } catch (e: Exception) {
+            e.printStackTrace()
+            false
+        }
+    }
+
+    /**
+     * 检查 POST_NOTIFICATIONS 权限是否已授予
+     */
+    fun isPostNotificationsPermissionGranted(): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            // Android 13 及以上需要运行时权限
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.POST_NOTIFICATIONS
+            ) == PackageManager.PERMISSION_GRANTED
+        } else {
+            // Android 13 以下检查通知是否启用
+            NotificationManagerCompat.from(context).areNotificationsEnabled()
+        }
+    }
+
+    /**
+     * 检查两个权限的状态
+     * @return Pair<Boolean, Boolean> (UsageStats权限, 通知权限)
+     */
+    fun checkPermissions(): Pair<Boolean, Boolean> {
+        val usageStatsGranted = isUsageStatsPermissionGranted()
+        val notificationsGranted = isPostNotificationsPermissionGranted()
+        return Pair(usageStatsGranted, notificationsGranted)
+    }
     /**
      * 测试服务器连接
      */
