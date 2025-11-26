@@ -446,7 +446,10 @@ class MainComposeActivity : FragmentActivity() {
                         mIntent.putExtra(Settings.EXTRA_APP_PACKAGE, packageName)
                         notificationLauncher.launch(mIntent)
                     },
-                    onDenied = { checkPermissionsAndGuidance() }
+                    onDenied = {
+                        isSkipPermissionCheck=true
+                        showUsageStatsPermissionDialog()
+                    }
                 )
             } else {
                 // 继续检查其他权限
@@ -490,18 +493,18 @@ class MainComposeActivity : FragmentActivity() {
      */
     private fun checkPermissionsAndGuidance() {
         lifecycleScope.launch {
-            showNotificationPermissionDialog()
-//            if (NotificationPermissionHelper.shouldRequestNotificationPermission(this@MainComposeActivity)){
-//                if (!viewModel.hasPostNotificationsPermission()) {
-//                    showNotificationPermissionDialog()
-//                }
-//            }
-//            // 检查Usage Stats权限
-//            else if (!viewModel.hasUsageStatsPermission()) {
-//                showUsageStatsPermissionDialog()
-//            } else {
-//                checkBatteryOptimization()
-//            }
+//            showNotificationPermissionDialog()
+            if (NotificationPermissionHelper.shouldRequestNotificationPermission(this@MainComposeActivity)){
+                if (!viewModel.hasPostNotificationsPermission()) {
+                    showNotificationPermissionDialog()
+                }
+            }
+            // 检查Usage Stats权限
+            else if (!viewModel.hasUsageStatsPermission()) {
+                showUsageStatsPermissionDialog()
+            } else {
+                checkBatteryOptimization()
+            }
         }
     }
 
