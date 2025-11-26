@@ -39,6 +39,7 @@ junitExt = "1.2.1"
 espresso = "3.6.1"
 mockito = "5.14.2"
 robolectric = "4.13"
+mmkv = "2.2.4"
 
 
 [libraries]
@@ -89,7 +90,7 @@ androidx-test-ext-junit = { group = "androidx.test.ext", name = "junit", version
 androidx-test-espresso-core = { group = "androidx.test.espresso", name = "espresso-core", version.ref = "espresso" }
 mockito-core = { group = "org.mockito", name = "mockito-core", version.ref = "mockito" }
 robolectric = { group = "org.robolectric", name = "robolectric", version.ref = "robolectric" }
-
+mmkv-static = { group = "com.tencent", name = "mmkv-static", version.ref = "mmkv" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
