@@ -1,8 +1,11 @@
 package com.continuousauth.utils
+import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.app.ActivityCompat
+import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.FragmentActivity
@@ -30,8 +33,14 @@ object NotificationPermissionHelper {
      * - Android 13及以上版本且未授予权限时需要请求
      */
     fun shouldRequestNotificationPermission(context: Context): Boolean {
-        return Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-                !hasNotificationPermission(context)
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            ActivityCompat.checkSelfPermission(
+                context,
+                Manifest.permission.POST_NOTIFICATIONS
+            ) == PackageManager.PERMISSION_GRANTED
+        } else {
+            NotificationManagerCompat.from(context).areNotificationsEnabled()
+        }
     }
 }
 /**
@@ -97,7 +106,6 @@ class NotificationPermissionLauncher private constructor() {
         onGranted: (() -> Unit)? = null,
         onDenied: (() -> Unit)? = null
     ) {
-        // 只有在Android 13及以上版本且需要权限时才请求
         if (!NotificationPermissionHelper.shouldRequestNotificationPermission(context)) {
             onGranted?.invoke()
             return

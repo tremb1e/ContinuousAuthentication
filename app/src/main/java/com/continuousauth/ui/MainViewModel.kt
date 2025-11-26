@@ -773,7 +773,6 @@ class MainViewModel @Inject constructor(
                 Manifest.permission.POST_NOTIFICATIONS
             ) == PackageManager.PERMISSION_GRANTED
         } else {
-            // Android 13 以下检查通知是否启用
             NotificationManagerCompat.from(context).areNotificationsEnabled()
         }
     }

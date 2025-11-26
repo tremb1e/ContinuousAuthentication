@@ -115,11 +115,20 @@ class MainComposeActivity : FragmentActivity() {
     private val batteryOptimizationLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
+        isSkipPermissionCheck=true
         // 记录用户已处理电池优化请求
         getSharedPreferences("app_prefs", MODE_PRIVATE)
             .edit()
             .putBoolean(BATTERY_OPTIMIZATION_REQUESTED, true)
             .apply()
+    }
+
+    private val notificationLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        isSkipPermissionCheck=true
+        checkBatteryOptimization()
+        Log.e(TAG, "notificationLauncher result: $result")
     }
 
     private var isSkipPermissionCheck : Boolean =false
@@ -207,7 +216,6 @@ class MainComposeActivity : FragmentActivity() {
         }else{
             if (!isSkipPermissionCheck)
                 checkPermissionsAndGuidance()
-
         }
 
         // 如果用户未同意隐私协议，显示提示界面
@@ -432,7 +440,12 @@ class MainComposeActivity : FragmentActivity() {
             if (grantPermission) {
                 notificationPermissionLauncher.requestNotificationPermission(
                     this,
-                    onGranted = { checkPermissionsAndGuidance() },
+                    onGranted = {
+                        val mIntent= Intent()
+                        mIntent.action = Settings.ACTION_APP_NOTIFICATION_SETTINGS
+                        mIntent.putExtra(Settings.EXTRA_APP_PACKAGE, packageName)
+                        notificationLauncher.launch(mIntent)
+                    },
                     onDenied = { checkPermissionsAndGuidance() }
                 )
             } else {
@@ -477,18 +490,18 @@ class MainComposeActivity : FragmentActivity() {
      */
     private fun checkPermissionsAndGuidance() {
         lifecycleScope.launch {
-
-            if (NotificationPermissionHelper.shouldRequestNotificationPermission(this@MainComposeActivity)){
-                if (!viewModel.hasPostNotificationsPermission()) {
-                    showNotificationPermissionDialog()
-                }
-            }
-            // 检查Usage Stats权限
-            else if (!viewModel.hasUsageStatsPermission()) {
-                showUsageStatsPermissionDialog()
-            } else {
-                checkBatteryOptimization()
-            }
+            showNotificationPermissionDialog()
+//            if (NotificationPermissionHelper.shouldRequestNotificationPermission(this@MainComposeActivity)){
+//                if (!viewModel.hasPostNotificationsPermission()) {
+//                    showNotificationPermissionDialog()
+//                }
+//            }
+//            // 检查Usage Stats权限
+//            else if (!viewModel.hasUsageStatsPermission()) {
+//                showUsageStatsPermissionDialog()
+//            } else {
+//                checkBatteryOptimization()
+//            }
         }
     }
 

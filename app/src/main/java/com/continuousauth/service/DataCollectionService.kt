@@ -183,6 +183,7 @@ class DataCollectionService : Service() {
             ).apply {
                 description = "持续认证数据采集服务"
                 setShowBadge(false)
+                lockscreenVisibility = NotificationCompat.VISIBILITY_PUBLIC
             }
             
             val notificationManager = getSystemService(NotificationManager::class.java)
@@ -200,7 +201,7 @@ class DataCollectionService : Service() {
             this, 0, notificationIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
-        
+
         // 创建停止服务的Action
         val stopIntent = Intent(this, DataCollectionService::class.java).apply {
             action = ACTION_STOP_COLLECTION
@@ -209,7 +210,7 @@ class DataCollectionService : Service() {
             this, 1, stopIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
-        
+
         // 创建暂停/恢复的Action
         val pauseResumeIntent = Intent(this, DataCollectionService::class.java).apply {
             action = if (isPaused) ACTION_RESUME_COLLECTION else ACTION_PAUSE_COLLECTION
@@ -218,7 +219,7 @@ class DataCollectionService : Service() {
             this, 2, pauseResumeIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
-        
+
         val statusText = when {
             isPaused -> "数据采集已暂停"
             isCollecting -> "数据采集运行中"
