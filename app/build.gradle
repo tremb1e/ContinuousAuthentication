@@ -170,6 +170,8 @@ dependencies {
     androidTestImplementation(libs.androidx.test.espresso.core)
     androidTestImplementation(libs.hilt.android.testing)
     kspAndroidTest(libs.hilt.compiler)
-
+    // MMKV 静态库
     implementation (libs.mmkv.static)
+    // Android Startup
+    implementation (libs.android.startup)
 }

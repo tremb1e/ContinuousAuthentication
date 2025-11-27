@@ -2,7 +2,9 @@ package com.continuousauth
 
 import android.app.Application
 import android.util.Log
+import com.continuousauth.startup.MMKVStartUp
 import com.continuousauth.time.EnhancedTimeSync
+import com.rousetime.android_startup.StartupManager
 import dagger.hilt.android.HiltAndroidApp
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -29,7 +31,10 @@ class ContinuousAuthApplication : Application() {
         
         // 初始化时间同步服务
         initializeTimeSync()
-        
+        val builder = StartupManager.Builder()
+        builder.addStartup(MMKVStartUp())
+            .build(this)
+            .start()
         Log.d("ContinuousAuth", "应用初始化完成")
     }
     
