@@ -62,6 +62,7 @@ class DataCollectionService : Service() {
     // 广播接收器，监听系统事件
     private val systemEventReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
+
             when (intent?.action) {
                 Intent.ACTION_BATTERY_LOW -> {
                     Log.w(TAG, "电池电量低，暂停数据采集")

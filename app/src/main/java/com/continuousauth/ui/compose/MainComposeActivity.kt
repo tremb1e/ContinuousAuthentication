@@ -205,7 +205,6 @@ class MainComposeActivity : FragmentActivity() {
 
                     // 通知ViewModel记录用户同意
                     viewModel.grantPrivacyConsent()
-                    viewModel.startDataCollectionService()
                     showPrivacyDialog = false
                 },
                 onDecline = {

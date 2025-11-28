@@ -19,6 +19,8 @@ import com.continuousauth.utils.UserIdManager
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import android.util.Log
+import com.continuousauth.utils.Constant
+import com.continuousauth.utils.SpUtils
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import javax.inject.Inject
@@ -297,7 +299,8 @@ class SmartTransmissionManager @Inject constructor(
         
         try {
             // Start upload manager
-            val started = uploadManager.start("your-server-endpoint") // You may need to configure this
+            //val started = uploadManager.start("your-server-endpoint") // You may need to configure this
+            val started = uploadManager.start(SpUtils.decodeString(Constant.SERVER_IP, "192.168.1.100")+":"+SpUtils.decodeString(Constant.SERVER_PORT, "50051")) // You may need to configure this
             if (started) {
                 // Monitor upload results if needed
                 // Upload results are handled internally by the UploadManager
@@ -551,7 +554,8 @@ class SmartTransmissionManager @Inject constructor(
                 try {
                     uploadManager.stop()
                     delay(1000) // Brief delay
-                    uploadManager.start("your-server-endpoint") // Configure endpoint
+//                    uploadManager.start("your-server-endpoint") // Configure endpoint
+                    uploadManager.start(SpUtils.decodeString(Constant.SERVER_IP, "192.168.1.100")+":"+SpUtils.decodeString(Constant.SERVER_PORT, "50051")) // Configure endpoint
                 } catch (e: Exception) {
                     Log.e(TAG, "Error during reconnect", e)
                 }
@@ -613,7 +617,8 @@ class SmartTransmissionManager @Inject constructor(
             try {
                 uploadManager.stop()
                 delay(1000)
-                uploadManager.start("your-server-endpoint")
+//                uploadManager.start("your-server-endpoint")
+                uploadManager.start(SpUtils.decodeString(Constant.SERVER_IP, "192.168.1.100")+":"+SpUtils.decodeString(Constant.SERVER_PORT, "50051"))
             } catch (e: Exception) {
                 Log.e(TAG, "Error during upload manager restart", e)
             }

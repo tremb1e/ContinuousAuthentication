@@ -44,6 +44,8 @@ import javax.inject.Inject
 import androidx.core.app.NotificationManagerCompat
 import android.os.Process
 import com.continuousauth.service.DataCollectionService
+import com.continuousauth.utils.Constant
+import com.continuousauth.utils.SpUtils
 
 /**
  * 主界面ViewModel
@@ -717,7 +719,6 @@ class MainViewModel @Inject constructor(
     fun checkUsageStatsPermission() {
         viewModelScope.launch {
             val hasPermission = hasUsageStatsPermission()
-            // TODO: 更新权限状态
             updateDebugInfo()
         }
     }
@@ -806,6 +807,9 @@ class MainViewModel @Inject constructor(
                 // 根据测试结果更新连接状态
                 if (result.isReachable) {
                     _connectionStatus.value = ConnectionStatus.CONNECTED
+                    SpUtils.encode(Constant.SERVER_IP, serverIp)
+                    SpUtils.encode(Constant.SERVER_PORT, serverPort)
+                    startDataCollectionService()
                 } else {
                     _connectionStatus.value = ConnectionStatus.DISCONNECTED
                 }

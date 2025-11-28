@@ -40,6 +40,8 @@ import com.continuousauth.network.ConnectionStatus
 import com.continuousauth.privacy.ConsentState
 import com.continuousauth.privacy.DeletionState
 import com.continuousauth.storage.QueueStats
+import com.continuousauth.utils.Constant
+import com.continuousauth.utils.SpUtils
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -67,8 +69,14 @@ fun ServerConfigScreen(viewModel: MainViewModel) {
     val fileQueueStats by viewModel.fileQueueStats.observeAsState(null)
     
     // 本地状态
-    var serverIp by remember { mutableStateOf("192.168.1.100") }
-    var serverPort by remember { mutableStateOf("50051") }
+//    var serverIp by remember { mutableStateOf("192.168.1.100") }
+//    var serverPort by remember { mutableStateOf("50051") }
+    var serverIp by remember {
+        mutableStateOf(SpUtils.decodeString(Constant.SERVER_IP, "192.168.1.100"))
+    }
+    var serverPort by remember {
+        mutableStateOf(SpUtils.decodeString(Constant.SERVER_PORT, "50051"))
+    }
     var isTestingConnection by remember { mutableStateOf(false) }
 
     // 观察隐私相关状态
