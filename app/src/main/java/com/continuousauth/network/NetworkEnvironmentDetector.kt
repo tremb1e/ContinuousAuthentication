@@ -1,12 +1,15 @@
 package com.continuousauth.network
 
 import android.content.Context
+import android.Manifest
+import android.content.pm.PackageManager
 import android.net.*
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.telephony.TelephonyManager
 import android.util.Log
 import androidx.annotation.RequiresApi
+import androidx.core.content.ContextCompat
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
@@ -220,6 +223,11 @@ class NetworkEnvironmentDetector @Inject constructor(
      * 获取网络类型字符串
      */
     private fun getNetworkType(): String {
+        if (!hasPhoneStatePermission()) {
+            Log.w(TAG, "缺少电话状态权限，返回UNKNOWN网络类型")
+            return "UNKNOWN"
+        }
+
         return try {
             @Suppress("DEPRECATION")
             when (telephonyManager.networkType) {
@@ -263,17 +271,31 @@ class NetworkEnvironmentDetector @Inject constructor(
      * 获取蜂窝网络信号强度 (dBm)
      */
     private fun getCellularSignalStrength(): Int {
+        if (!hasPhoneStatePermission()) {
+            Log.w(TAG, "缺少电话状态权限，使用默认信号强度")
+            return -95
+        }
         return try {
             val signalStrength = telephonyManager.signalStrength
             signalStrength?.let {
-                // 使用反射获取信号强度，因为不同Android版本API有差异
-                val method = it.javaClass.getMethod("getDbm")
-                method.invoke(it) as? Int ?: -999
+                val strengths = it.cellSignalStrengths
+                val dbm = strengths.firstOrNull()?.dbm
+                dbm ?: -999
             } ?: -999
         } catch (e: Exception) {
             Log.w(TAG, "获取信号强度异常，使用估算值", e)
             // 返回中等信号强度作为默认值
             -95
+        }
+    }
+
+    private fun hasPhoneStatePermission(): Boolean {
+        val required = mutableListOf(Manifest.permission.READ_PHONE_STATE)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            required.add(Manifest.permission.READ_BASIC_PHONE_STATE)
+        }
+        return required.any { perm ->
+            ContextCompat.checkSelfPermission(context, perm) == PackageManager.PERMISSION_GRANTED
         }
     }
     

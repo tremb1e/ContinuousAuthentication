@@ -204,6 +204,7 @@ class PerformanceMonitorImpl @Inject constructor(
     // CPU使用率计算相关
     private var lastCpuTime = 0L
     private var lastAppCpuTime = 0L
+    private var cpuStatsAvailable = true
     
     
     override suspend fun startMonitoring(intervalMs: Long) {
@@ -329,6 +330,7 @@ class PerformanceMonitorImpl @Inject constructor(
      * 初始化CPU时间基线
      */
     private fun initializeCpuBaseline() {
+        if (!cpuStatsAvailable) return
         try {
             lastCpuTime = getTotalCpuTime()
             lastAppCpuTime = getProcessCpuTime()
@@ -336,6 +338,7 @@ class PerformanceMonitorImpl @Inject constructor(
             Log.w(TAG, "初始化CPU基线失败", e)
             lastCpuTime = 0L
             lastAppCpuTime = 0L
+            cpuStatsAvailable = false
         }
     }
     
@@ -343,6 +346,7 @@ class PerformanceMonitorImpl @Inject constructor(
      * 计算CPU使用率
      */
     private fun calculateCpuUsage(): Double {
+        if (!cpuStatsAvailable) return 0.0
         return try {
             val currentCpuTime = getTotalCpuTime()
             val currentAppCpuTime = getProcessCpuTime()
@@ -367,6 +371,7 @@ class PerformanceMonitorImpl @Inject constructor(
             cpuUsage
         } catch (e: Exception) {
             Log.w(TAG, "计算CPU使用率失败", e)
+            cpuStatsAvailable = false
             0.0
         }
     }
@@ -389,6 +394,7 @@ class PerformanceMonitorImpl @Inject constructor(
             totalTime
         } catch (e: Exception) {
             Log.w(TAG, "获取总CPU时间失败", e)
+            cpuStatsAvailable = false
             0L
         }
     }

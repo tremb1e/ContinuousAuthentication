@@ -114,9 +114,15 @@ class DataCollectionService : Service() {
             return START_NOT_STICKY
         }
         
-        // 创建前台通知
-        val notification = createNotification()
-        startForeground(NOTIFICATION_ID, notification)
+        try {
+            // 创建前台通知
+            val notification = createNotification()
+            startForeground(NOTIFICATION_ID, notification)
+        } catch (e: Exception) {
+            Log.e(TAG, "启动前台服务失败", e)
+            stopSelf()
+            return START_NOT_STICKY
+        }
         
         // 处理不同的命令
         when (intent?.action) {
@@ -132,7 +138,8 @@ class DataCollectionService : Service() {
             }
         }
         
-        return START_STICKY
+        // 避免系统在后台强行重启导致前台服务启动被拦截，使用 NOT_STICKY。
+        return START_NOT_STICKY
     }
     
     override fun onBind(intent: Intent?): IBinder? {
@@ -407,19 +414,12 @@ class DataCollectionService : Service() {
      */
     private fun updateCollectionStrategy(isCharging: Boolean) {
         serviceScope.launch {
-            if (isCharging) {
-                // 充电时可以使用更高频的采集策略
-                smartTransmissionManager.updatePolicy(
-                    batchInterval = 500L, // 500ms批次间隔
-                    compressionEnabled = false // 充电时可以不压缩以节省CPU
-                )
-            } else {
-                // 电池供电时使用节能策略
-                smartTransmissionManager.updatePolicy(
-                    batchInterval = 2000L, // 2秒批次间隔
-                    compressionEnabled = true // 启用压缩以减少传输
-                )
-            }
+            // 按规格保持1秒批次发送以节能，充电状态仅用于日志与后续扩展
+            smartTransmissionManager.updatePolicy(
+                batchInterval = 1000L,
+                compressionEnabled = true
+            )
+            Log.i(TAG, "保持1秒批次发送策略，isCharging=$isCharging")
         }
     }
 }

@@ -23,7 +23,9 @@ class ForegroundAppDetector @Inject constructor(
     private val packageManager = context.packageManager
     
     private var currentForegroundApp = ""
+    private var lastForegroundTimestamp = 0L
     private val mutex = Mutex()
+    private var hasLoggedPermissionWarning = false
     
     /**
      * 获取当前前台应用包名
@@ -34,7 +36,8 @@ class ForegroundAppDetector @Inject constructor(
             usageStatsManager?.let { statsManager ->
                 val currentTime = System.currentTimeMillis()
                 // 扩大查询时间窗口到60秒，确保能捕获到前台应用事件
-                val events = statsManager.queryEvents(currentTime - 60000, currentTime)
+                val windowStart = currentTime - 60000
+                val events = statsManager.queryEvents(windowStart, currentTime)
                 
                 var lastForegroundPackage: String? = null
                 var lastForegroundTime = 0L
@@ -68,10 +71,23 @@ class ForegroundAppDetector @Inject constructor(
                 
                 // 如果找到前台应用，更新缓存并返回
                 lastForegroundPackage?.let { packageName ->
-                    // 过滤系统应用和启动器
-                    if (!isSystemOrLauncherApp(packageName)) {
-                        currentForegroundApp = packageName
-                        android.util.Log.d("ForegroundAppDetector", "检测到前台应用: $packageName")
+                    currentForegroundApp = packageName
+                    lastForegroundTimestamp = lastForegroundTime
+                    android.util.Log.d("ForegroundAppDetector", "检测到前台应用: $packageName")
+                    return currentForegroundApp
+                }
+
+                // 若事件流中未命中，退回到 UsageStats 取最近一次使用的应用
+                val usageStats = statsManager.queryUsageStats(
+                    UsageStatsManager.INTERVAL_DAILY,
+                    windowStart,
+                    currentTime
+                )
+                usageStats?.maxByOrNull { it.lastTimeUsed }?.let { stat ->
+                    if (stat.lastTimeUsed > lastForegroundTimestamp) {
+                        currentForegroundApp = stat.packageName
+                        lastForegroundTimestamp = stat.lastTimeUsed
+                        android.util.Log.d("ForegroundAppDetector", "使用Stats回退检测前台应用: ${stat.packageName}")
                         return currentForegroundApp
                     }
                 }
@@ -83,22 +99,16 @@ class ForegroundAppDetector @Inject constructor(
             }
         } catch (e: SecurityException) {
             // 没有PACKAGE_USAGE_STATS权限
-            android.util.Log.w("ForegroundAppDetector", "缺少PACKAGE_USAGE_STATS权限", e)
+            if (!hasLoggedPermissionWarning) {
+                android.util.Log.w("ForegroundAppDetector", "缺少PACKAGE_USAGE_STATS权限，前台应用信息将为空")
+                hasLoggedPermissionWarning = true
+            }
+            currentForegroundApp = "permission_missing"
         } catch (e: Exception) {
             android.util.Log.e("ForegroundAppDetector", "获取前台应用失败", e)
         }
         
         return currentForegroundApp // 返回缓存的值而不是空字符串
-    }
-    
-    /**
-     * 判断是否为系统应用或启动器
-     */
-    private fun isSystemOrLauncherApp(packageName: String): Boolean {
-        return packageName.startsWith("com.android.") ||
-               packageName == "android" ||
-               packageName.contains("launcher") ||
-               packageName.contains("systemui")
     }
     
     /**
