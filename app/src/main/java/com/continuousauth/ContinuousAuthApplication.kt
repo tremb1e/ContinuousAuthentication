@@ -11,6 +11,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import javax.inject.Inject
+import com.continuousauth.monitor.SystemMonitor
 
 /**
  * 持续认证应用主类
@@ -21,7 +22,9 @@ class ContinuousAuthApplication : Application() {
     
     @Inject
     lateinit var timeSync: EnhancedTimeSync
-    
+    @Inject
+    lateinit var systemMonitor: SystemMonitor
+
     private val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
     override fun onCreate() {
@@ -31,6 +34,9 @@ class ContinuousAuthApplication : Application() {
         
         // 初始化时间同步服务
         initializeTimeSync()
+        // 启动系统监控，这是关键修复
+        systemMonitor.startMonitoring()
+
         val builder = StartupManager.Builder()
         builder.addStartup(MMKVStartUp())
             .build(this)
