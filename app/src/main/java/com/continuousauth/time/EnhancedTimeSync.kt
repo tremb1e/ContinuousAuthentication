@@ -23,7 +23,8 @@ class EnhancedTimeSync @Inject constructor(
     
     companion object {
         private const val TAG = "EnhancedTimeSync"
-        private const val NTP_SERVER = "pool.ntp.org"
+//        private const val NTP_SERVER = "pool.ntp.org"
+        private const val NTP_SERVER = "cn.pool.ntp.org"
         private const val NTP_PORT = 123
         private const val NTP_PACKET_SIZE = 48
         private const val NTP_TIMESTAMP_OFFSET = 2208988800L // 1900-1970的秒数差
