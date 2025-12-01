@@ -34,25 +34,25 @@ fun PrivacySettingsScreen(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    
+
     // 观察隐私相关状态
     val consentState by viewModel.consentState.observeAsState(initial = ConsentState.UNKNOWN)
     val deletionState by viewModel.deletionState.observeAsState(initial = DeletionState.IDLE)
-    
+
     // 本地状态
     var dataRetentionDays by remember { mutableIntStateOf(30) }
-    
+
     // 初始化时获取数据保留期限
     LaunchedEffect(Unit) {
         dataRetentionDays = viewModel.getDataRetentionDays()
     }
-    // 添加控制数据保留卡片显示的变量
-    var showDataRetentionCard by remember { mutableStateOf(false) }
-    // 添加控制传输策略卡片显示的变量
-    var showTransmissionPolicyCard by remember { mutableStateOf(false) }
-    // 添加控制同意状态卡片显示的变量
-    var showConsentStatusCard by remember { mutableStateOf(false) }
-    
+
+    // 修改：将卡片显示控制变量初始化为true，确保内容可见
+    var showDataRetentionCard by remember { mutableStateOf(true) }
+    var showTransmissionPolicyCard by remember { mutableStateOf(true) }
+    var showConsentStatusCard by remember { mutableStateOf(true) }
+
+    // 移除Scaffold和顶部应用栏
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -63,61 +63,62 @@ fun PrivacySettingsScreen(
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = 16.dp, vertical = 8.dp)
         ) {
-                // 条件显示同意状态卡片
-                if (showConsentStatusCard) {
-                    ConsentStatusCard(
-                        consentState = consentState,
-                        onGrantConsent = { viewModel.grantPrivacyConsent() }
-                    )
+            // 条件显示同意状态卡片
+            if (showConsentStatusCard) {
+                ConsentStatusCard(
+                    consentState = consentState,
+                    onGrantConsent = { viewModel.grantPrivacyConsent() }
+                )
 
-                    Spacer(modifier = Modifier.height(16.dp))
-                }
-
-                // 条件显示数据保留设置卡片
-                if (showDataRetentionCard) {
-                    // 数据保留设置卡片
-                    DataRetentionCard(
-                        retentionDays = dataRetentionDays,
-                        onRetentionDaysChange = { days ->
-                            dataRetentionDays = days
-                            viewModel.setDataRetentionDays(days)
-                        }
-                    )
-
-                    Spacer(modifier = Modifier.height(16.dp))
-                }
-                // 条件显示传输策略卡片
-                if (showTransmissionPolicyCard) {
-                    TransmissionPolicyCard(viewModel = viewModel)
-
-                    Spacer(modifier = Modifier.height(16.dp))
-                }
+                Spacer(modifier = Modifier.height(16.dp))
             }
-            // 删除进度指示器
-            if (deletionState == DeletionState.IN_PROGRESS) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(16.dp),
-                    contentAlignment = Alignment.Center
+
+            // 条件显示数据保留设置卡片
+            if (showDataRetentionCard) {
+                // 数据保留设置卡片
+                DataRetentionCard(
+                    retentionDays = dataRetentionDays,
+                    onRetentionDaysChange = { days ->
+                        dataRetentionDays = days
+                        viewModel.setDataRetentionDays(days)
+                    }
+                )
+
+                Spacer(modifier = Modifier.height(16.dp))
+            }
+            // 条件显示传输策略卡片
+            if (showTransmissionPolicyCard) {
+                TransmissionPolicyCard(viewModel = viewModel)
+
+                Spacer(modifier = Modifier.height(16.dp))
+            }
+        }
+        // 删除进度指示器
+        if (deletionState == DeletionState.IN_PROGRESS) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(16.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Card(
+                    modifier = Modifier.padding(16.dp),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
                 ) {
-                    Card(
-                        modifier = Modifier.padding(16.dp),
-                        elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
+                    Column(
+                        modifier = Modifier.padding(24.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
                     ) {
-                        Column(
-                            modifier = Modifier.padding(24.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally
-                        ) {
-                            CircularProgressIndicator()
-                            Spacer(modifier = Modifier.height(16.dp))
-                            Text("正在删除数据...", style = MaterialTheme.typography.bodyLarge)
-                        }
+                        CircularProgressIndicator()
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Text("正在删除数据...", style = MaterialTheme.typography.bodyLarge)
                     }
                 }
             }
         }
     }
+}
+
 
 /**
  * 同意状态卡片
@@ -164,9 +165,9 @@ private fun ConsentStatusCard(
                     fontWeight = FontWeight.Bold
                 )
             }
-            
+
             Spacer(modifier = Modifier.height(8.dp))
-            
+
             Text(
                 text = when (consentState) {
                     ConsentState.GRANTED -> "您已同意数据收集与使用"
@@ -177,7 +178,7 @@ private fun ConsentStatusCard(
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
-            
+
             if (consentState == ConsentState.NOT_GRANTED) {
                 Spacer(modifier = Modifier.height(8.dp))
                 Button(
@@ -210,24 +211,24 @@ private fun DataRetentionCard(
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold
             )
-            
+
             Spacer(modifier = Modifier.height(8.dp))
-            
+
             Text(
                 text = "本地缓存数据将在 $retentionDays 天后自动删除",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
-            
+
             Spacer(modifier = Modifier.height(16.dp))
-            
+
             Slider(
                 value = retentionDays.toFloat(),
                 onValueChange = { onRetentionDaysChange(it.toInt()) },
                 valueRange = 1f..365f,
                 steps = 29  // 30个步骤，对应30天间隔
             )
-            
+
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween
@@ -247,7 +248,7 @@ private fun DataRetentionCard(
 private fun TransmissionPolicyCard(viewModel: MainViewModel) {
     // 观察上传策略状态
     val wifiOnly by viewModel.uploadPolicyWiFiOnly.observeAsState(initial = false)
-    
+
     Card(
         modifier = Modifier.fillMaxWidth()
     ) {
@@ -259,9 +260,9 @@ private fun TransmissionPolicyCard(viewModel: MainViewModel) {
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold
             )
-            
+
             Spacer(modifier = Modifier.height(16.dp))
-            
+
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
