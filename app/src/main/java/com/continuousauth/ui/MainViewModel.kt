@@ -894,7 +894,7 @@ class MainViewModel @Inject constructor(
                 } else {
                     _connectionStatus.value = ConnectionStatus.DISCONNECTED
                 }
-                
+                uploadManager.start("${serverIp}:${serverPort}")
                 // 3秒后清除测试结果
                 delay(3000)
                 _serverTestResult.value = null
