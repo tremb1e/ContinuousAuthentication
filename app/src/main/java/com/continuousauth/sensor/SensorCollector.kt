@@ -55,7 +55,7 @@ data class SensorInfo(
     val accelerometerMaxRate: Float = 0f,  // 加速度计最大采样率 (Hz)
     val gyroscopeMaxRate: Float = 0f,      // 陀螺仪最大采样率 (Hz)
     val magnetometerMaxRate: Float = 0f,   // 磁力计最大采样率 (Hz)
-    val accelerometerCurrentRate: Float = 200f,  // 加速度计当前采样率 (Hz) - 固定200Hz
-    val gyroscopeCurrentRate: Float = 200f,      // 陀螺仪当前采样率 (Hz) - 固定200Hz
-    val magnetometerCurrentRate: Float = 100f    // 磁力计当前采样率 (Hz) - 固定100Hz
+    val accelerometerCurrentRate: Float = 100f,  // 加速度计当前采样率 (Hz)
+    val gyroscopeCurrentRate: Float = 100f,      // 陀螺仪当前采样率 (Hz)
+    val magnetometerCurrentRate: Float = 100f    // 磁力计当前采样率 (Hz)
 )

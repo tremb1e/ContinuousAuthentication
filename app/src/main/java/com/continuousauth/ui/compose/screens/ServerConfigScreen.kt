@@ -78,6 +78,12 @@ fun ServerConfigScreen(viewModel: MainViewModel) {
         mutableStateOf(SpUtils.decodeString(Constant.SERVER_PORT, "50051"))
     }
     var isTestingConnection by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        val saved = viewModel.getServerConfig()
+        val displayHost = if (saved.scheme == "https") "https://${saved.host}" else saved.host
+        serverIp = displayHost
+        serverPort = saved.port.toString()
+    }
 
     // 观察隐私相关状态
     val consentState by viewModel.consentState.observeAsState(initial = ConsentState.UNKNOWN)
@@ -145,6 +151,8 @@ fun ServerConfigScreen(viewModel: MainViewModel) {
                 serverTestResult = serverTestResult,
                 onTestConnection = {
                     isTestingConnection = true
+                    val parsedPort = serverPort.toIntOrNull()
+                    viewModel.saveServerConfig(serverIp, parsedPort)
                     viewModel.testServerConnection(serverIp, serverPort)
                     scope.launch {
                         delay(3500) // 等待测试完成
@@ -166,6 +174,8 @@ fun ServerConfigScreen(viewModel: MainViewModel) {
                     if (isEncryptedUploading) {
                         viewModel.stopEncryptedUpload()
                     } else {
+                        val parsedPort = serverPort.toIntOrNull()
+                        viewModel.saveServerConfig(serverIp, parsedPort)
                         viewModel.startEncryptedUpload()
                     }
                 }
@@ -945,7 +955,7 @@ fun EncryptedUploadControlCard(
                     modifier = Modifier
                         .weight(1f)
                         .height(56.dp),
-                    enabled = !isEncryptedUploading && connectionStatus == ConnectionStatus.CONNECTED,
+                    enabled = !isEncryptedUploading,
                     colors = ButtonDefaults.buttonColors(
                         containerColor = ExtendedColors.success
                     ),
@@ -1369,5 +1379,3 @@ private fun formatBytes(bytes: Long): String {
         else -> String.format("%.1f GB", bytes / (1024.0 * 1024.0 * 1024.0))
     }
 }
-
-

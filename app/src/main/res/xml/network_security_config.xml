@@ -31,8 +31,11 @@
         </trust-anchors>
     </domain-config>
     
-    <!-- 全局安全配置 -->
-    <base-config cleartextTrafficPermitted="false">
+    <!-- 全局安全配置
+         说明：默认允许明文流量，用于本地/自建HTTP测试服务器。
+         生产域名（上方的 domain-config）仍强制 TLS 并启用证书固定，不受此影响。
+    -->
+    <base-config cleartextTrafficPermitted="true">
         <trust-anchors>
             <!-- 生产环境仅信任系统证书 -->
             <certificates src="system"/>

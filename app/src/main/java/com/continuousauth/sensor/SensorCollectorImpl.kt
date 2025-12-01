@@ -15,15 +15,14 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlin.math.max
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import javax.inject.Inject
@@ -56,13 +55,6 @@ class SensorCollectorImpl @Inject constructor(
     // 数据流通道
     private val sensorDataChannel = Channel<SensorSample>(Channel.UNLIMITED)
     
-    // 窗口化批处理协程（1秒窗口）
-    private var windowBatchingJob: Job? = null
-    
-    // 当前窗口的样本缓存
-    private val currentWindowSamples = mutableListOf<SensorSample>()
-    private val windowMutex = Mutex()
-    
     // 状态管理
     private val isCollecting = AtomicBoolean(false)
     private val collectionMutex = Mutex()
@@ -70,11 +62,12 @@ class SensorCollectorImpl @Inject constructor(
     // 序列号生成器
     private val sequenceNumber = AtomicLong(0L)
     
-    // 硬件采样率配置（微秒）
-    // 根据要求：加速度计和陀螺仪200Hz（5000微秒），磁力计100Hz（10000微秒）
-    private val ACCELEROMETER_SAMPLING_PERIOD_US = 5000  // 200Hz
-    private val GYROSCOPE_SAMPLING_PERIOD_US = 5000     // 200Hz
-    private val MAGNETOMETER_SAMPLING_PERIOD_US = 10000  // 100Hz
+    // 目标采样率 100Hz（10ms），三类传感器保持一致，硬件达标时强制使用
+    private val TARGET_SAMPLING_RATE_HZ = 100
+    private val TARGET_SAMPLING_PERIOD_US = 1_000_000 / TARGET_SAMPLING_RATE_HZ
+    private var accelerometerSamplingPeriodUs = TARGET_SAMPLING_PERIOD_US
+    private var gyroscopeSamplingPeriodUs = TARGET_SAMPLING_PERIOD_US
+    private var magnetometerSamplingPeriodUs = TARGET_SAMPLING_PERIOD_US
     private var maxReportLatencyUs: Int = 0
     
     override suspend fun startCollection() {
@@ -88,18 +81,14 @@ class SensorCollectorImpl @Inject constructor(
             
             // 注册传感器监听器（使用固定采样率）
             val registrationResults = listOf(
-                registerSensorIfAvailable(accelerometer, "加速度计", ACCELEROMETER_SAMPLING_PERIOD_US),
-                registerSensorIfAvailable(gyroscope, "陀螺仪", GYROSCOPE_SAMPLING_PERIOD_US), 
-                registerSensorIfAvailable(magnetometer, "磁力计", MAGNETOMETER_SAMPLING_PERIOD_US)
+                registerSensorIfAvailable(accelerometer, "加速度计", accelerometerSamplingPeriodUs),
+                registerSensorIfAvailable(gyroscope, "陀螺仪", gyroscopeSamplingPeriodUs), 
+                registerSensorIfAvailable(magnetometer, "磁力计", magnetometerSamplingPeriodUs)
             )
             
             if (registrationResults.any { it }) {
                 isCollecting.set(true)
-                
-                // 启动窗口化批处理协程（1秒窗口）
-                startWindowBatching()
-                
-                android.util.Log.i("SensorCollector", "传感器采集已启动（1秒窗口批处理）")
+                android.util.Log.i("SensorCollector", "传感器采集已启动（目标100Hz）")
             } else {
                 throw IllegalStateException("没有可用的传感器")
             }
@@ -114,10 +103,6 @@ class SensorCollectorImpl @Inject constructor(
             
             sensorManager.unregisterListener(this)
             isCollecting.set(false)
-            
-            // 停止窗口化批处理
-            windowBatchingJob?.cancel()
-            windowBatchingJob = null
             
             // 清空环形缓冲区
             ringBuffer.clear()
@@ -160,10 +145,10 @@ class SensorCollectorImpl @Inject constructor(
             accelerometerMaxRate = calculateMaxRate(accelerometer),
             gyroscopeMaxRate = calculateMaxRate(gyroscope),
             magnetometerMaxRate = calculateMaxRate(magnetometer),
-            // 添加固定的采样率信息
-            accelerometerCurrentRate = 200f,  // 固定200Hz
-            gyroscopeCurrentRate = 200f,      // 固定200Hz  
-            magnetometerCurrentRate = 100f    // 固定100Hz
+            // 当前有效采样率（根据硬件能力可能 <=100Hz）
+            accelerometerCurrentRate = calculateCurrentRate(accelerometerSamplingPeriodUs),
+            gyroscopeCurrentRate = calculateCurrentRate(gyroscopeSamplingPeriodUs),
+            magnetometerCurrentRate = calculateCurrentRate(magnetometerSamplingPeriodUs)
         )
     }
     
@@ -202,10 +187,7 @@ class SensorCollectorImpl @Inject constructor(
             
             val sample = pooledSample.toSensorSample()
             
-            // 添加到当前窗口缓存
-            windowMutex.withLock {
-                currentWindowSamples.add(sample)
-            }
+            sensorDataChannel.trySend(sample)
             
             // 释放对象回池中
             pooledSample.release()
@@ -221,26 +203,38 @@ class SensorCollectorImpl @Inject constructor(
     
     /**
      * 检测并应用最优采样率
-     * 使用固定采样率：加速度计和陀螺仪200Hz，磁力计100Hz
+     * 三类传感器目标 100Hz，硬件达标时强制 100Hz，不因省电或锁屏降级
      */
     private fun detectOptimalSamplingRate() {
+        accelerometerSamplingPeriodUs = TARGET_SAMPLING_PERIOD_US
+        gyroscopeSamplingPeriodUs = TARGET_SAMPLING_PERIOD_US
+        magnetometerSamplingPeriodUs = TARGET_SAMPLING_PERIOD_US
+
         // 根据FIFO大小动态设置maxReportLatencyUs以充分利用硬件FIFO队列
-        val minFifoSize = minOf(
-            accelerometer?.fifoMaxEventCount ?: Int.MAX_VALUE,
-            gyroscope?.fifoMaxEventCount ?: Int.MAX_VALUE,
-            magnetometer?.fifoMaxEventCount ?: Int.MAX_VALUE
-        )
+        val fifoSizes = listOfNotNull(
+            accelerometer?.fifoMaxEventCount,
+            gyroscope?.fifoMaxEventCount,
+            magnetometer?.fifoMaxEventCount
+        ).filter { it > 0 }
+        val minFifoSize = fifoSizes.minOrNull() ?: 0
+        val minSamplingPeriodUs = TARGET_SAMPLING_PERIOD_US
         
-        if (minFifoSize > 0 && minFifoSize != Int.MAX_VALUE) {
-            // 根据FIFO大小和采样率计算合适的延迟
-            // 使用200Hz作为基准（5ms间隔），FIFO可以缓存的时间
-            val samplingIntervalMs = 5 // 200Hz
-            maxReportLatencyUs = (minFifoSize * samplingIntervalMs * 1000).coerceAtMost(1000000) // 最大1秒
+        if (minFifoSize > 0) {
+            // 根据FIFO大小和采样周期计算合适的延迟，最长不超过1秒
+            maxReportLatencyUs = (minFifoSize * minSamplingPeriodUs)
+                .coerceAtMost(1_000_000)
             
-            android.util.Log.i("SensorCollector", 
-                "检测到最小FIFO大小: $minFifoSize, 设置maxReportLatencyUs: ${maxReportLatencyUs}us")
-            android.util.Log.i("SensorCollector", 
-                "采样率配置: 加速度计200Hz, 陀螺仪200Hz, 磁力计100Hz")
+            android.util.Log.i(
+                "SensorCollector", 
+                "检测到最小FIFO大小: $minFifoSize, 设置maxReportLatencyUs: ${maxReportLatencyUs}us"
+            )
+            
+            android.util.Log.i(
+                "SensorCollector", 
+                "采样率配置: 加速度计${calculateCurrentRate(accelerometerSamplingPeriodUs)}Hz, " +
+                "陀螺仪${calculateCurrentRate(gyroscopeSamplingPeriodUs)}Hz, " +
+                "磁力计${calculateCurrentRate(magnetometerSamplingPeriodUs)}Hz"
+            )
         } else {
             maxReportLatencyUs = 0 // 实时报告
             android.util.Log.i("SensorCollector", "传感器不支持批处理，使用实时模式")
@@ -276,40 +270,9 @@ class SensorCollectorImpl @Inject constructor(
             false
         }
     }
-    
-    /**
-     * 启动窗口化批处理协程
-     * 每1秒将窗口内的样本打包发送
-     */
-    private fun startWindowBatching() {
-        windowBatchingJob = sensorScope.launch {
-            while (isCollecting.get()) {
-                try {
-                    // 等待1秒窗口
-                    delay(1000)
-                    
-                    // 收集当前窗口的样本
-                    val windowSamples = windowMutex.withLock {
-                        val samples = currentWindowSamples.toList()
-                        currentWindowSamples.clear()
-                        samples
-                    }
-                    
-                    if (windowSamples.isNotEmpty()) {
-                        android.util.Log.d("SensorCollector", 
-                            "窗口批处理: 收集 ${windowSamples.size} 个样本")
-                        
-                        // 将样本批量发送到数据流进行后续处理
-                        windowSamples.forEach { sample ->
-                            sensorDataChannel.trySend(sample)
-                        }
-                    }
-                } catch (e: Exception) {
-                    android.util.Log.e("SensorCollector", "窗口批处理异常", e)
-                    delay(1000) // 出错后延迟1秒再试
-                }
-            }
-        }
+
+    private fun calculateCurrentRate(periodUs: Int): Float {
+        return if (periodUs > 0) 1_000_000f / periodUs else 0f
     }
     
     /**

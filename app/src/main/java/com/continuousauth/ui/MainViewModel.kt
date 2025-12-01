@@ -14,6 +14,7 @@ import androidx.lifecycle.LiveData
 import androidx.lifecycle.MutableLiveData
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.continuousauth.core.SmartTransmissionManager
 import com.continuousauth.monitor.MemoryMonitor
 import com.continuousauth.monitor.SystemMonitor
 import com.continuousauth.network.ConnectionStatus
@@ -32,8 +33,10 @@ import com.continuousauth.storage.QueueStats
 import com.continuousauth.privacy.PrivacyManager
 import com.continuousauth.privacy.ConsentState
 import com.continuousauth.privacy.DeletionState
+import com.continuousauth.service.DataCollectionService
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -65,11 +68,15 @@ class MainViewModel @Inject constructor(
     private val fileQueueManager: FileQueueManager,
     private val tlsSecurityManager: TlsSecurityManager,
     private val privacyManager: PrivacyManager,
-    private val systemMonitor: SystemMonitor
+    private val systemMonitor: SystemMonitor,
+    private val smartTransmissionManager: SmartTransmissionManager
 ) : ViewModel() {
     
     companion object {
         private const val TAG = "MainViewModel"
+        private const val DEFAULT_SERVER_IP = "10.0.2.2"
+        private const val DEFAULT_SERVER_PORT = 8000
+        private const val DEFAULT_SERVER_SCHEME = "http"
     }
     
     // 采集状态
@@ -133,11 +140,19 @@ class MainViewModel @Inject constructor(
     
     private val _sessionDuration = MutableLiveData<String>()
     val sessionDuration: LiveData<String> = _sessionDuration
-    
+
+    // 轻量链路统计更新任务
+    private var liteStatsJob: Job? = null
+
     // 服务器测试结果
     private val _serverTestResult = MutableLiveData<String?>()
     val serverTestResult: LiveData<String?> = _serverTestResult
-    
+
+    // server config persistence
+    private val serverPrefs by lazy {
+        context.getSharedPreferences("server_config", Context.MODE_PRIVATE)
+    }
+
     // TLS配置信息
     private val _tlsConfigInfo = MutableLiveData<TlsConfigInfo?>()
     val tlsConfigInfo: LiveData<TlsConfigInfo?> = _tlsConfigInfo
@@ -196,7 +211,10 @@ class MainViewModel @Inject constructor(
         
         // 启动内存监控
         startMemoryMonitoring()
-        
+
+        // 启动系统监控，确保状态流可用
+        systemMonitor.startMonitoring()
+
         // 初始状态刷新
         refreshStatus()
         
@@ -268,12 +286,62 @@ class MainViewModel @Inject constructor(
         }
     }
     
+    data class ServerConfig(val host: String, val port: Int, val scheme: String)
+
+    /**
+     * 读取已保存的服务器配置，若没有则返回默认值。
+     */
+    fun getServerConfig(): ServerConfig {
+        val host = serverPrefs.getString("server_ip", DEFAULT_SERVER_IP)?.trim().orEmpty()
+        val port = serverPrefs.getInt("server_port", DEFAULT_SERVER_PORT)
+        val scheme = serverPrefs.getString("server_scheme", DEFAULT_SERVER_SCHEME)?.lowercase()
+            ?: DEFAULT_SERVER_SCHEME
+        return ServerConfig(
+            host = host.ifBlank { DEFAULT_SERVER_IP },
+            port = if (port > 0) port else DEFAULT_SERVER_PORT,
+            scheme = if (scheme in listOf("http", "https")) scheme else DEFAULT_SERVER_SCHEME
+        )
+    }
+
+    /**
+     * 解析并保存服务器配置，支持输入带协议或端口的地址。
+     */
+    fun saveServerConfig(ipInput: String, portInput: Int?) {
+        // 允许输入 http://host:port 或 https://host:port
+        val trimmed = ipInput.trim()
+        var scheme = DEFAULT_SERVER_SCHEME
+        var host = trimmed
+        var port = portInput ?: DEFAULT_SERVER_PORT
+
+        try {
+            if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
+                val uri = android.net.Uri.parse(trimmed)
+                if (!uri.host.isNullOrBlank()) host = uri.host!!
+                if (uri.port != -1) port = uri.port
+                scheme = uri.scheme?.lowercase() ?: DEFAULT_SERVER_SCHEME
+            }
+        } catch (_: Exception) {
+            // ignore, fall back to defaults above
+        }
+
+        serverPrefs.edit()
+            .putString("server_ip", host)
+            .putInt("server_port", port)
+            .putString("server_scheme", scheme)
+            .apply()
+    }
+
     /**
      * 开始加密数据上传
      */
     fun startEncryptedUpload() {
         viewModelScope.launch {
             try {
+                if (_isEncryptedUploading.value == true) {
+                    Log.w(TAG, "加密上传已在运行中")
+                    return@launch
+                }
+
                 // 检查隐私协议是否已同意
                 if (privacyManager.consentState.value != ConsentState.GRANTED) {
                     _errorMessage.value = "请先同意隐私协议才能开始数据采集"
@@ -282,37 +350,36 @@ class MainViewModel @Inject constructor(
                 }
                 
                 _collectionStatus.value = "STARTING"
-                
+                _connectionStatus.value = ConnectionStatus.CONNECTING
+
+                // 读取服务器配置，确保上传器使用用户输入的地址
+                val serverConfig = getServerConfig()
+                if (serverConfig.host.isBlank() || serverConfig.port <= 0) {
+                    _collectionStatus.value = "ERROR"
+                    _errorMessage.value = "服务器配置无效，请检查IP和端口"
+                    return@launch
+                }
+
                 // 开始新的会话
                 val sessionId = userIdManager.startNewSession()
                 _sessionId.value = sessionId
                 _sessionStartTime.value = userIdManager.getSessionStartTime()
+
+                // 确保前台服务运行，避免切后台被系统限制网络/传感器
+                startForegroundCollectionService()
+
+                // 启动轻量化的传输管理器（传感器采集 + 加密 + HTTP上传）
+                smartTransmissionManager.start()
                 
-                // 智能传输管理器已移除，使用窗口化批处理策略
-                
-                // TODO: 启动传感器采集
-                // sensorCollector.startCollection()
-                
-                // TODO: 启动上传管理器
-                // val success = uploadManager.start("server_endpoint")
-                
-                // 模拟启动成功
-                val success = true
-                
-                if (success) {
-                    _collectionStatus.value = "RUNNING"
-                    _isCollectionRunning.value = true
-                    _isEncryptedUploading.value = true  // 启动后进入"加密上传中"状态
-                    updateSensorStatus(running = true)
-                    _connectionStatus.value = ConnectionStatus.CONNECTED
-                    
-                    // 开始更新会话时长
-                    startSessionDurationUpdate()
-                } else {
-                    _collectionStatus.value = "ERROR"
-                    _errorMessage.value = "启动加密数据上传失败"
-                    userIdManager.endSession()
-                }
+                _collectionStatus.value = "RUNNING"
+                _isCollectionRunning.value = true
+                _isEncryptedUploading.value = true  // 启动后进入"加密上传中"状态
+                updateSensorStatus(running = true)
+                _connectionStatus.value = ConnectionStatus.CONNECTED
+
+                // 开始更新会话时长与上传统计
+                startSessionDurationUpdate()
+                startLiteStatsUpdates()
                 
                 updateDebugInfo()
                 
@@ -433,13 +500,8 @@ class MainViewModel @Inject constructor(
                 _collectionStatus.value = "STOPPING"
                 
                 // 停止智能传输管理器
-                // 停止智能传输管理器（已移除）
-                
-                // TODO: 停止传感器采集
-                // sensorCollector.stopCollection()
-                
-                // TODO: 停止上传管理器
-                // uploadManager.stop()
+                smartTransmissionManager.stop()
+                liteStatsJob?.cancel()
                 
                 // 结束会话
                 userIdManager.endSession()
@@ -452,7 +514,11 @@ class MainViewModel @Inject constructor(
                 _isEncryptedUploading.value = false  // 停止后回到"未加密上传"状态
                 updateSensorStatus(running = false)
                 _connectionStatus.value = ConnectionStatus.DISCONNECTED
-                
+                _transmissionStats.value = TransmissionStats()
+                _fileQueueStats.value = QueueStats()
+
+                stopForegroundCollectionService()
+
                 updateDebugInfo()
                 
             } catch (e: Exception) {
@@ -488,16 +554,26 @@ class MainViewModel @Inject constructor(
             try {
                 // 更新网络状态
                 _networkState.value = networkEnvironmentDetector.getCurrentNetworkState()
-                
-                // 获取上传状态
-                val uploadStatus = uploadManager.getUploadStatus()
-                _connectionStatus.value = uploadStatus.connectionStatus
-                
-                // 更新文件队列统计
-                uploadStatus.fileQueueStats?.let {
-                    _fileQueueStats.value = it
+
+                val liteSnapshot = smartTransmissionManager.getUploadSnapshot()
+                _connectionStatus.value = if (liteSnapshot.isRunning) {
+                    ConnectionStatus.CONNECTED
+                } else {
+                    ConnectionStatus.DISCONNECTED
                 }
-                
+
+                // 更新文件队列统计（lite链路下使用内存计数模拟）
+                val pending = (liteSnapshot.processedPackets - liteSnapshot.uploadedPackets)
+                    .coerceAtLeast(0)
+                    .toInt()
+                _fileQueueStats.value = QueueStats(
+                    totalPackets = liteSnapshot.processedPackets.toInt(),
+                    pendingPackets = pending,
+                    uploadedPackets = liteSnapshot.uploadedPackets.toInt(),
+                    corruptedPackets = liteSnapshot.failedPackets.toInt(),
+                    totalSizeBytes = 0
+                )
+
                 // 更新传输统计
                 updateTransmissionStats()
                 
@@ -528,14 +604,17 @@ class MainViewModel @Inject constructor(
      * 更新传输统计
      */
     private fun updateTransmissionStats() {
-        // TODO: 从实际模块获取统计数据
-        val stats = TransmissionStats(
-            isFastMode = false, // TODO: 从TransmissionController获取
-            packetsSent = 0L,   // TODO: 从UploadManager获取
-            packetsPending = 0,  // TODO: 从缓冲区获取
-            lastAckLatency = null // TODO: 从ConnectionStats获取
+        val snapshot = smartTransmissionManager.getUploadSnapshot()
+        val pending = (snapshot.processedPackets - snapshot.uploadedPackets)
+            .coerceAtLeast(0)
+            .toInt()
+
+        _transmissionStats.value = TransmissionStats(
+            isFastMode = false,
+            packetsSent = snapshot.uploadedPackets,
+            packetsPending = pending,
+            lastAckLatency = null
         )
-        _transmissionStats.value = stats
     }
     
     /**
@@ -794,11 +873,14 @@ class MainViewModel @Inject constructor(
         viewModelScope.launch {
             try {
                 _serverTestResult.value = "正在测试服务器连接..."
-                
-                val port = serverPort.toIntOrNull() ?: 50051
+                val port = serverPort.toIntOrNull()
+                saveServerConfig(serverIp, port)
+
+                val cfg = getServerConfig()
+
                 val result = serverConnectionTester.testServerConnection(
-                    serverIp = serverIp,
-                    serverPort = port,
+                    serverIp = cfg.host,
+                    serverPort = cfg.port,
                     testGrpc = true
                 )
                 
@@ -839,7 +921,43 @@ class MainViewModel @Inject constructor(
             }
         }
     }
-    
+
+    /**
+     * 启动轻量链路上传统计刷新，驱动UI显示真实的发送/队列数量。
+     */
+    private fun startLiteStatsUpdates() {
+        liteStatsJob?.cancel()
+        liteStatsJob = viewModelScope.launch {
+            while (_isEncryptedUploading.value == true) {
+                val snapshot = smartTransmissionManager.getUploadSnapshot()
+                val pending = (snapshot.processedPackets - snapshot.uploadedPackets)
+                    .coerceAtLeast(0)
+                    .toInt()
+
+                _transmissionStats.postValue(
+                    TransmissionStats(
+                        isFastMode = false,
+                        packetsSent = snapshot.uploadedPackets,
+                        packetsPending = pending,
+                        lastAckLatency = null
+                    )
+                )
+
+                _fileQueueStats.postValue(
+                    QueueStats(
+                        totalPackets = snapshot.processedPackets.toInt(),
+                        pendingPackets = pending,
+                        uploadedPackets = snapshot.uploadedPackets.toInt(),
+                        corruptedPackets = snapshot.failedPackets.toInt(),
+                        totalSizeBytes = 0
+                    )
+                )
+
+                delay(1000)
+            }
+        }
+    }
+
     /**
      * 清除错误消息
      */
@@ -977,9 +1095,40 @@ class MainViewModel @Inject constructor(
         // 清理智能传输管理器（已移除）
         performanceMonitor.cleanup()
         memoryMonitor.cleanup()
+        liteStatsJob?.cancel()
         viewModelScope.launch {
             performanceMonitor.stopMonitoring()
             memoryMonitor.stopMonitoring()
+        }
+    }
+
+    /**
+     * 启动数据采集前台服务，避免后台被系统限制网络/传感器。
+     */
+    private fun startForegroundCollectionService() {
+        try {
+            val intent = Intent(context, DataCollectionService::class.java).apply {
+                action = DataCollectionService.ACTION_START_COLLECTION
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(intent)
+            } else {
+                context.startService(intent)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "启动前台采集服务失败", e)
+        }
+    }
+
+    /**
+     * 停止数据采集前台服务。
+     */
+    private fun stopForegroundCollectionService() {
+        try {
+            val intent = Intent(context, DataCollectionService::class.java)
+            context.stopService(intent)
+        } catch (e: Exception) {
+            Log.e(TAG, "停止前台采集服务失败", e)
         }
     }
 }

@@ -10,6 +10,7 @@ import android.os.Debug
 import android.os.SystemClock
 import android.security.keystore.KeyProperties
 import androidx.annotation.RequiresApi
+import com.continuousauth.core.SmartTransmissionManager
 import com.continuousauth.crypto.CryptoBox
 import com.continuousauth.crypto.EnvelopeCryptoBox
 import com.continuousauth.network.Uploader
@@ -32,7 +33,8 @@ class SystemMonitor @Inject constructor(
     private val uploader: Uploader,
     private val fileQueueManager: FileQueueManager,
     private val cryptoBox: EnvelopeCryptoBox,
-    private val enhancedTimeSync: com.continuousauth.time.EnhancedTimeSync
+    private val enhancedTimeSync: com.continuousauth.time.EnhancedTimeSync,
+    private val smartTransmissionManager: SmartTransmissionManager
 ) {
     
     // 传输状态数据类
@@ -230,15 +232,27 @@ class SystemMonitor @Inject constructor(
      */
     private suspend fun monitorTransmissionStatus() {
         while (currentCoroutineContext().isActive) {
-            // 获取当前网络状态和上传队列大小
-            val isConnected = uploader.isConnected()
-            val queueSize = fileQueueManager.getQueueSize()
+            val grpcConnected = uploader.isConnected()
+            val liteSnapshot = smartTransmissionManager.getUploadSnapshot()
+
+            val liteQueueEstimate = (liteSnapshot.processedPackets - liteSnapshot.uploadedPackets)
+                .coerceAtLeast(0)
+                .toInt()
+            val queueSize = if (grpcConnected) {
+                fileQueueManager.getQueueSize()
+            } else {
+                liteQueueEstimate
+            }
+
+            val hasRecentLiteUpload = liteSnapshot.lastUploadTimestamp > 0 &&
+                (System.currentTimeMillis() - liteSnapshot.lastUploadTimestamp) < 5000
+            val isConnected = grpcConnected || (liteSnapshot.isRunning && hasRecentLiteUpload)
             
             _transmissionStatus.value = TransmissionStatus(
                 currentProfile = "UNRESTRICTED", // 默认不限制网络类型
                 isConnected = isConnected,
                 uploadQueueSize = queueSize,
-                lastUploadTime = System.currentTimeMillis()
+                lastUploadTime = if (grpcConnected) System.currentTimeMillis() else liteSnapshot.lastUploadTimestamp
             )
             
             delay(1000) // 每秒更新
