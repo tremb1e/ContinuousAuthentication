@@ -29,8 +29,21 @@ class UploadManager @Inject constructor(
         private const val TAG = "UploadManager"
         private const val UPLOAD_BATCH_SIZE = 50
         private const val UPLOAD_INTERVAL_MS = 1000L // 1秒上传间隔
+
+        // 降低速率模式的参数
+        private const val REDUCED_BATCH_SIZE = 10 // 降低模式下每批处理的数据包数量
+        private const val REDUCED_INTERVAL_MS = 5000L // 降低模式下的上传间隔
     }
-    
+
+    // 添加这些变量来跟踪当前使用的速率参数
+    private var currentBatchSize = UPLOAD_BATCH_SIZE
+    private var currentUploadInterval = UPLOAD_INTERVAL_MS
+    private var isReducedRateMode = false
+
+    // 添加离线模式状态变量
+    private var isOfflineMode = false
+    private var lastServerEndpoint: String? = null // 保存最后连接的服务器端点
+
     // 状态管理
     private val isRunning = AtomicBoolean(false)
     private val uploadedPackets = AtomicLong(0L)
@@ -46,7 +59,7 @@ class UploadManager @Inject constructor(
     
     // 网络模式管理
     private var isWifiOnlyMode = false
-    
+
     /**
      * 启动上传管理器
      */
@@ -63,7 +76,10 @@ class UploadManager @Inject constructor(
         }
         
         isRunning.set(true)
-        
+
+        // 保存服务器端点，以便离线模式关闭时重新连接
+        lastServerEndpoint = serverEndpoint
+
         // 启动服务器指令处理
         startDirectiveProcessing()
         
@@ -177,7 +193,7 @@ class UploadManager @Inject constructor(
             while (isRunning.get() && isActive) {
                 try {
                     uploadBatchFromBuffer()
-                    delay(UPLOAD_INTERVAL_MS)
+                    delay(currentBatchSize.toLong())
                 } catch (e: CancellationException) {
                     Log.i(TAG, "上传循环已取消")
                     throw e
@@ -193,6 +209,10 @@ class UploadManager @Inject constructor(
      * 从缓冲区上传批次数据
      */
     private suspend fun uploadBatchFromBuffer() {
+        if (isOfflineMode) {
+            Log.v(TAG, "离线模式启用，跳过上传")
+            return
+        }
         // 检查WiFi-only模式
         if (isWifiOnlyMode && !networkEnvironmentDetector.isWifiConnected()) {
             Log.v(TAG, "WiFi-only模式启用，当前非WiFi网络，跳过上传")
@@ -201,7 +221,7 @@ class UploadManager @Inject constructor(
         
         // 优先从内存缓冲区获取
         val packets = if (!inMemoryBuffer.isEmpty()) {
-            inMemoryBuffer.dequeue(UPLOAD_BATCH_SIZE)
+            inMemoryBuffer.dequeue(currentBatchSize)
         } else {
             // 内存为空时，不再从文件队列获取（简化处理）
             emptyList()
@@ -363,26 +383,134 @@ class UploadManager @Inject constructor(
      * 设置离线模式
      */
     fun setOfflineMode(enabled: Boolean) {
+        if (isOfflineMode == enabled) {
+            Log.i(TAG, "离线模式已经${if (enabled) "启用" else "禁用"}")
+            return
+        }
+
         Log.i(TAG, "设置离线模式: $enabled")
-        // TODO: 实现离线模式逻辑
+        isOfflineMode = enabled
+
+        if (enabled) {
+            // 启用离线模式
+            enableOfflineMode()
+        } else {
+            // 禁用离线模式，尝试恢复连接
+            disableOfflineMode()
+        }
     }
-    
+    /**
+     * 启用离线模式的具体逻辑
+     */
+    private fun enableOfflineMode() {
+        Log.i(TAG, "进入离线模式")
+
+        // 取消上传任务，但不停止整体服务
+        uploadJob?.cancel()
+        directiveJob?.cancel()
+
+        // 断开与服务器的连接
+        try {
+            runBlocking {
+                uploader.disconnect()
+            }
+            Log.i(TAG, "已断开服务器连接")
+        } catch (e: Exception) {
+            Log.e(TAG, "断开连接时发生错误", e)
+        }
+
+        Log.d(TAG, "离线模式已启用 - 继续收集数据并存储到本地")
+    }
+
+    /**
+     * 禁用离线模式的具体逻辑
+     */
+    private fun disableOfflineMode() {
+        Log.i(TAG, "退出离线模式，尝试恢复连接")
+
+        // 如果上传管理器没有运行，不执行恢复操作
+        if (!isRunning.get()) {
+            Log.w(TAG, "上传管理器未运行，无法恢复连接")
+            return
+        }
+
+        // 如果有保存的服务器端点，尝试重新连接
+        val endpoint = lastServerEndpoint
+        if (endpoint != null) {
+            Log.i(TAG, "尝试重新连接到服务器: $endpoint")
+
+            // 在IO线程中执行连接操作
+            managerScope.launch {
+                try {
+                    // 重新连接服务器
+                    if (uploader.connect(endpoint)) {
+                        Log.i(TAG, "服务器重新连接成功")
+
+                        // 重新启动指令处理和上传循环
+                        startDirectiveProcessing()
+                        startUploadLoop()
+
+                        Log.i(TAG, "离线模式已禁用 - 上传功能已恢复")
+                    } else {
+                        Log.e(TAG, "服务器重新连接失败")
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "恢复连接过程中发生错误", e)
+                }
+            }
+        } else {
+            Log.w(TAG, "没有保存的服务器端点，无法自动恢复连接")
+        }
+    }
     /**
      * 减少上传速率
      */
     fun reduceUploadRate() {
+        if (isReducedRateMode) {
+            Log.i(TAG, "已经处于降低速率模式")
+            return
+        }
+
         Log.i(TAG, "减少上传速率")
-        // TODO: 实现速率控制
+
+        // 保存当前设置
+        currentBatchSize = REDUCED_BATCH_SIZE
+        currentUploadInterval = REDUCED_INTERVAL_MS
+        isReducedRateMode = true
+
+        // 如果上传循环正在运行，重启它以应用新的间隔
+        if (isRunning.get() && uploadJob?.isActive == true) {
+            uploadJob?.cancel()
+            startUploadLoop()
+        }
+
+        Log.d(TAG, "上传速率已降低 - 批次大小: $REDUCED_BATCH_SIZE, 间隔: ${REDUCED_INTERVAL_MS}ms")
     }
     
     /**
      * 恢复正常速率
      */
     fun resumeNormalRate() {
+        if (!isReducedRateMode) {
+            Log.i(TAG, "已经处于正常速率模式")
+            return
+        }
+
         Log.i(TAG, "恢复正常上传速率")
-        // TODO: 恢复正常速率
+
+        // 恢复默认设置
+        currentBatchSize = UPLOAD_BATCH_SIZE
+        currentUploadInterval = UPLOAD_INTERVAL_MS
+        isReducedRateMode = false
+
+        // 如果上传循环正在运行，重启它以应用新的间隔
+        if (isRunning.get() && uploadJob?.isActive == true) {
+            uploadJob?.cancel()
+            startUploadLoop()
+        }
+
+        Log.d(TAG, "上传速率已恢复正常 - 批次大小: $UPLOAD_BATCH_SIZE, 间隔: ${UPLOAD_INTERVAL_MS}ms")
     }
-    
     /**
      * 重试数据包
      */
