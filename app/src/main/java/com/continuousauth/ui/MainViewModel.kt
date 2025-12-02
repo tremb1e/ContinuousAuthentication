@@ -1039,7 +1039,12 @@ class MainViewModel @Inject constructor(
                     _sessionId.value = null
                     _sessionStartTime.value = 0
                     _sessionDuration.value = "00:00"
-                    
+                    // 重置用户ID
+                    userIdManager.resetUserId()
+                    // 重新获取并更新用户ID，这会触发UI更新
+                    val newUserId = userIdManager.getUserId()
+                    _userId.value = newUserId
+
                     Log.i(TAG, "用户撤回同意，所有数据已删除")
                 } else {
                     _errorMessage.value = "数据删除失败: ${result.exceptionOrNull()?.message}"
