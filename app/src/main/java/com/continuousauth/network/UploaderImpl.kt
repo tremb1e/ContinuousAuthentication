@@ -1,8 +1,10 @@
 package com.continuousauth.network
 
 import android.util.Log
+import com.continuousauth.buffer.InMemoryBuffer
 import com.continuousauth.proto.*
 import com.continuousauth.policy.PolicyManager
+import com.continuousauth.storage.FileQueueManager
 import io.grpc.*
 import io.grpc.okhttp.OkHttpChannelBuilder
 import io.grpc.stub.StreamObserver
@@ -32,7 +34,9 @@ data class PendingAck(
 @Singleton
 class UploaderImpl @Inject constructor(
     private val tlsSecurityManager: TlsSecurityManager,
-    private val policyManager: PolicyManager
+    private val policyManager: PolicyManager,
+    private val inMemoryBuffer: InMemoryBuffer,
+    private val fileQueueManager: FileQueueManager
 ) : Uploader {
 
     companion object {
@@ -427,11 +431,21 @@ class UploaderImpl @Inject constructor(
      * 获取缓冲区统计信息
      */
     override fun getBufferStats(): BufferStats {
+        // 获取内存缓冲区状态
+        val bufferStatus = inMemoryBuffer.getBufferStatus()
+        val memorySamples = bufferStatus.currentSize
+
+        // 计算丢弃的数据包数量（总入队 - 总出队）
+        val discardedCount = bufferStatus.totalEnqueued - bufferStatus.totalDequeued
+
+        // 获取磁盘队列统计信息
+        val queueStats = runBlocking { fileQueueManager.getQueueStatistics() }
+        val diskBatches = queueStats.pendingPackets
         return BufferStats(
-            memorySamples = 0,  // 默认值，根据实际缓冲区逻辑更新
-            diskBatches = 0,
+           memorySamples = memorySamples,
+            diskBatches = diskBatches,
             sentCount = totalPacketsSent.get(),
-            discardedCount = 0L
+            discardedCount = discardedCount
         )
     }
 
@@ -457,11 +471,17 @@ class UploaderImpl @Inject constructor(
      * 获取内存缓冲区统计
      */
     override fun getMemoryBufferStats(): MemoryBufferStats {
+        // 获取内存缓冲区状态
+        val bufferStatus = inMemoryBuffer.getBufferStatus()
+        val samplesInMemory = bufferStatus.currentSize
+
+        // 计算丢弃的数据包数量
+        val totalDiscarded = bufferStatus.totalEnqueued - bufferStatus.totalDequeued
         return MemoryBufferStats(
-            samplesInMemory = 0,  // 默认值，根据实际逻辑更新
+            samplesInMemory = samplesInMemory,
             totalSent = totalPacketsSent.get(),
             totalFailed = totalPacketsSent.get() - totalAcksReceived.get(),
-            totalDiscarded = 0L
+            totalDiscarded = totalDiscarded
         )
     }
 
