@@ -7,7 +7,6 @@ import androidx.security.crypto.MasterKey
 import com.continuousauth.database.BatchMetadataDao
 import com.continuousauth.database.BatchStatus
 import com.continuousauth.database.ContinuousAuthDatabase
-import com.continuousauth.network.GrpcManager
 // import com.continuousauth.proto.DataDeletionRequest
 // import com.continuousauth.proto.DataDeletionResponse
 import com.continuousauth.storage.FileQueueManager
@@ -32,8 +31,7 @@ class PrivacyManager @Inject constructor(
     @ApplicationContext private val context: Context,
     private val database: ContinuousAuthDatabase,
     private val fileQueueManager: FileQueueManager,
-    private val userIdManager: UserIdManager,
-    private val grpcManager: GrpcManager
+    private val userIdManager: UserIdManager
 ) {
     
     companion object {
@@ -218,25 +216,8 @@ class PrivacyManager @Inject constructor(
                 Log.i(TAG, "向服务器发送数据删除请求")
                 
                 // TODO: 实现实际的gRPC调用
-                // 这里是示例代码，需要服务器端实现对应的RPC方法
-                /*
-                val request = DataDeletionRequest.newBuilder()
-                    .setDeviceIdHash(getDeviceIdHash())
-                    .setUserId(userIdManager.getUserId())
-                    .setTimestamp(System.currentTimeMillis())
-                    .setReason("USER_CONSENT_WITHDRAWAL")
-                    .build()
-                
-                val response = grpcManager.sendDataDeletionRequest(request)
-                
-                if (response.success) {
-                    Log.i(TAG, "服务器数据删除请求成功")
-                    Result.success(Unit)
-                } else {
-                    Log.e(TAG, "服务器拒绝删除请求: ${response.message}")
-                    Result.failure(Exception(response.message))
-                }
-                */
+                // 这里是示例代码，需要服务器端实现对应的RPC方法，
+                // 可通过 UploaderImpl 新增的通道能力完成
                 
                 // 暂时返回成功（等待服务器端实现）
                 Log.w(TAG, "服务器删除请求端点尚未实现，跳过")

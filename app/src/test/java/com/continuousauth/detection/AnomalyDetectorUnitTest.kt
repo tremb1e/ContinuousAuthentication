@@ -6,7 +6,17 @@ import io.mockk.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.test.*
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.TestDispatcher
+import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.test.setMain
+import kotlinx.coroutines.test.resetMain
+import java.util.concurrent.TimeUnit
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
@@ -33,7 +43,7 @@ class AnomalyDetectorUnitTest {
 
     @Before
     fun setup() {
-        testDispatcher = StandardTestDispatcher()
+        testDispatcher = UnconfinedTestDispatcher()
         testScope = TestScope(testDispatcher)
         Dispatchers.setMain(testDispatcher)
         
@@ -43,14 +53,17 @@ class AnomalyDetectorUnitTest {
         
         // 配置Context模拟
         every { mockContext.getSystemService(Context.USAGE_STATS_SERVICE) } returns mockUsageStatsManager
-        every { mockContext.registerReceiver(any(), any()) } just Runs
+        every { mockContext.registerReceiver(any(), any()) } returns null
         every { mockContext.unregisterReceiver(any()) } just Runs
         
         anomalyDetector = AnomalyDetectorImpl(mockContext)
+        anomalyDetector.overrideDispatcherForTests(testDispatcher)
     }
 
     @After
     fun tearDown() {
+        runBlocking { anomalyDetector.stopDetection() }
+        anomalyDetector.cleanup()
         Dispatchers.resetMain()
     }
 
@@ -191,7 +204,7 @@ class AnomalyDetectorUnitTest {
         anomalyDetector.startDetection()
         
         // 建立正常基线
-        repeat(15) { index ->
+        repeat(60) { index ->
             val x = 0.1f
             val y = 0.2f
             val z = 9.8f
@@ -243,7 +256,7 @@ class AnomalyDetectorUnitTest {
         anomalyDetector.startDetection()
         
         // 建立基线
-        repeat(15) { index ->
+        repeat(60) { index ->
             anomalyDetector.processSensorData(0.1f, 0.2f, 9.8f, System.nanoTime() + index * 1000000L)
         }
         
@@ -259,9 +272,9 @@ class AnomalyDetectorUnitTest {
         // 应该只触发一次异常（因为冷却期）
         assertEquals("冷却期内应该只触发一次异常", 1, anomalyCount)
         
-        // 等待冷却期结束后再次发送
-        delay(150L) // 超过冷却期
-        anomalyDetector.processSensorData(10.0f, 8.0f, 15.0f, System.nanoTime())
+        // 等待冷却期结束后再次发送，使用显式时间戳确保跨越冷却窗口
+        val postCooldownTs = baseTime + TimeUnit.MILLISECONDS.toNanos(200)
+        anomalyDetector.processSensorData(10.0f, 8.0f, 15.0f, postCooldownTs)
         
         advanceUntilIdle()
         
@@ -295,7 +308,7 @@ class AnomalyDetectorUnitTest {
         anomalyDetector.startDetection()
         
         // 建立基线并发送突变数据
-        repeat(15) { index ->
+        repeat(60) { index ->
             anomalyDetector.processSensorData(0.1f, 0.2f, 9.8f, System.nanoTime() + index * 1000000L)
         }
         anomalyDetector.processSensorData(10.0f, 8.0f, 15.0f, System.nanoTime() + 16 * 1000000L)

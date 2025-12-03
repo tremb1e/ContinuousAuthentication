@@ -9,7 +9,16 @@ import io.mockk.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.test.*
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.TestDispatcher
+import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.test.setMain
+import kotlinx.coroutines.test.resetMain
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
@@ -36,7 +45,7 @@ class AnomalyDetectorIntegrationTest {
 
     @Before
     fun setup() {
-        testDispatcher = StandardTestDispatcher()
+        testDispatcher = UnconfinedTestDispatcher()
         testScope = TestScope(testDispatcher)
         Dispatchers.setMain(testDispatcher)
         
@@ -48,17 +57,20 @@ class AnomalyDetectorIntegrationTest {
         every { mockContext.getSystemService(Context.USAGE_STATS_SERVICE) } returns mockUsageStatsManager
         
         // 捕获注册的广播接收器
-        every { mockContext.registerReceiver(capture(slot<BroadcastReceiver>()), any()) } answers {
+        every { mockContext.registerReceiver(any(), any()) } answers {
             capturedReceiver = firstArg()
-            mockk()
+            null
         }
         every { mockContext.unregisterReceiver(any()) } just Runs
         
         anomalyDetector = AnomalyDetectorImpl(mockContext)
+        anomalyDetector.overrideDispatcherForTests(testDispatcher)
     }
 
     @After
     fun tearDown() {
+        runBlocking { anomalyDetector.stopDetection() }
+        anomalyDetector.cleanup()
         Dispatchers.resetMain()
     }
 

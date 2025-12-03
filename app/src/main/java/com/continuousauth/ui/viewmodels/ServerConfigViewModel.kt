@@ -33,7 +33,7 @@ class ServerConfigViewModel @Inject constructor(
     
     data class ServerConfig(
         val ip: String = "",
-        val port: Int = 0  // 默认为0，表示未设置
+        val port: Int = 50051  // 默认使用 gRPC 常用端口
     )
     
     // 设备ID
@@ -83,7 +83,7 @@ class ServerConfigViewModel @Inject constructor(
             // 从SharedPreferences或DataStore加载配置
             val prefs = context.getSharedPreferences("server_config", Context.MODE_PRIVATE)
             val ip = prefs.getString("server_ip", "") ?: ""  // 默认为空字符串
-            val port = prefs.getInt("server_port", 0)  // 默认为0
+            val port = prefs.getInt("server_port", 50051)  // 默认指向 gRPC 端口
             
             _serverConfig.value = ServerConfig(ip, port)
         }

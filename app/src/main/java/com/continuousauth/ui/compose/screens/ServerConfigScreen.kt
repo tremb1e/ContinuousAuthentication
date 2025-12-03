@@ -37,11 +37,13 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.continuousauth.ui.MainViewModel
 import com.continuousauth.ui.theme.ExtendedColors
 import com.continuousauth.network.ConnectionStatus
+import com.continuousauth.network.TransportMode
 import com.continuousauth.privacy.ConsentState
 import com.continuousauth.privacy.DeletionState
 import com.continuousauth.storage.QueueStats
 import com.continuousauth.utils.Constant
 import com.continuousauth.utils.SpUtils
+import com.continuousauth.monitor.SystemMonitor
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -195,20 +197,34 @@ fun ServerConfigScreen(viewModel: MainViewModel) {
                 isDeleting = deletionState == DeletionState.IN_PROGRESS
             )
             // 加密状态卡片
-            EncryptionStatusCard()
+            EncryptionStatusCard(transmissionStatus)
             if(showTransmissionStatusCard){
                 // 传输状态卡片
                 InfoCard(
                     title = "传输状态",
                     icon = Icons.AutoMirrored.Filled.Send
                 ) {
-                    InfoRow("传输策略", transmissionStatus.currentProfile)
+                    InfoRow("压缩算法", transmissionStatus.compression)
                     InfoRow("连接状态",
                         if (transmissionStatus.isConnected) "已连接" else "未连接",
                         textColor = if (transmissionStatus.isConnected)
                             MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
                     )
                     InfoRow("上传队列", "${transmissionStatus.uploadQueueSize} 个数据包")
+                    val transportDisplay = transportDisplay(transmissionStatus)
+                    InfoRow(
+                        "传输通道",
+                        transportDisplay.first,
+                        textColor = transportDisplay.second
+                    )
+                    if (!transmissionStatus.transportError.isNullOrBlank()) {
+                        Text(
+                            text = transmissionStatus.transportError ?: "",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.padding(top = 4.dp)
+                        )
+                    }
                 }
             }
 
@@ -250,7 +266,8 @@ fun ServerConfigScreen(viewModel: MainViewModel) {
  * 加密状态卡片
  */
 @Composable
-private fun EncryptionStatusCard() {
+private fun EncryptionStatusCard(transmissionStatus: SystemMonitor.TransmissionStatus) {
+    val (transportLabel, transportColor) = transportDisplay(transmissionStatus)
     Card(
         modifier = Modifier.fillMaxWidth()
     ) {
@@ -276,10 +293,27 @@ private fun EncryptionStatusCard() {
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            PrivacyInfoRow("加密算法", "AES-256-GCM with StreamingAEAD")
-            PrivacyInfoRow("密钥管理", "Android Keystore (Tink)")
-            PrivacyInfoRow("传输安全", "TLS 1.3 + 证书固定")
-            PrivacyInfoRow("数据压缩", "GZIP (先压缩后加密)")
+            PrivacyInfoRow("加密算法", "AES-256-GCM (固定派生密钥)")
+            PrivacyInfoRow("密钥管理", "SHA-256(\"Continuous_Authentication\") 派生对称密钥")
+            PrivacyInfoRow("传输安全", transportLabel, textColor = transportColor)
+            PrivacyInfoRow("数据压缩", "LZ4 帧压缩（先压缩后加密）")
+            if (transmissionStatus.transportMode == TransportMode.HTTP &&
+                transmissionStatus.transportLastAttemptMs > 0
+            ) {
+                val note = when {
+                    transmissionStatus.transportPreferredScheme.lowercase() == "http" ->
+                        "当前按服务器配置使用HTTP，链路为明文"
+                    transmissionStatus.transportDowngraded ->
+                        "TLS不可用或握手失败，已降级为HTTP明文"
+                    else -> "当前通道为HTTP明文"
+                }
+                Text(
+                    text = note,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(top = 4.dp)
+                )
+            }
         }
     }
 }
@@ -287,7 +321,11 @@ private fun EncryptionStatusCard() {
  * 信息行
  */
 @Composable
-private fun PrivacyInfoRow(label: String, value: String) {
+private fun PrivacyInfoRow(
+    label: String,
+    value: String,
+    textColor: Color = MaterialTheme.colorScheme.onSurface
+) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -302,8 +340,41 @@ private fun PrivacyInfoRow(label: String, value: String) {
         Text(
             text = value,
             style = MaterialTheme.typography.bodyMedium,
-            fontWeight = FontWeight.Medium
+            fontWeight = FontWeight.Medium,
+            color = textColor
         )
+    }
+}
+
+@Composable
+private fun transportDisplay(
+    transmissionStatus: SystemMonitor.TransmissionStatus
+): Pair<String, Color> {
+    val defaultColor = MaterialTheme.colorScheme.onSurface
+    if (transmissionStatus.transportLastAttemptMs == 0L) {
+        return "未检测到上传" to defaultColor
+    }
+
+    return when (transmissionStatus.transportMode) {
+        TransportMode.HTTP -> {
+            val reason = when {
+                transmissionStatus.transportPreferredScheme.lowercase() == "http" -> "（按配置使用HTTP）"
+                transmissionStatus.transportDowngraded -> "（TLS不可用/失败）"
+                else -> ""
+            }
+            "HTTP 明文$reason" to MaterialTheme.colorScheme.error
+        }
+
+        TransportMode.HTTPS -> {
+            val version = transmissionStatus.transportTlsVersion
+                ?: if (transmissionStatus.transportTlsCapable) "TLS 1.2+" else "TLS"
+            val protocol = transmissionStatus.transportNegotiatedProtocol
+            val detail = listOfNotNull(version, protocol)
+                .filter { it.isNotBlank() }
+                .joinToString(" / ")
+            val label = if (detail.isBlank()) "TLS" else "TLS $detail"
+            label to MaterialTheme.colorScheme.primary
+        }
     }
 }
 /**

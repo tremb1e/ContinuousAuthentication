@@ -109,7 +109,7 @@ class DetailedInfoViewModel @Inject constructor(
             initialValue = emptyList()
         )
     
-    // Envelope加密状态
+    // 加密状态
     val encryptionStatus: StateFlow<SystemMonitor.EncryptionStatus> = 
         systemMonitor.encryptionStatus.stateIn(
             scope = viewModelScope,

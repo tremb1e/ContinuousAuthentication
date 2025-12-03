@@ -34,7 +34,6 @@ class PolicyManager @Inject constructor(
         private val BATCH_INTERVAL_MS = intPreferencesKey("batch_interval_ms")
         private val MAX_PAYLOAD_SIZE = intPreferencesKey("max_payload_size_bytes")
         private val UPLOAD_RATE_LIMIT = floatPreferencesKey("upload_rate_limit")
-        private val TRANSMISSION_PROFILE = stringPreferencesKey("transmission_profile")
         private val COMPRESSION_ALGORITHM = stringPreferencesKey("compression_algorithm")
         private val BATCH_SIZE_THRESHOLD = intPreferencesKey("batch_size_threshold")
         
@@ -52,7 +51,6 @@ class PolicyManager @Inject constructor(
         private const val DEFAULT_BATCH_INTERVAL = 1000
         private const val DEFAULT_MAX_PAYLOAD_SIZE = 10 * 1024 * 1024 // 10MB
         private const val DEFAULT_ANOMALY_THRESHOLD_MULTIPLIER = 2.0f
-        private const val DEFAULT_TRANSMISSION_PROFILE = "UNRESTRICTED"
     }
     
     private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(
@@ -90,9 +88,6 @@ class PolicyManager @Inject constructor(
                 }
                 if (policyUpdate.uploadRateLimit > 0) {
                     preferences[UPLOAD_RATE_LIMIT] = policyUpdate.uploadRateLimit
-                }
-                if (policyUpdate.transmissionProfile.isNotEmpty()) {
-                    preferences[TRANSMISSION_PROFILE] = policyUpdate.transmissionProfile
                 }
                 if (policyUpdate.compressionAlgorithm.isNotEmpty()) {
                     preferences[COMPRESSION_ALGORITHM] = policyUpdate.compressionAlgorithm
@@ -145,8 +140,7 @@ class PolicyManager @Inject constructor(
                             batchIntervalMs = preferences[BATCH_INTERVAL_MS] ?: DEFAULT_BATCH_INTERVAL,
                             maxPayloadSizeBytes = preferences[MAX_PAYLOAD_SIZE] ?: DEFAULT_MAX_PAYLOAD_SIZE,
                             uploadRateLimit = preferences[UPLOAD_RATE_LIMIT] ?: 10.0f,
-                            transmissionProfile = preferences[TRANSMISSION_PROFILE] ?: DEFAULT_TRANSMISSION_PROFILE,
-                            compressionAlgorithm = preferences[COMPRESSION_ALGORITHM] ?: "lz4",
+                            compressionAlgorithm = preferences[COMPRESSION_ALGORITHM] ?: "LZ4",
                             batchSizeThreshold = preferences[BATCH_SIZE_THRESHOLD] ?: 100
                         ),
                         collectionConfig = CollectionConfiguration(
@@ -204,8 +198,7 @@ class PolicyManager @Inject constructor(
         return Policy(
             batchIntervalMs = config.transmissionConfig.batchIntervalMs,
             anomalyThresholdMultiplier = config.collectionConfig.anomalyThresholdMultiplier,
-            batchSizeThreshold = config.transmissionConfig.batchSizeThreshold,
-            transmissionProfile = config.transmissionConfig.transmissionProfile
+            batchSizeThreshold = config.transmissionConfig.batchSizeThreshold
         )
     }
     
@@ -243,8 +236,7 @@ class PolicyManager @Inject constructor(
 data class Policy(
     val batchIntervalMs: Int,              // 批处理间隔（毫秒）
     val anomalyThresholdMultiplier: Float, // 异常阈值倍数
-    val batchSizeThreshold: Int,           // 批处理大小阈值
-    val transmissionProfile: String        // 传输策略
+    val batchSizeThreshold: Int            // 批处理大小阈值
 )
 
 /**
@@ -264,7 +256,6 @@ data class TransmissionConfiguration(
     val batchIntervalMs: Int,
     val maxPayloadSizeBytes: Int,
     val uploadRateLimit: Float,
-    val transmissionProfile: String,
     val compressionAlgorithm: String,
     val batchSizeThreshold: Int
 )

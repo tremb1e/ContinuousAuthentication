@@ -54,12 +54,6 @@
             </intent-filter>
         </activity>
         
-        <!-- 旧的导航活动 (保留但不作为启动器) -->
-        <activity
-            android:name=".ui.MainActivityNav"
-            android:exported="false"
-            android:theme="@style/Theme.ContinuousAuthentication" />
-
         <!-- 数据采集前台服务 -->
         <service
             android:name=".service.DataCollectionService"

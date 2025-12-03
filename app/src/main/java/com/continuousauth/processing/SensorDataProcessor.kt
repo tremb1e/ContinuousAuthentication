@@ -7,6 +7,7 @@ import com.continuousauth.crypto.CryptoBox
 import com.continuousauth.data.DataPacketBuilder
 import com.continuousauth.model.SensorSample
 import com.continuousauth.proto.DataPacket
+import com.continuousauth.storage.FileQueueManager
 import com.google.protobuf.InvalidProtocolBufferException
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
@@ -30,7 +31,8 @@ class SensorDataProcessor @Inject constructor(
     private val aadBuilder: AADBuilder,
     private val dataPacketBuilder: DataPacketBuilder,
     private val compressionManager: CompressionManager,
-    private val chunkingManager: ChunkingManager
+    private val chunkingManager: ChunkingManager,
+    private val fileQueueManager: FileQueueManager
 ) {
     
     companion object {
@@ -49,7 +51,6 @@ class SensorDataProcessor @Inject constructor(
     // 当前会话信息
     private var currentUserId = ""
     private var currentSessionId = ""
-    private var currentTransmissionProfile = "UNRESTRICTED"
     
     /**
      * 开始处理传感器数据流
@@ -108,22 +109,13 @@ class SensorDataProcessor @Inject constructor(
     }
     
     /**
-     * 设置传输策略
-     */
-    fun setTransmissionProfile(profile: String) {
-        currentTransmissionProfile = profile
-        android.util.Log.d(TAG, "传输策略已更新为: $profile")
-    }
-    
-    /**
      * 获取处理状态
      */
     fun getProcessingStatus(): ProcessingStatus {
         return ProcessingStatus(
             isProcessing = isProcessing.get(),
             processedSampleCount = processedCount.get(),
-            currentSessionId = currentSessionId,
-            currentTransmissionProfile = currentTransmissionProfile
+            currentSessionId = currentSessionId
         )
     }
     
@@ -166,7 +158,7 @@ class SensorDataProcessor @Inject constructor(
             val sensorBatchBytes = sensorBatch.toByteArray()
             
             // 2. 压缩数据 (Epic 1.4.3 要求)
-            val compressionType = CompressionManager.CompressionType.GZIP // 使用GZIP压缩
+            val compressionType = CompressionManager.CompressionType.LZ4 // 默认使用LZ4压缩
             
             val compressedData = compressionManager.compress(sensorBatchBytes, compressionType)
             if (compressedData == null) {
@@ -184,9 +176,9 @@ class SensorDataProcessor @Inject constructor(
                 packetId = packetId,
                 packetSeqNo = packetSeqNo,
                 dekKeyId = dekKeyId,
-                transmissionProfile = currentTransmissionProfile,
                 appVersion = appVersion,
-                sampleCount = samples.size
+                sampleCount = samples.size,
+                keyVersion = dekKeyId
             )
             
             // 4. 加密压缩后的数据
@@ -197,8 +189,8 @@ class SensorDataProcessor @Inject constructor(
                 return
             }
             
-            // 5. 获取加密的DEK（使用Envelope Encryption）
-            val encryptedDek = envelopeCryptoBox.getEncryptedDEK()
+            // 5. 使用共享对称密钥，无需发送单独的 DEK
+            val encryptedDek: ByteArray? = null
             
             // 6. 计算SHA256校验和
             val sha256 = calculateSha256(encryptedPayload)
@@ -207,7 +199,7 @@ class SensorDataProcessor @Inject constructor(
             val dataPacket = dataPacketBuilder.buildDataPacket(
                 sensorSamples = samples,
                 encryptedPayload = encryptedPayload,
-                transmissionProfile = currentTransmissionProfile,
+                packetSeqNo = packetSeqNo,
                 userId = currentUserId,
                 sessionId = currentSessionId,
                 encryptedDek = encryptedDek,
@@ -226,6 +218,9 @@ class SensorDataProcessor @Inject constructor(
                 // 不需要分片
                 listOf(dataPacket)
             }
+            
+            // 8a. 持久化到磁盘队列，便于统计与断点续传
+            persistPackets(packets, samples.size)
             
             // 9. 发送到输出流（可能是多个分片）
             packets.forEach { packet ->
@@ -303,6 +298,50 @@ class SensorDataProcessor @Inject constructor(
             ByteArray(0)
         }
     }
+
+    /**
+    * 将数据包写入文件队列，便于恢复与统计
+    */
+    private suspend fun persistPackets(packets: List<DataPacket>, sampleCount: Int) {
+        packets.forEach { packet ->
+            try {
+                val packetBytes = packet.toByteArray()
+                val metadata = com.continuousauth.database.BatchMetadata(
+                    packetId = packet.packetId,
+                    filePath = "",
+                    status = com.continuousauth.database.BatchStatus.PENDING,
+                    createdTime = System.currentTimeMillis(),
+                    uploadTime = null,
+                    ackTime = null,
+                    fileSize = packetBytes.size.toLong(),
+                    sampleCount = sampleCount,
+                    transmissionMode = "STANDARD",
+                    ntpOffset = if (packet.hasNtpOffsetMs()) packet.ntpOffsetMs else null,
+                    baseWallMs = packet.baseWallMs,
+                    deviceUptimeNs = packet.deviceUptimeNs,
+                    retryCount = 0,
+                    lastError = null,
+                    sequenceNumber = packet.packetSeqNo,
+                    userId = currentUserId,
+                    sessionId = currentSessionId,
+                    deviceId = packet.deviceIdHash,
+                    sha256 = null
+                )
+
+                val result = fileQueueManager.saveDataPacket(
+                    packet.packetId,
+                    packetBytes,
+                    metadata
+                )
+
+                if (result.isFailure) {
+                    android.util.Log.e(TAG, "持久化数据包失败: ${packet.packetId}", result.exceptionOrNull())
+                }
+            } catch (e: Exception) {
+                android.util.Log.e(TAG, "持久化数据包异常: ${packet.packetId}", e)
+            }
+        }
+    }
 }
 
 /**
@@ -311,6 +350,5 @@ class SensorDataProcessor @Inject constructor(
 data class ProcessingStatus(
     val isProcessing: Boolean,
     val processedSampleCount: Long,
-    val currentSessionId: String,
-    val currentTransmissionProfile: String
+    val currentSessionId: String
 )

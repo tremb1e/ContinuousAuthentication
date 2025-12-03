@@ -9,7 +9,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -61,9 +60,7 @@ fun DetailedInfoScreen(
     
     val decimalFormat = remember { DecimalFormat("#.##") }
     // 添加控制NTP时间同步卡片显示的变量
-    var showNtpSyncCard by remember { mutableStateOf(false) }
-    // 添加控制传输状态卡片显示的变量
-    var showTransmissionStatusCard by remember { mutableStateOf(false) }
+    var showNtpSyncCard by remember { mutableStateOf(true) }
     Box(
         modifier = Modifier.fillMaxSize()
     ) {
@@ -73,23 +70,6 @@ fun DetailedInfoScreen(
             contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            if(showTransmissionStatusCard){
-                // 传输状态卡片
-                item {
-                    InfoCard(
-                        title = "传输状态",
-                        icon = Icons.AutoMirrored.Filled.Send
-                    ) {
-                        InfoRow("传输策略", transmissionStatus.currentProfile)
-                        InfoRow("连接状态",
-                            if (transmissionStatus.isConnected) "已连接" else "未连接",
-                            textColor = if (transmissionStatus.isConnected)
-                                MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
-                        )
-                        InfoRow("上传队列", "${transmissionStatus.uploadQueueSize} 个数据包")
-                    }
-                }
-            }
             // gRPC连接状态卡片
             item {
                 InfoCard(
@@ -217,15 +197,22 @@ fun DetailedInfoScreen(
                 }
             }
             
-            // Envelope加密状态卡片
+            // 加密状态卡片
             item {
                 InfoCard(
-                    title = "Envelope加密状态",
+                    title = "加密状态",
                     icon = Icons.Default.Lock
                 ) {
                     val encryptionStatus = viewModel.encryptionStatus.collectAsStateWithLifecycle().value
                     
-                    InfoRow("加密方案", "Envelope-AES256GCM")
+                    InfoRow(
+                        "加密方案",
+                        encryptionStatus.encryptionAlgorithm.ifBlank { "未知" }
+                    )
+                    InfoRow(
+                        "密钥管理",
+                        encryptionStatus.keyProvider.ifBlank { "未知" }
+                    )
                     InfoRow("安全锁状态", 
                         if (encryptionStatus.isSecurityLocked) "已锁定" else "正常",
                         textColor = if (encryptionStatus.isSecurityLocked) 
@@ -243,7 +230,10 @@ fun DetailedInfoScreen(
                         textColor = if (encryptionStatus.hasServerPublicKey) 
                             Color(0xFF4CAF50) else MaterialTheme.colorScheme.error
                     )
-                    InfoRow("DEK密钥ID", encryptionStatus.currentDekKeyId)
+                    InfoRow(
+                        "DEK密钥ID",
+                        if (encryptionStatus.currentDekKeyId.isNotBlank()) encryptionStatus.currentDekKeyId else "未生成"
+                    )
                     InfoRow("包序列号", encryptionStatus.packetSequenceNumber.toString())
                     InfoRow("密钥轮换次数", deviceInfo.keyRotationCount.toString())
                 }

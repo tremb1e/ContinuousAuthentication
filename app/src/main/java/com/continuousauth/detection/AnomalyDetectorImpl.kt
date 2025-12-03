@@ -9,6 +9,7 @@ import android.content.IntentFilter
 import android.os.Build
 import android.util.Log
 import androidx.annotation.RequiresApi
+import androidx.annotation.VisibleForTesting
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
@@ -33,7 +34,7 @@ class AnomalyDetectorImpl @Inject constructor(
     // 检测状态
     private var isDetecting = false
     private var detectionJob: Job? = null
-    private val detectorScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private var detectorScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     
     // 监听器
     private var anomalyListener: OnAnomalyListener? = null
@@ -58,7 +59,7 @@ class AnomalyDetectorImpl @Inject constructor(
     private val percentileThreshold = 95 // 第95百分位作为异常阈值
     
     // 冷却期与逐步退火参数 (Epic 4.1.1 要求)
-    private var cooldownEndTime = 0L
+    private var cooldownEndTimeNs = 0L
     private var cooldownCount = 0
     private val maxCooldownCount = 5 // 最大冷却次数
     private val cooldownBackoffFactor = 1.5 // 退火因子
@@ -106,6 +107,17 @@ class AnomalyDetectorImpl @Inject constructor(
         accelerometerData.clear()
         
         Log.i(TAG, "异常检测已停止")
+    }
+
+    /**
+     * 仅用于测试：覆盖内部协程调度器，便于虚拟时间控制。
+     */
+    @VisibleForTesting
+    internal fun overrideDispatcherForTests(dispatcher: CoroutineDispatcher) {
+        detectionJob?.cancel()
+        detectionJob = null
+        detectorScope.cancel()
+        detectorScope = CoroutineScope(SupervisorJob() + dispatcher)
     }
     
     override fun setOnAnomalyListener(listener: OnAnomalyListener?) {
@@ -355,7 +367,7 @@ class AnomalyDetectorImpl @Inject constructor(
             handleAnomalyDetection(magnitude, timestamp)
         } else {
             // 未检测到异常，逐步降低冷却计数
-            if (cooldownCount > 0 && System.currentTimeMillis() > cooldownEndTime) {
+            if (cooldownCount > 0 && System.nanoTime() > cooldownEndTimeNs) {
                 cooldownCount--
             }
         }
@@ -432,9 +444,9 @@ class AnomalyDetectorImpl @Inject constructor(
      * 检查是否在冷却期（逐步退火机制）
      */
     private fun isInCooldownPeriod(timestamp: Long): Boolean {
-        if (cooldownEndTime > timestamp) {
+        if (cooldownEndTimeNs > timestamp) {
             if (currentPolicy.debugMode) {
-                Log.d(TAG, "处于冷却期，剩余时间: ${(cooldownEndTime - timestamp) / 1000}秒")
+                Log.d(TAG, "处于冷却期，剩余时间: ${(cooldownEndTimeNs - timestamp) / 1_000_000}ms")
             }
             return true
         }
@@ -449,9 +461,9 @@ class AnomalyDetectorImpl @Inject constructor(
         
         // 更新冷却期（逐步退火）
         cooldownCount = (cooldownCount + 1).coerceAtMost(maxCooldownCount)
-        val cooldownDuration = (currentPolicy.accelerometerCooldownMs * 
-                               Math.pow(cooldownBackoffFactor.toDouble(), cooldownCount.toDouble())).toLong()
-        cooldownEndTime = timestamp + cooldownDuration
+        val cooldownDurationNs = (currentPolicy.accelerometerCooldownMs * 
+                               Math.pow(cooldownBackoffFactor.toDouble(), cooldownCount.toDouble())).toLong() * 1_000_000L
+        cooldownEndTimeNs = timestamp + cooldownDurationNs
         
         // 计算统计信息用于日志
         val mean = longTermWindow.average().toFloat()
@@ -461,7 +473,7 @@ class AnomalyDetectorImpl @Inject constructor(
         
         if (currentPolicy.debugMode) {
             Log.d(TAG, "检测到加速度计突变: magnitude=$magnitude, threshold=$threshold, " +
-                      "deviation=$deviation, cooldown=${cooldownDuration/1000}秒")
+                      "deviation=$deviation, cooldown=${cooldownDurationNs / 1_000_000_000.0}秒")
         }
         
         // 触发异常回调

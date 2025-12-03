@@ -5,6 +5,8 @@ import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
+import android.os.Handler
+import android.os.HandlerThread
 import android.os.SystemClock
 import com.continuousauth.buffer.RingBuffer
 import com.continuousauth.model.SensorSample
@@ -42,6 +44,8 @@ class SensorCollectorImpl @Inject constructor(
 ) : SensorCollector, SensorEventListener {
 
     private val sensorManager = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
+    private val sensorThread = HandlerThread("CA-SensorThread").apply { start() }
+    private val sensorHandler by lazy { Handler(sensorThread.looper) }
     
     // 使用单线程的Dispatcher专门处理传感器数据
     private val sensorDispatcher: CoroutineDispatcher = Dispatchers.IO.limitedParallelism(1)
@@ -253,7 +257,8 @@ class SensorCollectorImpl @Inject constructor(
                 this,
                 it,
                 samplingPeriodUs,
-                maxReportLatencyUs
+                maxReportLatencyUs,
+                sensorHandler
             )
             
             if (success) {

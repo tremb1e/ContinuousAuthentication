@@ -10,10 +10,10 @@ import android.os.Debug
 import android.os.SystemClock
 import android.security.keystore.KeyProperties
 import androidx.annotation.RequiresApi
-import com.continuousauth.core.SmartTransmissionManager
-import com.continuousauth.crypto.CryptoBox
 import com.continuousauth.crypto.EnvelopeCryptoBox
+import com.continuousauth.network.TransportMode
 import com.continuousauth.network.Uploader
+import com.continuousauth.network.UploadManager
 import com.continuousauth.storage.FileQueueManager
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.*
@@ -31,18 +31,26 @@ import javax.inject.Singleton
 class SystemMonitor @Inject constructor(
     @ApplicationContext private val context: Context,
     private val uploader: Uploader,
+    private val uploadManager: UploadManager,
     private val fileQueueManager: FileQueueManager,
     private val cryptoBox: EnvelopeCryptoBox,
-    private val enhancedTimeSync: com.continuousauth.time.EnhancedTimeSync,
-    private val smartTransmissionManager: SmartTransmissionManager
+    private val enhancedTimeSync: com.continuousauth.time.EnhancedTimeSync
 ) {
     
     // 传输状态数据类
     data class TransmissionStatus(
-        val currentProfile: String = "UNRESTRICTED",  // "WIFI_ONLY" 或 "UNRESTRICTED"
+        val compression: String = "LZ4",
         val isConnected: Boolean = false,
         val uploadQueueSize: Int = 0,
-        val lastUploadTime: Long = 0L
+        val lastUploadTime: Long = 0L,
+        val transportMode: TransportMode = TransportMode.HTTPS,
+        val transportTlsVersion: String? = null,
+        val transportNegotiatedProtocol: String? = null,
+        val transportDowngraded: Boolean = false,
+        val transportLastAttemptMs: Long = 0L,
+        val transportPreferredScheme: String = "https",
+        val transportTlsCapable: Boolean = false,
+        val transportError: String? = null
     )
     
     // gRPC连接状态
@@ -93,7 +101,7 @@ class SystemMonitor @Inject constructor(
         val keyRotationCount: Long = 0
     )
     
-    // Envelope加密状态
+    // 加密状态
     data class EncryptionStatus(
         val isSecurityLocked: Boolean = false,
         val consecutiveFailures: Int = 0,
@@ -101,7 +109,9 @@ class SystemMonitor @Inject constructor(
         val isInitialized: Boolean = false,
         val hasServerPublicKey: Boolean = false,
         val currentDekKeyId: String = "",
-        val packetSequenceNumber: Long = 0
+        val packetSequenceNumber: Long = 0,
+        val encryptionAlgorithm: String = "",
+        val keyProvider: String = ""
     )
     
     // 时间同步状态
@@ -232,27 +242,29 @@ class SystemMonitor @Inject constructor(
      */
     private suspend fun monitorTransmissionStatus() {
         while (currentCoroutineContext().isActive) {
-            val grpcConnected = uploader.isConnected()
-            val liteSnapshot = smartTransmissionManager.getUploadSnapshot()
-
-            val liteQueueEstimate = (liteSnapshot.processedPackets - liteSnapshot.uploadedPackets)
-                .coerceAtLeast(0)
-                .toInt()
-            val queueSize = if (grpcConnected) {
-                fileQueueManager.getQueueSize()
-            } else {
-                liteQueueEstimate
-            }
-
-            val hasRecentLiteUpload = liteSnapshot.lastUploadTimestamp > 0 &&
-                (System.currentTimeMillis() - liteSnapshot.lastUploadTimestamp) < 5000
-            val isConnected = grpcConnected || (liteSnapshot.isRunning && hasRecentLiteUpload)
+            val uploadStatus = uploadManager.getUploadStatus()
+            val transportState = uploader.getTransportState()
+            val queueSize = uploadStatus.bufferedPackets +
+                (uploadStatus.fileQueueStats?.pendingPackets ?: 0)
+            val isConnected = uploadStatus.connectionStatus == com.continuousauth.network.ConnectionStatus.CONNECTED
             
             _transmissionStatus.value = TransmissionStatus(
-                currentProfile = "UNRESTRICTED", // 默认不限制网络类型
+                compression = "LZ4",
                 isConnected = isConnected,
                 uploadQueueSize = queueSize,
-                lastUploadTime = if (grpcConnected) System.currentTimeMillis() else liteSnapshot.lastUploadTimestamp
+                lastUploadTime = if (uploadStatus.uploadedPackets > 0) {
+                    System.currentTimeMillis()
+                } else {
+                    transportState.lastAttemptMs
+                },
+                transportMode = transportState.mode,
+                transportTlsVersion = transportState.tlsVersion,
+                transportNegotiatedProtocol = transportState.negotiatedProtocol,
+                transportDowngraded = transportState.downgradedToCleartext,
+                transportLastAttemptMs = transportState.lastAttemptMs,
+                transportPreferredScheme = transportState.preferredScheme,
+                transportTlsCapable = transportState.tlsCapable,
+                transportError = transportState.lastError
             )
             
             delay(1000) // 每秒更新
@@ -284,16 +296,16 @@ class SystemMonitor @Inject constructor(
      */
     private suspend fun monitorBufferStatistics() {
         while (currentCoroutineContext().isActive) {
-            val memoryStats = uploader.getMemoryBufferStats()
-            val diskStats = fileQueueManager.getQueueStatistics()
-            
+            val status = uploadManager.getUploadStatus()
+            val diskStats = status.fileQueueStats
+
             _bufferStats.value = BufferStatistics(
-                memorySamples = memoryStats.samplesInMemory,
-                packetsInDiskQueue = diskStats.pendingPackets,
-                totalSentCount = memoryStats.totalSent + diskStats.totalSent,
-                totalFailedCount = memoryStats.totalFailed + diskStats.totalFailed,
-                totalDiscardedCount = memoryStats.totalDiscarded + diskStats.totalDiscarded,
-                diskQueueSizeMB = diskStats.totalSizeMB
+                memorySamples = status.bufferedPackets,
+                packetsInDiskQueue = diskStats?.pendingPackets ?: 0,
+                totalSentCount = status.uploadedPackets,
+                totalFailedCount = diskStats?.failedCount?.toLong() ?: 0L,
+                totalDiscardedCount = diskStats?.corruptedPackets?.toLong() ?: 0L,
+                diskQueueSizeMB = (diskStats?.totalSizeBytes ?: 0L) / (1024f * 1024f)
             )
             
             delay(500) // 每500ms更新
@@ -426,7 +438,7 @@ class SystemMonitor @Inject constructor(
     }
     
     /**
-     * 监控Envelope加密状态
+     * 监控加密状态
      */
     private suspend fun monitorEncryptionStatus() {
         while (currentCoroutineContext().isActive) {
@@ -435,12 +447,14 @@ class SystemMonitor @Inject constructor(
             
             _encryptionStatus.value = EncryptionStatus(
                 isSecurityLocked = securityStatus.isLocked,
-                consecutiveFailures = 0,
+                consecutiveFailures = securityStatus.failureCount,
                 maxFailuresThreshold = 5,
                 isInitialized = securityStatus.isInitialized,
                 hasServerPublicKey = securityStatus.hasValidKeys,
-                currentDekKeyId = "DEK_001",
-                packetSequenceNumber = 0
+                currentDekKeyId = cryptoBox.getDekKeyId(),
+                packetSequenceNumber = 0,
+                encryptionAlgorithm = keyInfo.encryptionAlgorithm,
+                keyProvider = keyInfo.keysetProvider
             )
             
             // 同时更新设备密钥信息中的轮换次数
@@ -599,7 +613,9 @@ class SystemMonitor @Inject constructor(
         return when (state) {
             "CONNECTED" -> ConnectionState.CONNECTED
             "CONNECTING", "IDLE" -> ConnectionState.CONNECTING
+            "RECONNECTING" -> ConnectionState.CONNECTING
             "TRANSIENT_FAILURE" -> ConnectionState.TRANSIENT_FAILURE
+            "ERROR" -> ConnectionState.TRANSIENT_FAILURE
             else -> ConnectionState.DISCONNECTED
         }
     }
@@ -674,7 +690,7 @@ class SystemMonitor @Inject constructor(
                 
                 // 传输状态（脱敏）
                 appendLine("【传输状态】")
-                appendLine("传输策略: ${_transmissionStatus.value.currentProfile}")
+                appendLine("压缩算法: ${_transmissionStatus.value.compression}")
                 appendLine("连接状态: ${if (_transmissionStatus.value.isConnected) "已连接" else "未连接"}")
                 appendLine("上传队列大小: ${_transmissionStatus.value.uploadQueueSize}")
                 appendLine()

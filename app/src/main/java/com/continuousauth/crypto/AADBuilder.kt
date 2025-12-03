@@ -3,11 +3,8 @@ package com.continuousauth.crypto
 import android.content.Context
 import android.os.BatteryManager
 import android.os.Build
-import com.google.protobuf.ByteString
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.nio.charset.StandardCharsets
-import javax.crypto.Mac
-import javax.crypto.spec.SecretKeySpec
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -31,7 +28,6 @@ class AADBuilder @Inject constructor(
         packetId: String,
         packetSeqNo: Long,
         dekKeyId: String,
-        transmissionProfile: String = "UNRESTRICTED",
         appVersion: String,
         sampleCount: Int,
         keyVersion: String = "v1"
@@ -54,7 +50,6 @@ class AADBuilder @Inject constructor(
                 .setDeviceManufacturer(Build.MANUFACTURER)
                 .setAppVersion(appVersion)
                 .setAndroidApiLevel(Build.VERSION.SDK_INT)
-                .setTransmissionMode(transmissionProfile)
                 .setSampleCount(sampleCount)
                 .setBatteryLevel(getBatteryLevel())
                 .setNetworkType(getNetworkType())
@@ -158,7 +153,6 @@ private class AADData private constructor(
         fun setDeviceManufacturer(value: String) = apply { data["device_manufacturer"] = value }
         fun setAppVersion(value: String) = apply { data["app_version"] = value }
         fun setAndroidApiLevel(value: Int) = apply { data["android_api_level"] = value }
-        fun setTransmissionMode(value: String) = apply { data["transmission_mode"] = value }
         fun setSampleCount(value: Int) = apply { data["sample_count"] = value }
         fun setBatteryLevel(value: Int) = apply { data["battery_level"] = value }
         fun setNetworkType(value: String) = apply { data["network_type"] = value }

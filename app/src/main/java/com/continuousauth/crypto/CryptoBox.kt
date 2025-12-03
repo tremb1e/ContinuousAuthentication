@@ -79,7 +79,8 @@ interface CryptoBox {
 data class SecurityStatus(
     val isInitialized: Boolean = true,
     val hasValidKeys: Boolean = true,
-    val isLocked: Boolean = false
+    val isLocked: Boolean = false,
+    val failureCount: Int = 0
 )
 
 /**

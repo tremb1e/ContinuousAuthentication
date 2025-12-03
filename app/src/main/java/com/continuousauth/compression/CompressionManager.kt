@@ -2,8 +2,6 @@ package com.continuousauth.compression
 
 import android.util.Log
 import net.jpountz.lz4.LZ4Factory
-import net.jpountz.lz4.LZ4FastDecompressor
-import net.jpountz.lz4.LZ4SafeDecompressor
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
@@ -23,9 +21,6 @@ class CompressionManager @Inject constructor() {
     companion object {
         private const val TAG = "CompressionManager"
         
-        // 压缩阈值：小于此大小的数据不压缩（字节）
-        private const val MIN_COMPRESS_SIZE = 256
-        
         // 默认压缩缓冲区大小
         private const val BUFFER_SIZE = 8192
         
@@ -39,7 +34,7 @@ class CompressionManager @Inject constructor() {
     enum class CompressionType {
         NONE,
         GZIP,
-        LZ4,    // 预留，暂未实现
+        LZ4,    // 默认算法
         SNAPPY  // 预留，暂未实现
     }
     
@@ -49,14 +44,8 @@ class CompressionManager @Inject constructor() {
      * @param type 压缩类型
      * @return 压缩后的数据，如果压缩失败返回null
      */
-    fun compress(data: ByteArray, type: CompressionType = CompressionType.GZIP): ByteArray? {
+    fun compress(data: ByteArray, type: CompressionType = CompressionType.LZ4): ByteArray? {
         try {
-            // 检查数据大小是否值得压缩
-            if (data.size < MIN_COMPRESS_SIZE) {
-                Log.v(TAG, "数据大小 ${data.size} 字节，小于阈值，跳过压缩")
-                return data
-            }
-            
             return when (type) {
                 CompressionType.NONE -> data
                 CompressionType.GZIP -> compressGzip(data)
@@ -78,7 +67,7 @@ class CompressionManager @Inject constructor() {
      * @param type 压缩类型
      * @return 解压后的数据，如果解压失败返回null
      */
-    fun decompress(data: ByteArray, type: CompressionType = CompressionType.GZIP): ByteArray? {
+    fun decompress(data: ByteArray, type: CompressionType = CompressionType.LZ4): ByteArray? {
         try {
             return when (type) {
                 CompressionType.NONE -> data
@@ -152,10 +141,10 @@ class CompressionManager @Inject constructor() {
      */
     fun getCompressionTypeString(type: CompressionType): String {
         return when (type) {
-            CompressionType.NONE -> "none"
-            CompressionType.GZIP -> "gzip"
-            CompressionType.LZ4 -> "lz4"
-            CompressionType.SNAPPY -> "snappy"
+            CompressionType.NONE -> "NONE"
+            CompressionType.GZIP -> "GZIP"
+            CompressionType.LZ4 -> "LZ4"
+            CompressionType.SNAPPY -> "SNAPPY"
         }
     }
     
@@ -168,7 +157,7 @@ class CompressionManager @Inject constructor() {
             "gzip" -> CompressionType.GZIP
             "lz4" -> CompressionType.LZ4
             "snappy" -> CompressionType.SNAPPY
-            else -> CompressionType.GZIP // 默认使用 GZIP
+            else -> CompressionType.LZ4 // 默认使用 LZ4
         }
     }
     

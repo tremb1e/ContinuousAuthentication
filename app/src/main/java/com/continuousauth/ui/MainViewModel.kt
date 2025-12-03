@@ -20,12 +20,13 @@ import com.continuousauth.monitor.SystemMonitor
 import com.continuousauth.network.ConnectionStatus
 import com.continuousauth.network.NetworkEnvironmentDetector
 import com.continuousauth.network.NetworkState
+import com.continuousauth.network.TransportMode
 import com.continuousauth.network.UploadManager
+import com.continuousauth.network.UploadStatus
 import com.continuousauth.observability.MetricsCollectorImpl
 import com.continuousauth.observability.PerformanceMonitorImpl
 import com.continuousauth.pool.SensorEventPool
 import com.continuousauth.utils.UserIdManager
-import com.continuousauth.network.ServerConnectionTester
 import com.continuousauth.network.TlsSecurityManager
 import com.continuousauth.network.TlsConfigInfo
 import com.continuousauth.storage.FileQueueManager
@@ -63,7 +64,6 @@ class MainViewModel @Inject constructor(
     private val memoryMonitor: MemoryMonitor,
     private val sensorEventPool: SensorEventPool,
     private val userIdManager: UserIdManager,
-    private val serverConnectionTester: ServerConnectionTester,
     private val fileQueueManager: FileQueueManager,
     private val tlsSecurityManager: TlsSecurityManager,
     private val privacyManager: PrivacyManager,
@@ -74,8 +74,8 @@ class MainViewModel @Inject constructor(
     companion object {
         private const val TAG = "MainViewModel"
         private const val DEFAULT_SERVER_IP = "10.0.2.2"
-        private const val DEFAULT_SERVER_PORT = 8000
-        private const val DEFAULT_SERVER_SCHEME = "http"
+        private const val DEFAULT_SERVER_PORT = 50051
+        private const val DEFAULT_SERVER_SCHEME = "https"
     }
     
     // 采集状态
@@ -140,8 +140,8 @@ class MainViewModel @Inject constructor(
     private val _sessionDuration = MutableLiveData<String>()
     val sessionDuration: LiveData<String> = _sessionDuration
 
-    // 轻量链路统计更新任务
-    private var liteStatsJob: Job? = null
+    // 上传统计更新任务
+    private var uploadStatsJob: Job? = null
 
     // 服务器测试结果
     private val _serverTestResult = MutableLiveData<String?>()
@@ -367,18 +367,20 @@ class MainViewModel @Inject constructor(
                 // 确保前台服务运行，避免切后台被系统限制网络/传感器
                 startForegroundCollectionService()
 
-                // 启动轻量化的传输管理器（传感器采集 + 加密 + HTTP上传）
+                // 启动传输管理器（传感器采集 + 加密 + gRPC上传）
                 smartTransmissionManager.start()
-                
+
+                val uploadStatus = uploadManager.getUploadStatus()
+
                 _collectionStatus.value = "RUNNING"
                 _isCollectionRunning.value = true
                 _isEncryptedUploading.value = true  // 启动后进入"加密上传中"状态
                 updateSensorStatus(running = true)
-                _connectionStatus.value = ConnectionStatus.CONNECTED
+                _connectionStatus.value = uploadStatus.connectionStatus
 
                 // 开始更新会话时长与上传统计
                 startSessionDurationUpdate()
-                startLiteStatsUpdates()
+                startUploadStatsUpdates()
                 
                 updateDebugInfo()
                 
@@ -500,7 +502,7 @@ class MainViewModel @Inject constructor(
                 
                 // 停止智能传输管理器
                 smartTransmissionManager.stop()
-                liteStatsJob?.cancel()
+                uploadStatsJob?.cancel()
                 
                 // 结束会话
                 userIdManager.endSession()
@@ -554,27 +556,21 @@ class MainViewModel @Inject constructor(
                 // 更新网络状态
                 _networkState.value = networkEnvironmentDetector.getCurrentNetworkState()
 
-                val liteSnapshot = smartTransmissionManager.getUploadSnapshot()
-                _connectionStatus.value = if (liteSnapshot.isRunning) {
-                    ConnectionStatus.CONNECTED
-                } else {
-                    ConnectionStatus.DISCONNECTED
-                }
+                val uploadStatus = uploadManager.getUploadStatus()
+                _connectionStatus.value = uploadStatus.connectionStatus
 
-                // 更新文件队列统计（lite链路下使用内存计数模拟）
-                val pending = (liteSnapshot.processedPackets - liteSnapshot.uploadedPackets)
-                    .coerceAtLeast(0)
-                    .toInt()
-                _fileQueueStats.value = QueueStats(
-                    totalPackets = liteSnapshot.processedPackets.toInt(),
+                val pending = uploadStatus.bufferedPackets +
+                    (uploadStatus.fileQueueStats?.pendingPackets ?: 0)
+                _fileQueueStats.value = uploadStatus.fileQueueStats ?: QueueStats(
+                    totalPackets = (uploadStatus.uploadedPackets + pending).toInt(),
                     pendingPackets = pending,
-                    uploadedPackets = liteSnapshot.uploadedPackets.toInt(),
-                    corruptedPackets = liteSnapshot.failedPackets.toInt(),
-                    totalSizeBytes = 0
+                    uploadedPackets = uploadStatus.uploadedPackets.toInt(),
+                    corruptedPackets = 0,
+                    totalSizeBytes = uploadStatus.fileQueueStats?.totalSizeBytes ?: 0
                 )
 
                 // 更新传输统计
-                updateTransmissionStats()
+                updateTransmissionStats(uploadStatus)
                 
                 // 更新调试信息
                 updateDebugInfo()
@@ -602,17 +598,16 @@ class MainViewModel @Inject constructor(
     /**
      * 更新传输统计
      */
-    private fun updateTransmissionStats() {
-        val snapshot = smartTransmissionManager.getUploadSnapshot()
-        val pending = (snapshot.processedPackets - snapshot.uploadedPackets)
-            .coerceAtLeast(0)
-            .toInt()
+    private fun updateTransmissionStats(status: UploadStatus? = null) {
+        val uploadStatus = status ?: uploadManager.getUploadStatus()
+        val pending = uploadStatus.bufferedPackets +
+            (uploadStatus.fileQueueStats?.pendingPackets ?: 0)
 
         _transmissionStats.value = TransmissionStats(
             isFastMode = false,
-            packetsSent = snapshot.uploadedPackets,
+            packetsSent = uploadStatus.uploadedPackets,
             packetsPending = pending,
-            lastAckLatency = null
+            lastAckLatency = uploadStatus.connectionStats.lastAckLatency
         )
     }
     
@@ -658,12 +653,22 @@ class MainViewModel @Inject constructor(
             appendLine()
             
             appendLine("=== gRPC 连接状态 ===")
-            appendLine("连接端点: grpc://localhost:8080") // TODO: 从配置获取
+            val cfg = getServerConfig()
+            val transport = uploadManager.getTransportState()
+            appendLine("连接端点: ${cfg.scheme}://${cfg.host}:${cfg.port}")
             appendLine("连接状态: ${_connectionStatus.value}")
-            val stats = _transmissionStats.value
-            stats?.lastAckLatency?.let {
-                appendLine("最近ACK延迟: ${it}ms")
+            val modeLabel = if (transport.mode == TransportMode.HTTPS) {
+                val detail = listOfNotNull(
+                    transport.tlsVersion,
+                    transport.negotiatedProtocol
+                ).filter { it.isNotBlank() }.joinToString(" / ")
+                if (detail.isBlank()) "TLS" else "TLS $detail"
+            } else {
+                "h2c 明文" + if (transport.downgradedToCleartext) "（TLS不可用/失败）" else ""
             }
+            appendLine("传输通道: $modeLabel")
+            val stats = _transmissionStats.value
+            stats?.lastAckLatency?.let { appendLine("最近ACK延迟: ${it}ms") }
             appendLine()
             
             appendLine("=== 缓冲与传输统计 ===")
@@ -877,13 +882,14 @@ class MainViewModel @Inject constructor(
 
                 val cfg = getServerConfig()
 
-                val result = serverConnectionTester.testServerConnection(
-                    serverIp = cfg.host,
+                val result = uploadManager.testServerConnection(
+                    serverHost = cfg.host,
                     serverPort = cfg.port,
+                    useTls = cfg.scheme == "https",
                     testGrpc = true
                 )
                 
-                _serverTestResult.value = serverConnectionTester.getTestResultDescription(result)
+                _serverTestResult.value = uploadManager.getTestResultDescription(result)
                 
                 // 根据测试结果更新连接状态
                 if (result.isReachable) {
@@ -894,7 +900,6 @@ class MainViewModel @Inject constructor(
                 } else {
                     _connectionStatus.value = ConnectionStatus.DISCONNECTED
                 }
-                uploadManager.start("${serverIp}:${serverPort}")
                 // 3秒后清除测试结果
                 delay(3000)
                 _serverTestResult.value = null
@@ -913,7 +918,7 @@ class MainViewModel @Inject constructor(
      * 开始更新会话时长
      */
     private fun startSessionDurationUpdate() {
-        viewModelScope.launch {
+        viewModelScope.launch { 
             while (_isEncryptedUploading.value == true) {
                 _sessionDuration.value = userIdManager.getFormattedSessionDuration()
                 delay(1000) // 每秒更新一次
@@ -922,32 +927,31 @@ class MainViewModel @Inject constructor(
     }
 
     /**
-     * 启动轻量链路上传统计刷新，驱动UI显示真实的发送/队列数量。
+     * 启动上传统计刷新，驱动UI显示真实的发送/队列数量。
      */
-    private fun startLiteStatsUpdates() {
-        liteStatsJob?.cancel()
-        liteStatsJob = viewModelScope.launch {
+    private fun startUploadStatsUpdates() {
+        uploadStatsJob?.cancel()
+        uploadStatsJob = viewModelScope.launch {
             while (_isEncryptedUploading.value == true) {
-                val snapshot = smartTransmissionManager.getUploadSnapshot()
-                val pending = (snapshot.processedPackets - snapshot.uploadedPackets)
-                    .coerceAtLeast(0)
-                    .toInt()
+                val status = uploadManager.getUploadStatus()
+                val pending = status.bufferedPackets +
+                    (status.fileQueueStats?.pendingPackets ?: 0)
 
                 _transmissionStats.postValue(
                     TransmissionStats(
                         isFastMode = false,
-                        packetsSent = snapshot.uploadedPackets,
+                        packetsSent = status.uploadedPackets,
                         packetsPending = pending,
-                        lastAckLatency = null
+                        lastAckLatency = status.connectionStats.lastAckLatency
                     )
                 )
 
                 _fileQueueStats.postValue(
-                    QueueStats(
-                        totalPackets = snapshot.processedPackets.toInt(),
+                    status.fileQueueStats ?: QueueStats(
+                        totalPackets = (status.uploadedPackets + pending).toInt(),
                         pendingPackets = pending,
-                        uploadedPackets = snapshot.uploadedPackets.toInt(),
-                        corruptedPackets = snapshot.failedPackets.toInt(),
+                        uploadedPackets = status.uploadedPackets.toInt(),
+                        corruptedPackets = 0,
                         totalSizeBytes = 0
                     )
                 )
@@ -1094,7 +1098,7 @@ class MainViewModel @Inject constructor(
         // 清理智能传输管理器（已移除）
         performanceMonitor.cleanup()
         memoryMonitor.cleanup()
-        liteStatsJob?.cancel()
+        uploadStatsJob?.cancel()
         viewModelScope.launch {
             performanceMonitor.stopMonitoring()
             memoryMonitor.stopMonitoring()

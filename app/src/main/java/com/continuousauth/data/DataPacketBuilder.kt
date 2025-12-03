@@ -41,13 +41,13 @@ class DataPacketBuilder @Inject constructor(
     fun buildDataPacket(
         sensorSamples: List<SensorSample>,
         encryptedPayload: ByteArray,
-        transmissionProfile: String = "UNRESTRICTED",
+        packetSeqNo: Long? = null,
         userId: String,
         sessionId: String,
         encryptedDek: ByteArray? = null,
         dekKeyId: String = "",
         sha256: ByteArray? = null,
-        compressionType: String = "gzip"
+        compressionType: String = "LZ4"
     ): DataPacket {
         
         // 记录批次创建时的关键时间戳
@@ -59,13 +59,14 @@ class DataPacketBuilder @Inject constructor(
         val packetId = UUID.randomUUID().toString()
         
         // 构建元数据
-        val metadata = buildMetadata(transmissionProfile, compressionType)
+        val metadata = buildMetadata(compressionType)
         
         // 获取设备ID的HMAC哈希
         val deviceIdHash = envelopeCryptoBox.getDeviceIdHash()
         
         // 获取下一个包序列号
-        packetSeqNo = envelopeCryptoBox.getNextPacketSeqNo()
+        val seqNo = packetSeqNo ?: envelopeCryptoBox.getNextPacketSeqNo()
+        this.packetSeqNo = seqNo
         
         // 构建DataPacket
         val builder = DataPacket.newBuilder()
@@ -74,10 +75,10 @@ class DataPacketBuilder @Inject constructor(
             .setBaseWallMs(baseWallMs)
             .setDeviceUptimeNs(baseElapsedNs)
             .setEncryptedSensorPayload(com.google.protobuf.ByteString.copyFrom(encryptedPayload))
-            .setPacketSeqNo(packetSeqNo)  // 添加序列号
+            .setPacketSeqNo(seqNo)  // 添加序列号
             .setMetadata(metadata)
         
-        // 添加Envelope加密相关字段
+        // 加密相关字段（共享对称密钥方案）
         if (encryptedDek != null) {
             builder.setEncryptedDek(com.google.protobuf.ByteString.copyFrom(encryptedDek))
         }
@@ -120,10 +121,9 @@ class DataPacketBuilder @Inject constructor(
                 .setAccuracy(sample.accuracy)
                 .setSeqNo(sample.seqNo)
             
-            // 使用HMAC哈希前台应用包名
+            // 前台应用使用明文字段，确保日志能看到真实包名
             if (sample.foregroundApp.isNotEmpty()) {
-                val appHash = envelopeCryptoBox.getAppPackageHash(sample.foregroundApp)
-                builder.setForegroundAppHash(appHash)
+                builder.setForegroundApp(sample.foregroundApp)
             }
             
             builder.build()
@@ -142,14 +142,13 @@ class DataPacketBuilder @Inject constructor(
     /**
      * 构建元数据
      */
-    private fun buildMetadata(transmissionProfile: String, compressionType: String = "gzip"): Metadata {
+    private fun buildMetadata(compressionType: String = "LZ4"): Metadata {
         return Metadata.newBuilder()
             .setAppVersion(getAppVersion())
             .setAndroidApiLevel(Build.VERSION.SDK_INT)  // 这是正确的，proto定义中是int32
             .setSchemaVersion(SCHEMA_VERSION)
-            .setTransmissionProfile(transmissionProfile)
             .setCompression(compressionType)  // 使用传入的压缩类型
-            .setEncryptionScheme("Envelope-AES256GCM")  // 使用Envelope加密方案
+            .setEncryptionScheme("AES-256-GCM")  // 与服务端共享密钥的对称加密
             .setKeyVersion(envelopeCryptoBox.getDekKeyId())  // 密钥版本
             .build()
     }

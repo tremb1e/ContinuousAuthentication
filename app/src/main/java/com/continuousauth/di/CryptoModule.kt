@@ -10,7 +10,7 @@ import javax.inject.Singleton
 
 /**
  * 加密模块依赖注入配置
- * 使用EnvelopeCryptoBox实现Envelope Encryption
+ * EnvelopeCryptoBox 现在使用共享密钥的 AES-256-GCM
  */
 @Module
 @InstallIn(SingletonComponent::class)

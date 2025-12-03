@@ -29,6 +29,7 @@ class UploadManager @Inject constructor(
         private const val TAG = "UploadManager"
         private const val UPLOAD_BATCH_SIZE = 50
         private const val UPLOAD_INTERVAL_MS = 1000L // 1秒上传间隔
+        private const val ACK_RETRY_MS = 10_000L
     }
     
     // 状态管理
@@ -129,11 +130,15 @@ class UploadManager @Inject constructor(
         val queueStats = runBlocking { 
             val stats = fileQueueManager.getQueueStatistics()
             com.continuousauth.storage.QueueStats(
+                totalSizeBytes = stats.totalSizeBytes,
+                fileCount = stats.totalPackets,
+                pendingCount = stats.pendingPackets,
+                failedCount = stats.totalFailed.toInt(),
+                acknowledgedCount = stats.totalSent.toInt(),
                 totalPackets = stats.totalPackets,
                 pendingPackets = stats.pendingPackets, 
                 uploadedPackets = stats.uploadedPackets,
-                corruptedPackets = stats.corruptedPackets,
-                totalSizeBytes = stats.totalSizeBytes
+                corruptedPackets = stats.corruptedPackets
             )
         }
         
@@ -146,6 +151,30 @@ class UploadManager @Inject constructor(
             fileQueueStats = queueStats
         )
     }
+
+    /**
+     * 测试服务器连接（复用 UploaderImpl）
+     */
+    suspend fun testServerConnection(
+        serverHost: String,
+        serverPort: Int,
+        useTls: Boolean = true,
+        testGrpc: Boolean = true
+    ): ServerTestResult {
+        return uploader.testServerConnection(serverHost, serverPort, useTls, testGrpc)
+    }
+
+    /**
+     * 将测试结果转换为可读字符串
+     */
+    fun getTestResultDescription(result: ServerTestResult): String {
+        return uploader.getTestResultDescription(result)
+    }
+
+    /**
+     * 获取当前传输通道状态（TLS/h2c）
+     */
+    fun getTransportState(): TransportState = uploader.getTransportState()
     
     /**
      * 启动服务器指令处理
@@ -176,7 +205,10 @@ class UploadManager @Inject constructor(
         uploadJob = managerScope.launch {
             while (isRunning.get() && isActive) {
                 try {
-                    uploadBatchFromBuffer()
+                    var processed: Int
+                    do {
+                        processed = uploadBatchFromBuffer()
+                    } while (isRunning.get() && processed > 0)
                     delay(UPLOAD_INTERVAL_MS)
                 } catch (e: CancellationException) {
                     Log.i(TAG, "上传循环已取消")
@@ -192,23 +224,40 @@ class UploadManager @Inject constructor(
     /**
      * 从缓冲区上传批次数据
      */
-    private suspend fun uploadBatchFromBuffer() {
+    private suspend fun uploadBatchFromBuffer(): Int {
         // 检查WiFi-only模式
         if (isWifiOnlyMode && !networkEnvironmentDetector.isWifiConnected()) {
             Log.v(TAG, "WiFi-only模式启用，当前非WiFi网络，跳过上传")
-            return
+            return 0
         }
         
         // 优先从内存缓冲区获取
         val packets = if (!inMemoryBuffer.isEmpty()) {
             inMemoryBuffer.dequeue(UPLOAD_BATCH_SIZE)
         } else {
-            // 内存为空时，不再从文件队列获取（简化处理）
-            emptyList()
+            // 内存为空时，从磁盘队列拉取待上传数据
+            val pendingMetadata = fileQueueManager.getPendingPackets(ACK_RETRY_MS).take(UPLOAD_BATCH_SIZE)
+            pendingMetadata.mapNotNull { meta ->
+                val bytes = fileQueueManager.readDataPacket(meta.packetId).getOrNull()
+                if (bytes == null) {
+                    Log.w(TAG, "读取待上传数据失败: ${meta.packetId}")
+                    fileQueueManager.updateFailedStatus(meta.packetId, "READ_FAILED")
+                    fileQueueManager.deleteDataPacket(meta.packetId)
+                    null
+                } else {
+                    runCatching { DataPacket.parseFrom(bytes) }
+                        .onFailure { 
+                            Log.e(TAG, "解析待上传数据失败: ${meta.packetId}", it)
+                            fileQueueManager.updateFailedStatus(meta.packetId, "PARSE_FAILED")
+                            fileQueueManager.deleteDataPacket(meta.packetId)
+                        }
+                        .getOrNull()
+                }
+            }
         }
         
         if (packets.isEmpty()) {
-            return
+            return 0
         }
         
         try {
@@ -220,11 +269,18 @@ class UploadManager @Inject constructor(
             for (packet in packets) {
                 if (uploader.sendDataPacket(packet)) {
                     successCount++
-                    // 如果数据包在文件队列中，删除它
-                    fileQueueManager.deleteDataPacket(packet.packetId)
+                    // 更新磁盘队列状态为已上传（等待ACK）
+                    fileQueueManager.updateUploadStatus(
+                        packetId = packet.packetId,
+                        status = com.continuousauth.database.BatchStatus.UPLOADED,
+                        uploadTime = System.currentTimeMillis()
+                    )
                 } else {
                     Log.w(TAG, "数据包发送失败: ${packet.packetId}")
-                    // 失败的包不再特殊处理，让它保留在队列中
+                    fileQueueManager.updateFailedStatus(
+                        packetId = packet.packetId,
+                        error = "SEND_FAILED"
+                    )
                 }
             }
             
@@ -234,6 +290,8 @@ class UploadManager @Inject constructor(
         } catch (e: Exception) {
             Log.e(TAG, "批次上传异常", e)
         }
+
+        return packets.size
     }
     
     /**
@@ -348,10 +406,6 @@ class UploadManager @Inject constructor(
                 val ac = policyUpdate.anomalyConfig
                 Log.d(TAG, "  异常检测 - 启用: ${ac.enabled}, 阈值倍数: ${ac.thresholdMultiplier}")
             }
-            if (policyUpdate.transmissionProfile.isNotEmpty()) {
-                Log.d(TAG, "  传输策略: ${policyUpdate.transmissionProfile}")
-            }
-            
             Log.i(TAG, "策略更新处理完成")
             
         } catch (e: Exception) {
@@ -423,8 +477,7 @@ class UploadManager @Inject constructor(
      * 获取待发送数据包数量
      */
     fun getPendingPacketsCount(): Int {
-        // 简化实现，返回内存缓冲区的大小
-        return inMemoryBuffer.getSize()
+        return inMemoryBuffer.getSize() + fileQueueManager.queueStats.value.pendingPackets
     }
     
     /**

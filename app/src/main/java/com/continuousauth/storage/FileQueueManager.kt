@@ -247,10 +247,28 @@ class FileQueueManager @Inject constructor(
             batchMetadataDao.updateStatus(packetId, BatchStatus.FAILED)
             // 更新重试信息
             batchMetadataDao.updateRetryInfo(packetId, error)
+            updateQueueStats()
             Log.d(TAG, "数据包状态已标记为失败: $packetId, 错误: $error")
             
         } catch (e: Exception) {
             Log.e(TAG, "更新失败状态失败: $packetId", e)
+        }
+    }
+
+    /**
+     * 更新上传状态（已推送但未ACK）
+     */
+    suspend fun updateUploadStatus(
+        packetId: String,
+        status: BatchStatus = BatchStatus.UPLOADED,
+        uploadTime: Long = System.currentTimeMillis()
+    ) = withContext(Dispatchers.IO) {
+        try {
+            batchMetadataDao.updateUploadStatus(packetId, status, uploadTime)
+            updateQueueStats()
+            Log.d(TAG, "数据包上传状态已更新: $packetId -> $status")
+        } catch (e: Exception) {
+            Log.e(TAG, "更新上传状态失败: $packetId", e)
         }
     }
     
@@ -305,11 +323,21 @@ class FileQueueManager @Inject constructor(
     /**
      * 获取待上传的数据包列表
      */
-    suspend fun getPendingPackets(): List<BatchMetadata> = withContext(Dispatchers.IO) {
+    suspend fun getPendingPackets(retryUploadedAfterMs: Long = 0L): List<BatchMetadata> = withContext(Dispatchers.IO) {
         try {
-            batchMetadataDao.getPendingBatches(
+            val pending = batchMetadataDao.getPendingBatches(
                 listOf(BatchStatus.PENDING, BatchStatus.FAILED)
-            )
+            ).toMutableList()
+
+            if (retryUploadedAfterMs > 0) {
+                val cutoff = System.currentTimeMillis() - retryUploadedAfterMs
+                val awaitingAck = batchMetadataDao.getPendingBatches(
+                    listOf(BatchStatus.UPLOADED)
+                ).filter { (it.uploadTime ?: 0L) <= cutoff }
+                pending.addAll(awaitingAck)
+            }
+
+            pending
         } catch (e: Exception) {
             Log.e(TAG, "获取待上传数据包失败", e)
             emptyList()
@@ -449,21 +477,24 @@ class FileQueueManager @Inject constructor(
             val pending = statusCounts.find { it.status == BatchStatus.PENDING }?.count ?: 0
             val uploading = statusCounts.find { it.status == BatchStatus.UPLOADING }?.count ?: 0
             val uploaded = statusCounts.find { it.status == BatchStatus.ACKNOWLEDGED }?.count ?: 0
+            val pendingAck = statusCounts.find { it.status == BatchStatus.UPLOADED }?.count ?: 0
             val failed = statusCounts.find { it.status == BatchStatus.FAILED }?.count ?: 0
             val corrupted = statusCounts.find { it.status == BatchStatus.CORRUPT }?.count ?: 0
-            val total = pending + uploading + uploaded + failed + corrupted
+            val discarded = statusCounts.find { it.status == BatchStatus.DISCARDED }?.count ?: 0
+            val total = pending + uploading + uploaded + failed + corrupted + pendingAck + discarded
+            val pendingTotal = pending + failed + pendingAck
             
             _queueStats.value = QueueStats(
                 totalSizeBytes = totalSize,
                 fileCount = fileCount,
-                pendingCount = pending,
+                pendingCount = pendingTotal,
                 uploadingCount = uploading,
                 failedCount = failed,
                 acknowledgedCount = uploaded,
                 queueUsagePercent = (totalSize.toFloat() / MAX_QUEUE_SIZE_BYTES * 100).coerceIn(0f, 100f),
                 totalPackets = total,
-                pendingPackets = pending,
-                uploadedPackets = uploaded,
+                pendingPackets = pendingTotal,
+                uploadedPackets = uploaded + pendingAck,
                 corruptedPackets = corrupted
             )
         } catch (e: Exception) {
@@ -503,18 +534,20 @@ class FileQueueManager @Inject constructor(
             
             val pending = statusCounts.find { it.status == BatchStatus.PENDING }?.count ?: 0
             val uploaded = statusCounts.find { it.status == BatchStatus.ACKNOWLEDGED }?.count ?: 0
+            val pendingAck = statusCounts.find { it.status == BatchStatus.UPLOADED }?.count ?: 0
             val failed = statusCounts.find { it.status == BatchStatus.FAILED }?.count ?: 0
             val corrupted = statusCounts.find { it.status == BatchStatus.CORRUPT }?.count ?: 0
-            val total = pending + uploaded + failed + corrupted
+            val discarded = statusCounts.find { it.status == BatchStatus.DISCARDED }?.count ?: 0
+            val total = pending + uploaded + failed + corrupted + pendingAck + discarded
             
             QueueStatisticsDetail(
-                pendingPackets = pending,
+                pendingPackets = pending + failed + pendingAck,
                 totalSent = uploaded.toLong(),
                 totalFailed = failed.toLong(),
-                totalDiscarded = statusCounts.find { it.status == BatchStatus.DISCARDED }?.count?.toLong() ?: 0L,
+                totalDiscarded = discarded.toLong(),
                 totalSizeMB = totalSize / (1024f * 1024f),
                 totalPackets = total,
-                uploadedPackets = uploaded,
+                uploadedPackets = uploaded + pendingAck,
                 corruptedPackets = corrupted,
                 totalSizeBytes = totalSize
             )

@@ -1,7 +1,10 @@
 package com.continuousauth.network
 
 import com.continuousauth.proto.DataPacket
+import com.continuousauth.proto.Heartbeat
+import com.continuousauth.proto.HeartbeatAck
 import com.continuousauth.proto.ServerDirective
+import com.continuousauth.network.TransportState
 import kotlinx.coroutines.flow.Flow
 
 /**
@@ -23,6 +26,11 @@ interface Uploader {
      * @return 是否成功发送
      */
     suspend fun sendDataPacket(dataPacket: DataPacket): Boolean
+
+    /**
+     * 发送心跳
+     */
+    suspend fun sendHeartbeat(heartbeat: Heartbeat): HeartbeatAck?
     
     /**
      * 获取服务器指令流
@@ -54,6 +62,16 @@ interface Uploader {
      * 获取gRPC状态信息
      */
     fun getGrpcStatus(): GrpcStatus
+
+    /**
+     * 获取底层传输通道（TLS/h2c）状态
+     */
+    fun getTransportState(): TransportState
+
+    /**
+     * 获取底层通道状态
+     */
+    fun getChannelState(): String
     
     /**
      * 获取缓冲区统计信息
@@ -89,6 +107,21 @@ interface Uploader {
      * 获取服务器策略
      */
     suspend fun getServerPolicy(): ServerPolicy
+
+    /**
+     * 测试服务器可达性（Socket/HTTP/gRPC）
+     */
+    suspend fun testServerConnection(
+        serverHost: String,
+        serverPort: Int,
+        useTls: Boolean = true,
+        testGrpc: Boolean = true
+    ): ServerTestResult
+
+    /**
+     * 将测试结果格式化为用户可读描述
+     */
+    fun getTestResultDescription(result: ServerTestResult): String
 }
 
 /**
@@ -97,7 +130,11 @@ interface Uploader {
 data class ConnectionStatusDetail(
     val state: String,
     val endpoint: String,
-    val lastAckLatencyMs: Long
+    val lastAckLatencyMs: Long,
+    val usingTls: Boolean = false,
+    val tlsVersion: String? = null,
+    val negotiatedProtocol: String? = null,
+    val downgradedToCleartext: Boolean = false
 )
 
 /**
@@ -198,6 +235,27 @@ data class GrpcStatus(
     val connectionState: ConnectionStatus = ConnectionStatus.DISCONNECTED,
     val lastAckLatency: Long = 0L               // 最近ACK延迟（毫秒）
 )
+
+/**
+ * 服务器连接测试结果
+ */
+data class ServerTestResult(
+    val isReachable: Boolean,
+    val latencyMs: Long? = null,
+    val statusCode: Int? = null,
+    val errorMessage: String? = null,
+    val testType: ServerTestType,
+    val details: Map<String, String> = emptyMap()
+)
+
+/**
+ * 服务器测试类型
+ */
+enum class ServerTestType {
+    SOCKET_TEST,    // TCP Socket测试
+    HTTP_TEST,      // HTTP请求测试
+    GRPC_TEST      // gRPC连接测试
+}
 
 /**
  * 缓冲区统计信息
