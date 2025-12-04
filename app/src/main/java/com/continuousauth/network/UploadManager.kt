@@ -30,6 +30,9 @@ class UploadManager @Inject constructor(
         private const val UPLOAD_BATCH_SIZE = 50
         private const val UPLOAD_INTERVAL_MS = 1000L // 1秒上传间隔
         private const val ACK_RETRY_MS = 10_000L
+        // 降低速率模式的参数
+        private const val REDUCED_BATCH_SIZE = 10 // 降低模式下每批处理的数据包数量
+        private const val REDUCED_INTERVAL_MS = 5000L // 降低模式下的上传间隔
     }
 
     // 添加这些变量来跟踪当前使用的速率参数

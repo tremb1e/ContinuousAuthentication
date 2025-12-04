@@ -71,8 +71,6 @@ fun ServerConfigScreen(viewModel: MainViewModel) {
     val fileQueueStats by viewModel.fileQueueStats.observeAsState(null)
     
     // 本地状态
-//    var serverIp by remember { mutableStateOf("192.168.1.100") }
-//    var serverPort by remember { mutableStateOf("50051") }
     var serverIp by remember {
         mutableStateOf(SpUtils.decodeString(Constant.SERVER_IP, "192.168.1.100"))
     }
@@ -80,6 +78,7 @@ fun ServerConfigScreen(viewModel: MainViewModel) {
         mutableStateOf(SpUtils.decodeString(Constant.SERVER_PORT, "50051"))
     }
     var isTestingConnection by remember { mutableStateOf(false) }
+
     LaunchedEffect(Unit) {
         val saved = viewModel.getServerConfig()
         val displayHost = if (saved.scheme == "https") "https://${saved.host}" else saved.host

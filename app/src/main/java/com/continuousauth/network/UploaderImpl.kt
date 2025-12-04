@@ -36,7 +36,9 @@ data class PendingAck(
 class UploaderImpl @Inject constructor(
     private val tlsSecurityManager: TlsSecurityManager,
     private val policyManager: PolicyManager,
-    private val tlsInspector: GrpcTlsInspector
+    private val tlsInspector: GrpcTlsInspector,
+    private val inMemoryBuffer: InMemoryBuffer,
+    private val fileQueueManager: FileQueueManager
 ) : Uploader {
 
     companion object {
@@ -414,18 +416,20 @@ class UploaderImpl @Inject constructor(
     }
 
     override fun getConnectionStats(): ConnectionStats {
-        return ConnectionStats(
-            currentStatus = connectionStatus.get(),
-            connectedSince = connectedSince,
-            totalPacketsSent = totalPacketsSent.get(),
-            totalAcksReceived = totalAcksReceived.get(),
-            totalPolicyUpdates = totalPolicyUpdates.get(),
-            lastAckLatency = lastAckLatency,
-            averageAckLatency = if (ackLatencies.isEmpty()) 0.0 else ackLatencies.average(),
-            connectionErrors = connectionErrors,
-            lastErrorTimestamp = lastErrorTimestamp,
-            lastErrorMessage = lastErrorMessage
-        )
+        synchronized(ackLatencies) {
+            return ConnectionStats(
+                currentStatus = connectionStatus.get(),
+                connectedSince = connectedSince,
+                totalPacketsSent = totalPacketsSent.get(),
+                totalAcksReceived = totalAcksReceived.get(),
+                totalPolicyUpdates = totalPolicyUpdates.get(),
+                lastAckLatency = lastAckLatency,
+                averageAckLatency = if (ackLatencies.isEmpty()) 0.0 else ackLatencies.average(),
+                connectionErrors = connectionErrors,
+                lastErrorTimestamp = lastErrorTimestamp,
+                lastErrorMessage = lastErrorMessage
+            )
+        }
     }
 
     /**
@@ -607,14 +611,16 @@ class UploaderImpl @Inject constructor(
      * 获取传输统计信息
      */
     override fun getTransmissionStats(): TransmissionStats {
-        return TransmissionStats(
-            isFastMode = false,  // 默认值，根据实际逻辑更新
-            fastModeRemainingSeconds = 0,
-            lastTriggerType = null,
-            successCount = totalAcksReceived.get(),
-            failedCount = totalPacketsSent.get() - totalAcksReceived.get(),
-            averageLatency = if (ackLatencies.isEmpty()) 0L else ackLatencies.average().toLong()
-        )
+        synchronized(ackLatencies) {
+            return TransmissionStats(
+                isFastMode = false,  // 默认值，根据实际逻辑更新
+                fastModeRemainingSeconds = 0,
+                lastTriggerType = null,
+                successCount = totalAcksReceived.get(),
+                failedCount = totalPacketsSent.get() - totalAcksReceived.get(),
+                averageLatency = if (ackLatencies.isEmpty()) 0L else ackLatencies.average().toLong()
+            )
+        }
     }
 
     /**
@@ -699,7 +705,9 @@ class UploaderImpl @Inject constructor(
      * 获取最近的延迟数据
      */
     override fun getRecentLatencies(): List<Long> {
-        return ackLatencies.toList()
+        synchronized(ackLatencies) {
+            return ackLatencies.toList()
+        }
     }
 
     /**
