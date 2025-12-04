@@ -336,11 +336,13 @@ private fun PrivacyInfoRow(
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
+        Spacer(modifier = Modifier.width(20.dp))
         Text(
             text = value,
             style = MaterialTheme.typography.bodyMedium,
             fontWeight = FontWeight.Medium,
-            color = textColor
+            color = textColor,
+            textAlign = TextAlign.End
         )
     }
 }
