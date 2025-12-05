@@ -46,6 +46,7 @@ class UploadManager @Inject constructor(
 
     // 状态管理
     private val isRunning = AtomicBoolean(false)
+    private val isPaused = AtomicBoolean(false)
     private val uploadedPackets = AtomicLong(0L)
     
     // 协程作用域
@@ -123,6 +124,50 @@ class UploadManager @Inject constructor(
     }
     
     /**
+     * 暂停上传
+     */
+    fun pauseUpload() {
+        if (!isRunning.get()) {
+            Log.w(TAG, "上传管理器未运行，无法暂停")
+            return
+        }
+        
+        if (isPaused.get()) {
+            Log.i(TAG, "上传已经处于暂停状态")
+            return
+        }
+        
+        isPaused.set(true)
+        
+        // 取消上传任务，但保持指令处理运行
+        uploadJob?.cancel()
+        
+        Log.i(TAG, "上传已暂停 - 数据收集继续，但暂停上传到服务器")
+    }
+    
+    /**
+     * 恢复上传
+     */
+    fun resumeUpload() {
+        if (!isRunning.get()) {
+            Log.w(TAG, "上传管理器未运行，无法恢复")
+            return
+        }
+        
+        if (!isPaused.get()) {
+            Log.i(TAG, "上传未暂停，无需恢复")
+            return
+        }
+        
+        isPaused.set(false)
+        
+        // 重新启动上传循环
+        startUploadLoop()
+        
+        Log.i(TAG, "上传已恢复 - 继续上传数据到服务器")
+    }
+    
+    /**
      * 设置策略更新回调
      */
     fun setPolicyUpdateCallback(callback: (PolicyUpdate) -> Unit) {
@@ -159,6 +204,7 @@ class UploadManager @Inject constructor(
         
         return UploadStatus(
             isRunning = isRunning.get(),
+            isPaused = isPaused.get(),
             connectionStatus = status,
             uploadedPackets = uploadedPackets.get(),
             bufferedPackets = inMemoryBuffer.getSize(),
@@ -220,11 +266,21 @@ class UploadManager @Inject constructor(
         uploadJob = managerScope.launch {
             while (isRunning.get() && isActive) {
                 try {
+                    // 检查是否处于暂停状态
+                    if (isPaused.get()) {
+                        delay(currentUploadInterval)
+                        continue
+                    }
+                    
                     var processed: Int
                     do {
                         processed = uploadBatchFromBuffer()
-                    } while (isRunning.get() && processed > 0)
-                    delay(UPLOAD_INTERVAL_MS)
+                    } while (isRunning.get() && !isPaused.get() && processed > 0)
+                    
+                    // 如果处于暂停状态，跳过延迟等待
+                    if (!isPaused.get()) {
+                        delay(currentUploadInterval)
+                    }
                 } catch (e: CancellationException) {
                     Log.i(TAG, "上传循环已取消")
                     throw e
@@ -240,6 +296,12 @@ class UploadManager @Inject constructor(
      * 从缓冲区上传批次数据
      */
     private suspend fun uploadBatchFromBuffer(): Int {
+        // 检查是否处于暂停状态
+        if (isPaused.get()) {
+            Log.v(TAG, "上传已暂停，跳过批次上传")
+            return 0
+        }
+        
         // 检查WiFi-only模式
         if (isWifiOnlyMode && !networkEnvironmentDetector.isWifiConnected()) {
             Log.v(TAG, "WiFi-only模式启用，当前非WiFi网络，跳过上传")
@@ -616,6 +678,7 @@ class UploadManager @Inject constructor(
  */
 data class UploadStatus(
     val isRunning: Boolean,
+    val isPaused: Boolean,
     val connectionStatus: ConnectionStatus,
     val uploadedPackets: Long,
     val bufferedPackets: Int,

@@ -468,12 +468,14 @@ class MainViewModel @Inject constructor(
                     if (_isCollectionRunning.value == true) {
                         Log.i(TAG, "当前非WiFi网络，暂停数据上传")
                         // TODO: 调用uploadManager.pauseUpload()
+                        uploadManager.pauseUpload()
                     }
                 } else {
                     // 恢复上传（如果之前被暂停）
                     if (_isCollectionRunning.value == true) {
                         Log.i(TAG, "网络条件满足，恢复数据上传")
-                        // TODO: 调用uploadManager.resumeUpload()
+                        // TODO: 调用uploadManager.resumeUpload()、
+                        uploadManager.resumeUpload()
                     }
                 }
                 
