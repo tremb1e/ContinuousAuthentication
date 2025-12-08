@@ -50,6 +50,7 @@ import android.os.Process
 import com.continuousauth.utils.Constant
 import com.continuousauth.utils.Constant.UPLOAD_POLICY
 import com.continuousauth.utils.SpUtils
+import kotlinx.coroutines.runBlocking
 
 /**
  * 主界面ViewModel
@@ -935,22 +936,28 @@ class MainViewModel @Inject constructor(
         uploadStatsJob = viewModelScope.launch {
             while (_isEncryptedUploading.value == true) {
                 val status = uploadManager.getUploadStatus()
-                val pending = status.bufferedPackets +
-                    (status.fileQueueStats?.pendingPackets ?: 0)
+//                val pending = status.bufferedPackets +
+//                    (status.fileQueueStats?.pendingPackets ?: 0)
+                val pending = uploadManager.getPendingPacketsCount()
+
+                // 获取文件队列统计信息，确保与pending计算一致
+                val queueStats = runBlocking {
+                    fileQueueManager.getQueueStatistics()
+                }
 
                 _transmissionStats.postValue(
                     TransmissionStats(
                         isFastMode = false,
                         packetsSent = status.uploadedPackets,
-                        packetsPending = pending,
+                        packetsPending = queueStats.pendingPackets,  // 使用队列统计的pending值
                         lastAckLatency = status.connectionStats.lastAckLatency
                     )
                 )
 
                 _fileQueueStats.postValue(
                     status.fileQueueStats ?: QueueStats(
-                        totalPackets = (status.uploadedPackets + pending).toInt(),
-                        pendingPackets = pending,
+                        totalPackets = (status.uploadedPackets + queueStats.pendingPackets).toInt(),
+                        pendingPackets = queueStats.pendingPackets,  // 使用相同的值
                         uploadedPackets = status.uploadedPackets.toInt(),
                         corruptedPackets = 0,
                         totalSizeBytes = 0
