@@ -266,3 +266,22 @@ data class BufferStats(
     val sentCount: Long = 0L,                   // 已发送数
     val discardedCount: Long = 0L               // 已丢弃数
 )
+/**
+ * 重试结果
+ */
+data class RetryResult(
+    val packetId: String,
+    val success: Boolean,
+    val error: String?,
+    val retryCount: Int
+)
+
+/**
+ * 批量重试结果
+ */
+data class BatchRetryResult(
+    val totalPackets: Int,
+    val successCount: Int,
+    val failedCount: Int,
+    val results: List<RetryResult>
+)
