@@ -48,6 +48,7 @@ import javax.inject.Inject
 import androidx.core.app.NotificationManagerCompat
 import android.os.Process
 import com.continuousauth.utils.Constant
+import com.continuousauth.utils.Constant.UPLOAD_POLICY
 import com.continuousauth.utils.SpUtils
 
 /**
@@ -411,7 +412,7 @@ class MainViewModel @Inject constructor(
      * 初始化上传策略设置
      */
     private fun initializeUploadPolicy() {
-        val prefs = context.getSharedPreferences("upload_policy", Context.MODE_PRIVATE)
+        val prefs = context.getSharedPreferences(UPLOAD_POLICY, Context.MODE_PRIVATE)
         val wifiOnly = prefs.getBoolean("wifi_only", false) // 默认不限制
         _uploadPolicyWiFiOnly.value = wifiOnly
         
@@ -428,7 +429,7 @@ class MainViewModel @Inject constructor(
         viewModelScope.launch {
             try {
                 // 保存到SharedPreferences
-                val prefs = context.getSharedPreferences("upload_policy", Context.MODE_PRIVATE)
+                val prefs = context.getSharedPreferences(UPLOAD_POLICY, Context.MODE_PRIVATE)
                 prefs.edit().putBoolean("wifi_only", wifiOnly).apply()
                 
                 // 更新LiveData
@@ -467,14 +468,12 @@ class MainViewModel @Inject constructor(
                     // 如果正在上传，暂停上传
                     if (_isCollectionRunning.value == true) {
                         Log.i(TAG, "当前非WiFi网络，暂停数据上传")
-                        // TODO: 调用uploadManager.pauseUpload()
                         uploadManager.pauseUpload()
                     }
                 } else {
                     // 恢复上传（如果之前被暂停）
                     if (_isCollectionRunning.value == true) {
                         Log.i(TAG, "网络条件满足，恢复数据上传")
-                        // TODO: 调用uploadManager.resumeUpload()、
                         uploadManager.resumeUpload()
                     }
                 }
