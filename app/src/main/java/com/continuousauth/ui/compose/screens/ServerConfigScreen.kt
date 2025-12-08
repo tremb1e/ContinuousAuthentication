@@ -69,7 +69,8 @@ fun ServerConfigScreen(viewModel: MainViewModel) {
     val serverTestResult by viewModel.serverTestResult.observeAsState(null)
     val transmissionStats by viewModel.transmissionStats.observeAsState(null)
     val fileQueueStats by viewModel.fileQueueStats.observeAsState(null)
-    
+    // 添加清空队列确认对话框状态变量
+    var showClearQueueDialog by remember { mutableStateOf(false) }
     // 本地状态
     var serverIp by remember {
         mutableStateOf(SpUtils.decodeString(Constant.SERVER_IP, "192.168.1.100"))
@@ -110,6 +111,18 @@ fun ServerConfigScreen(viewModel: MainViewModel) {
                 showWithdrawDialog = false
             },
             onDismiss = { showWithdrawDialog = false }
+        )
+    }
+    // 清空队列确认对话框
+    if (showClearQueueDialog) {
+        ClearQueueDialog(
+            onConfirm = {
+                scope.launch {
+                    viewModel.clearFileQueue()
+                }
+                showClearQueueDialog = false
+            },
+            onDismiss = { showClearQueueDialog = false }
         )
     }
 
@@ -186,7 +199,7 @@ fun ServerConfigScreen(viewModel: MainViewModel) {
             fileQueueStats?.let { stats ->
                 FileQueueCard(
                     queueStats = stats,
-                    onClearQueue = { viewModel.clearFileQueue() }
+                    onClearQueue = { showClearQueueDialog = true  }
                 )
             }
             // 数据管理卡片
@@ -1431,6 +1444,62 @@ private fun WithdrawConsentDialog(
                 )
             ) {
                 Text("确认删除")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("取消")
+            }
+        }
+    )
+}
+/**
+ * 清空队列确认对话框
+ */
+@Composable
+private fun ClearQueueDialog(
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = {
+            Icon(
+                imageVector = Icons.Default.Delete,
+                contentDescription = null,
+                tint = Color(0xFFFF5252)
+            )
+        },
+        title = {
+            Text("确认清空文件队列")
+        },
+        text = {
+            Column {
+                Text(
+                    text = "清空文件队列将会：",
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = FontWeight.Bold
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                Text("• 删除所有待上传的数据包")
+                Text("• 清空本地缓存文件")
+                Text("• 重置队列统计信息")
+                Spacer(modifier = Modifier.height(12.dp))
+                Text(
+                    text = "此操作无法撤销！",
+                    color = Color(0xFFFF5252),
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = onConfirm,
+                colors = ButtonDefaults.textButtonColors(
+                    contentColor = Color(0xFFFF5252)
+                )
+            ) {
+                Text("确认清空")
             }
         },
         dismissButton = {
