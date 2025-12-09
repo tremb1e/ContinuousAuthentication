@@ -7,7 +7,7 @@ import android.hardware.SensorEventListener
 import android.hardware.SensorManager
 import android.os.Handler
 import android.os.HandlerThread
-import android.os.SystemClock
+import android.util.Log
 import com.continuousauth.buffer.RingBuffer
 import com.continuousauth.model.SensorSample
 import com.continuousauth.model.SensorType
@@ -24,7 +24,6 @@ import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlin.math.max
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import javax.inject.Inject
@@ -92,7 +91,7 @@ class SensorCollectorImpl @Inject constructor(
             
             if (registrationResults.any { it }) {
                 isCollecting.set(true)
-                android.util.Log.i("SensorCollector", "传感器采集已启动（目标100Hz）")
+                Log.i("SensorCollector", "传感器采集已启动（目标100Hz）")
             } else {
                 throw IllegalStateException("没有可用的传感器")
             }
@@ -111,7 +110,7 @@ class SensorCollectorImpl @Inject constructor(
             // 清空环形缓冲区
             ringBuffer.clear()
             
-            android.util.Log.i("SensorCollector", "传感器采集已停止")
+            Log.i("SensorCollector", "传感器采集已停止")
         }
     }
     
@@ -172,7 +171,7 @@ class SensorCollectorImpl @Inject constructor(
             val currentForegroundApp = try {
                 foregroundAppDetector.getCurrentForegroundApp()
             } catch (e: Exception) {
-                android.util.Log.e("SensorCollector", "获取前台应用失败", e)
+                Log.e("SensorCollector", "获取前台应用失败", e)
                 ""
             }
             
@@ -201,7 +200,7 @@ class SensorCollectorImpl @Inject constructor(
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {
         // 记录精度变化
         sensor?.let {
-            android.util.Log.d("SensorCollector", "传感器 ${it.name} 精度变更为: $accuracy")
+            Log.d("SensorCollector", "传感器 ${it.name} 精度变更为: $accuracy")
         }
     }
     
@@ -228,12 +227,12 @@ class SensorCollectorImpl @Inject constructor(
             maxReportLatencyUs = (minFifoSize * minSamplingPeriodUs)
                 .coerceAtMost(1_000_000)
             
-            android.util.Log.i(
+            Log.i(
                 "SensorCollector", 
                 "检测到最小FIFO大小: $minFifoSize, 设置maxReportLatencyUs: ${maxReportLatencyUs}us"
             )
             
-            android.util.Log.i(
+            Log.i(
                 "SensorCollector", 
                 "采样率配置: 加速度计${calculateCurrentRate(accelerometerSamplingPeriodUs)}Hz, " +
                 "陀螺仪${calculateCurrentRate(gyroscopeSamplingPeriodUs)}Hz, " +
@@ -241,7 +240,7 @@ class SensorCollectorImpl @Inject constructor(
             )
         } else {
             maxReportLatencyUs = 0 // 实时报告
-            android.util.Log.i("SensorCollector", "传感器不支持批处理，使用实时模式")
+            Log.i("SensorCollector", "传感器不支持批处理，使用实时模式")
         }
     }
     
@@ -263,15 +262,15 @@ class SensorCollectorImpl @Inject constructor(
             
             if (success) {
                 val samplingRateHz = 1000000.0f / samplingPeriodUs
-                android.util.Log.i("SensorCollector", 
+                Log.i("SensorCollector",
                     "$sensorName 注册成功 - 采样率: ${samplingRateHz}Hz, 采样周期: ${samplingPeriodUs}us, 最大延迟: ${maxReportLatencyUs}us")
             } else {
-                android.util.Log.w("SensorCollector", "$sensorName 注册失败")
+                Log.w("SensorCollector", "$sensorName 注册失败")
             }
             
             success
         } ?: run {
-            android.util.Log.w("SensorCollector", "$sensorName 不可用")
+            Log.w("SensorCollector", "$sensorName 不可用")
             false
         }
     }
@@ -284,7 +283,104 @@ class SensorCollectorImpl @Inject constructor(
      * 调整采样率
      */
     override fun adjustSamplingRate(multiplier: Float) {
-        android.util.Log.i("SensorCollector", "调整采样率倍数: $multiplier")
+        Log.i("SensorCollector", "调整采样率倍数: $multiplier")
         // TODO: 实现采样率调整逻辑
+        // 验证倍数范围
+        if (multiplier <= 0f) {
+            Log.e("SensorCollector", "无效的采样率倍数: $multiplier，必须大于0")
+            return
+        }
+
+        // 计算新的采样周期（微秒）
+        val newPeriodUs = (TARGET_SAMPLING_PERIOD_US / multiplier).toInt()
+
+        // 验证硬件限制
+        val minPeriodUs = getMinSamplingPeriodUs()
+        val maxPeriodUs = 1_000_000 // 最低1Hz
+
+        // 应用边界检查
+        val clampedPeriodUs = newPeriodUs.coerceIn(minPeriodUs, maxPeriodUs)
+
+        if (clampedPeriodUs != newPeriodUs) {
+            Log.w("SensorCollector",
+                "采样率超出硬件限制，从${newPeriodUs}us调整到${clampedPeriodUs}us")
+        }
+
+        // 如果采样周期没有变化，无需重新注册
+        if (accelerometerSamplingPeriodUs == clampedPeriodUs &&
+            gyroscopeSamplingPeriodUs == clampedPeriodUs &&
+            magnetometerSamplingPeriodUs == clampedPeriodUs) {
+            Log.i("SensorCollector", "采样率未变化，无需调整")
+            return
+        }
+
+        // 更新采样周期
+        val previousPeriodUs = accelerometerSamplingPeriodUs
+        accelerometerSamplingPeriodUs = clampedPeriodUs
+        gyroscopeSamplingPeriodUs = clampedPeriodUs
+        magnetometerSamplingPeriodUs = clampedPeriodUs
+
+        Log.i("SensorCollector",
+            "采样周期从${previousPeriodUs}us调整到${clampedPeriodUs}us，采样率: ${calculateCurrentRate(clampedPeriodUs)}Hz")
+
+        // 如果正在采集，重新注册传感器
+        if (isCollecting.get()) {
+            sensorScope.launch {
+                try {
+                    reRegisterSensors()
+                } catch (e: Exception) {
+                    Log.e("SensorCollector", "重新注册传感器失败", e)
+                    // 恢复之前的采样率
+                    accelerometerSamplingPeriodUs = previousPeriodUs
+                    gyroscopeSamplingPeriodUs = previousPeriodUs
+                    magnetometerSamplingPeriodUs = previousPeriodUs
+                }
+            }
+        }
+    }
+    /**
+     * 获取传感器支持的最小采样周期（微秒）
+     */
+    private fun getMinSamplingPeriodUs(): Int {
+        val minDelays = listOfNotNull(
+            accelerometer?.minDelay,
+            gyroscope?.minDelay,
+            magnetometer?.minDelay
+        ).filter { it > 0 }
+
+        return minDelays.minOrNull() ?: TARGET_SAMPLING_PERIOD_US
+    }
+
+    /**
+     * 重新注册所有传感器（使用新的采样率）
+     */
+    private suspend fun reRegisterSensors() = collectionMutex.withLock {
+        if (!isCollecting.get()) return@withLock
+
+        Log.i("SensorCollector", "重新注册传感器，应用新的采样率")
+
+        // 先取消注册所有传感器
+        sensorManager.unregisterListener(this)
+
+        // 重新检测最优采样率配置
+        detectOptimalSamplingRate()
+
+        // 重新注册传感器
+        val registrationResults = listOf(
+            registerSensorIfAvailable(accelerometer, "加速度计", accelerometerSamplingPeriodUs),
+            registerSensorIfAvailable(gyroscope, "陀螺仪", gyroscopeSamplingPeriodUs),
+            registerSensorIfAvailable(magnetometer, "磁力计", magnetometerSamplingPeriodUs)
+        )
+
+        if (registrationResults.any { it }) {
+            Log.i("SensorCollector",
+                "传感器重新注册成功 - " +
+                        "加速度计: ${calculateCurrentRate(accelerometerSamplingPeriodUs)}Hz, " +
+                        "陀螺仪: ${calculateCurrentRate(gyroscopeSamplingPeriodUs)}Hz, " +
+                        "磁力计: ${calculateCurrentRate(magnetometerSamplingPeriodUs)}Hz")
+        } else {
+            Log.e("SensorCollector", "传感器重新注册失败，恢复之前的采样率")
+            throw IllegalStateException("传感器重新注册失败")
+        }
     }
 }
