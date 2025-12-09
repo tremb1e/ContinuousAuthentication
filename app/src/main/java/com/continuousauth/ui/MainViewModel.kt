@@ -675,12 +675,29 @@ class MainViewModel @Inject constructor(
             
             appendLine("=== 缓冲与传输统计 ===")
             val metricsSnapshot = metricsCollector.getSnapshot()
-            appendLine("内存样本数: 0") // TODO: 从实际缓冲区获取
+            // 获取内存缓冲区状态
+            val uploadStatus = uploadManager.getUploadStatus()
+            val memorySamples = uploadStatus.bufferedPackets
+
+            // 获取磁盘队列统计
+            val queueStats = runBlocking { fileQueueManager.getQueueStatistics() }
+
+            appendLine("内存样本数: $memorySamples")
+//            appendLine("内存样本数: 0") // TODO: 从实际缓冲区获取
             appendLine("磁盘队列批次数: ${metricsSnapshot.counters[com.continuousauth.observability.MetricType.BATCHES_PROCESSED] ?: 0}")
             appendLine("已发送数据包: ${metricsSnapshot.counters[com.continuousauth.observability.MetricType.UPLOADS_SUCCESS] ?: 0}")
             appendLine("上传失败数: ${(metricsSnapshot.counters[com.continuousauth.observability.MetricType.UPLOADS_FAILED_NETWORK] ?: 0) + 
                 (metricsSnapshot.counters[com.continuousauth.observability.MetricType.UPLOADS_FAILED_SERVER] ?: 0)}")
-            appendLine("已丢弃数据包: 0") // TODO: 实现丢弃计数
+            // 计算已丢弃数据包（内存缓冲区丢弃 + 磁盘队列丢弃）
+            val diskDiscarded = queueStats.totalDiscarded
+            val totalSent = uploadStatus.uploadedPackets
+            val totalAcknowledged = uploadStatus.fileQueueStats!!.acknowledgedCount
+            val memoryDiscarded = maxOf(0, totalSent - totalAcknowledged - diskDiscarded)
+//            (内存: $memoryDiscarded, 磁盘: $diskDiscarded)
+            val totalDiscarded = memoryDiscarded + diskDiscarded
+            appendLine("已丢弃数据包: $totalDiscarded")
+
+//            appendLine("已丢弃数据包: 0") // TODO: 实现丢弃计数
             appendLine("上传成功率: ${"%.1f".format(metricsSnapshot.summary.currentUploadSuccessRate)}%")
             appendLine()
             
