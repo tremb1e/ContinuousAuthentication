@@ -27,6 +27,7 @@ import com.continuousauth.observability.MetricsCollectorImpl
 import com.continuousauth.observability.PerformanceMonitorImpl
 import com.continuousauth.pool.SensorEventPool
 import com.continuousauth.utils.UserIdManager
+import com.continuousauth.crypto.EnvelopeCryptoBox
 import com.continuousauth.network.TlsSecurityManager
 import com.continuousauth.network.TlsConfigInfo
 import com.continuousauth.storage.FileQueueManager
@@ -40,6 +41,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -51,6 +53,17 @@ import com.continuousauth.utils.Constant
 import com.continuousauth.utils.Constant.UPLOAD_POLICY
 import com.continuousauth.utils.SpUtils
 import kotlinx.coroutines.runBlocking
+
+data class ContinuousAuthUiState(
+    val modelVersion: String = "待同步",
+    val lastScore: Float = 0f,
+    val thresholdPercent: Int = 85,
+    val lastDecision: AuthDecision = AuthDecision.UNKNOWN,
+    val lastUpdateTime: Long = 0L,
+    val serverLatencyMs: Long? = null
+)
+
+enum class AuthDecision { NORMAL, ABNORMAL, UNKNOWN }
 
 /**
  * 主界面ViewModel
@@ -70,7 +83,8 @@ class MainViewModel @Inject constructor(
     private val tlsSecurityManager: TlsSecurityManager,
     private val privacyManager: PrivacyManager,
     private val systemMonitor: SystemMonitor,
-    private val smartTransmissionManager: SmartTransmissionManager
+    private val smartTransmissionManager: SmartTransmissionManager,
+    private val envelopeCryptoBox: EnvelopeCryptoBox
 ) : ViewModel() {
     
     companion object {
@@ -127,6 +141,8 @@ class MainViewModel @Inject constructor(
     // 用户ID
     private val _userId = MutableLiveData<String>()
     val userId: LiveData<String> = _userId
+    private val _userUploadId = MutableLiveData<String>()
+    val userUploadId: LiveData<String> = _userUploadId
     
     // 文件队列统计
     private val _fileQueueStats = MutableLiveData<QueueStats>()
@@ -183,6 +199,8 @@ class MainViewModel @Inject constructor(
             started = SharingStarted.WhileSubscribed(5000),
             initialValue = SystemMonitor.TimeSyncStatus()
         )
+    private val _authUiState = MutableStateFlow(ContinuousAuthUiState())
+    val authUiState: StateFlow<ContinuousAuthUiState> = _authUiState
     init {
         // 初始化状态
         _collectionStatus.value = "STOPPED"
@@ -200,6 +218,7 @@ class MainViewModel @Inject constructor(
         
         // 初始化用户ID
         _userId.value = userIdManager.getUserId()
+        initializeUserIdentifiers()
         
         // 初始化上传策略设置
         initializeUploadPolicy()
@@ -224,6 +243,7 @@ class MainViewModel @Inject constructor(
         
         // 初始化隐私状态
         checkPrivacyConsent()
+        initializeAuthUiState()
     }
     
     /**
@@ -407,6 +427,72 @@ class MainViewModel @Inject constructor(
     fun grantPrivacyConsent() {
         privacyManager.grantConsent()
         checkPrivacyConsent()
+    }
+
+    /**
+     * 初始化持续认证UI状态
+     */
+    private fun initializeAuthUiState() {
+        val storedThreshold = SpUtils.decodeInt(Constant.AUTH_THRESHOLD).takeIf { it > 0 } ?: 85
+        _authUiState.value = _authUiState.value.copy(
+            thresholdPercent = storedThreshold.coerceIn(1, 100),
+            modelVersion = "服务端模型",
+            lastDecision = AuthDecision.UNKNOWN
+        )
+    }
+
+    /**
+     * 初始化上传用的用户标识（HMAC，服务端路径使用）
+     */
+    private fun initializeUserIdentifiers() {
+        viewModelScope.launch {
+            try {
+                envelopeCryptoBox.initialize()
+                val uid = _userId.value ?: userIdManager.getUserId()
+                val uploadId = envelopeCryptoBox.getUserIdHash(uid)
+                _userUploadId.postValue(uploadId)
+            } catch (e: Exception) {
+                Log.w(TAG, "初始化上传标识失败: ${e.message}")
+            }
+        }
+    }
+
+    /**
+     * 设置认证阈值（百分比）
+     */
+    fun setAuthThreshold(percent: Int) {
+        val normalized = percent.coerceIn(1, 100)
+        SpUtils.encode(Constant.AUTH_THRESHOLD, normalized)
+        val current = _authUiState.value
+        val updatedDecision = when {
+            current.lastUpdateTime == 0L -> AuthDecision.UNKNOWN
+            current.lastScore * 100 >= normalized -> AuthDecision.NORMAL
+            else -> AuthDecision.ABNORMAL
+        }
+        _authUiState.value = current.copy(
+            thresholdPercent = normalized,
+            lastDecision = updatedDecision
+        )
+    }
+
+    /**
+     * 更新服务端推理结果
+     */
+    fun updateAuthResult(score: Float, modelVersion: String? = null, latencyMs: Long? = null) {
+        val clampedScore = score.coerceIn(0f, 1f)
+        val current = _authUiState.value
+        val decision = when {
+            current.thresholdPercent <= 0 -> AuthDecision.UNKNOWN
+            clampedScore * 100 >= current.thresholdPercent -> AuthDecision.NORMAL
+            else -> AuthDecision.ABNORMAL
+        }
+        _authUiState.value = current.copy(
+            lastScore = clampedScore,
+            lastDecision = decision,
+            lastUpdateTime = System.currentTimeMillis(),
+            modelVersion = modelVersion ?: current.modelVersion,
+            serverLatencyMs = latencyMs ?: current.serverLatencyMs
+        )
     }
     
     /**
@@ -890,16 +976,17 @@ class MainViewModel @Inject constructor(
         return Pair(usageStatsGranted, notificationsGranted)
     }
     /**
-     * 测试服务器连接
+     * 测试服务器连接：仅做一次性的 gRPC 连通性探测，不启动采集/上传服务。
+     * 复用上传器的连接建立逻辑，避免与正式上传分叉。
      */
     fun testServerConnection(serverIp: String, serverPort: String) {
         viewModelScope.launch {
             try {
                 _serverTestResult.value = "正在测试服务器连接..."
-                val port = serverPort.toIntOrNull()
-                saveServerConfig(serverIp, port)
+                _connectionStatus.value = ConnectionStatus.CONNECTING
 
-                val cfg = getServerConfig()
+                // 解析并保存配置，保持与正式上传一致的端点构造
+                val cfg = persistServerConfig(serverIp, serverPort.toIntOrNull())
 
                 val result = uploadManager.testServerConnection(
                     serverHost = cfg.host,
@@ -907,30 +994,38 @@ class MainViewModel @Inject constructor(
                     useTls = cfg.scheme == "https",
                     testGrpc = true
                 )
-                
+
                 _serverTestResult.value = uploadManager.getTestResultDescription(result)
-                
-                // 根据测试结果更新连接状态
-                if (result.isReachable) {
-                    _connectionStatus.value = ConnectionStatus.CONNECTED
-                    SpUtils.encode(Constant.SERVER_IP, serverIp)
-                    SpUtils.encode(Constant.SERVER_PORT, serverPort)
-                    startDataCollectionService()
+
+                // 仅用于展示测试结果，不启动任何采集/上传任务
+                _connectionStatus.value = if (result.isReachable) {
+                    ConnectionStatus.CONNECTED
                 } else {
-                    _connectionStatus.value = ConnectionStatus.DISCONNECTED
+                    ConnectionStatus.DISCONNECTED
                 }
-                // 3秒后清除测试结果
+
+                // 3秒后清除提示，若未在上传则恢复为空闲状态
                 delay(3000)
                 _serverTestResult.value = null
-                
+                if (_isEncryptedUploading.value != true) {
+                    _connectionStatus.value = ConnectionStatus.DISCONNECTED
+                }
             } catch (e: Exception) {
                 _serverTestResult.value = "测试失败: ${e.message}"
                 _connectionStatus.value = ConnectionStatus.DISCONNECTED
-                
+
                 delay(3000)
                 _serverTestResult.value = null
             }
         }
+    }
+
+    /**
+     * 解析并持久化服务器配置，返回生效的配置，避免重复解析。
+     */
+    private fun persistServerConfig(ipInput: String, portInput: Int?): ServerConfig {
+        saveServerConfig(ipInput, portInput)
+        return getServerConfig()
     }
     
     /**
@@ -1073,6 +1168,7 @@ class MainViewModel @Inject constructor(
                     // 重新获取并更新用户ID，这会触发UI更新
                     val newUserId = userIdManager.getUserId()
                     _userId.value = newUserId
+                    initializeUserIdentifiers()
 
                     Log.i(TAG, "用户撤回同意，所有数据已删除")
                 } else {

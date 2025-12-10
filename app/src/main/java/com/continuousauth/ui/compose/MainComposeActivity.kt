@@ -294,7 +294,8 @@ class MainComposeActivity : FragmentActivity() {
                     }
                     composable(Screen.Details.route) {
                         DetailedInfoScreen(
-                            onNavigateBack = { navController.popBackStack() }
+                            onNavigateBack = { navController.popBackStack() },
+                            mainViewModel = viewModel
                         )
                     }
 

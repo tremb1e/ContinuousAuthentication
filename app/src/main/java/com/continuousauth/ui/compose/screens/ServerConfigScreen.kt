@@ -63,6 +63,7 @@ fun ServerConfigScreen(viewModel: MainViewModel) {
     val isCollectionRunning by viewModel.isCollectionRunning.observeAsState(false)
     val isEncryptedUploading by viewModel.isEncryptedUploading.observeAsState(false)
     val userId by viewModel.userId.observeAsState("")
+    val userUploadId by viewModel.userUploadId.observeAsState("")
     val sessionId by viewModel.sessionId.observeAsState(null)
     val sessionStartTime by viewModel.sessionStartTime.observeAsState(0L)
     val sessionDuration by viewModel.sessionDuration.observeAsState("00:00")
@@ -150,8 +151,12 @@ fun ServerConfigScreen(viewModel: MainViewModel) {
             // ID 信息卡片（仅显示用户ID）
             IdentificationCard(
                 userId = userId,
+                uploadId = userUploadId,
                 onCopyUserId = {
                     clipboardManager.setText(AnnotatedString(userId))
+                },
+                onCopyUploadId = {
+                    clipboardManager.setText(AnnotatedString(userUploadId))
                 }
             )
             
@@ -523,7 +528,9 @@ fun AnimatedConnectionIcon(
 @Composable
 fun IdentificationCard(
     userId: String,
-    onCopyUserId: () -> Unit
+    uploadId: String,
+    onCopyUserId: () -> Unit,
+    onCopyUploadId: () -> Unit
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -546,6 +553,13 @@ fun IdentificationCard(
                 label = stringResource(R.string.user_id_label),
                 value = userId,
                 onCopy = onCopyUserId
+            )
+
+            IdRow(
+                icon = Icons.Filled.VpnKey,
+                label = "上传标识 (HMAC)",
+                value = if (uploadId.isNotBlank()) uploadId else "生成中...",
+                onCopy = onCopyUploadId
             )
         }
     }

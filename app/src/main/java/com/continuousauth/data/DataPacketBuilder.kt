@@ -117,9 +117,9 @@ class DataPacketBuilder @Inject constructor(
                 .setEventTimestampNs(sample.eventTimestampNs)
                 .setX(sample.x)
                 .setY(sample.y)
-                .setZ(sample.z)
-                .setAccuracy(sample.accuracy)
-                .setSeqNo(sample.seqNo)
+            .setZ(sample.z)
+            .setAccuracy(sample.accuracy)
+            .setSeqNo(sample.seqNo)
             
             // 前台应用使用明文字段，确保日志能看到真实包名
             if (sample.foregroundApp.isNotEmpty()) {

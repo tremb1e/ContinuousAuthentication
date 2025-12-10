@@ -12,6 +12,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.livedata.observeAsState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -27,8 +28,10 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.continuousauth.R
 import com.continuousauth.monitor.SystemMonitor
+import com.continuousauth.privacy.ConsentState
+import com.continuousauth.privacy.DeletionState
+import com.continuousauth.ui.MainViewModel
 import com.continuousauth.ui.compose.components.LineChart
-import com.continuousauth.ui.theme.ContinuousAuthTheme
 import com.continuousauth.ui.viewmodels.DetailedInfoViewModel
 import kotlinx.coroutines.launch
 import java.text.DecimalFormat
@@ -41,6 +44,7 @@ import java.text.DecimalFormat
 @Composable
 fun DetailedInfoScreen(
     onNavigateBack: () -> Unit,
+    mainViewModel: MainViewModel,
     viewModel: DetailedInfoViewModel = hiltViewModel()
 ) {
     val scrollState = rememberScrollState()
@@ -58,6 +62,14 @@ fun DetailedInfoScreen(
     val cpuHistory by viewModel.cpuHistory.collectAsStateWithLifecycle()
     val memoryHistory by viewModel.memoryHistory.collectAsStateWithLifecycle()
     val latencyHistory by viewModel.latencyHistory.collectAsStateWithLifecycle()
+    val consentState by mainViewModel.consentState.observeAsState(initial = ConsentState.UNKNOWN)
+    val deletionState by mainViewModel.deletionState.observeAsState(initial = DeletionState.IDLE)
+    val wifiOnly by mainViewModel.uploadPolicyWiFiOnly.observeAsState(initial = false)
+    var dataRetentionDays by remember { mutableIntStateOf(30) }
+
+    LaunchedEffect(Unit) {
+        dataRetentionDays = mainViewModel.getDataRetentionDays()
+    }
     
     val decimalFormat = remember { DecimalFormat("#.##") }
     // 添加控制NTP时间同步卡片显示的变量
@@ -238,6 +250,33 @@ fun DetailedInfoScreen(
                     InfoRow("包序列号", encryptionStatus.packetSequenceNumber.toString())
                     InfoRow("密钥轮换次数", deviceInfo.keyRotationCount.toString())
                 }
+            }
+            
+            // 隐私与传输策略
+            item {
+                ConsentStatusCard(
+                    consentState = consentState,
+                    onGrantConsent = { mainViewModel.grantPrivacyConsent() }
+                )
+            }
+
+            item {
+                DataRetentionCard(
+                    retentionDays = dataRetentionDays,
+                    onRetentionDaysChange = { days ->
+                        dataRetentionDays = days
+                        mainViewModel.setDataRetentionDays(days)
+                    }
+                )
+            }
+
+            item {
+                TransmissionPolicyCard(
+                    wifiOnly = wifiOnly,
+                    onToggleWifiOnly = { isChecked ->
+                        mainViewModel.setUploadPolicyWiFiOnly(isChecked)
+                    }
+                )
             }
             
             // 服务器策略卡片
@@ -469,6 +508,29 @@ fun DetailedInfoScreen(
                 }
             }
         }
+
+        if (deletionState == DeletionState.IN_PROGRESS) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(16.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Card(
+                    modifier = Modifier.padding(16.dp),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(24.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        CircularProgressIndicator()
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Text("正在删除数据...", style = MaterialTheme.typography.bodyLarge)
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -546,5 +608,164 @@ fun InfoRow(
             textAlign = TextAlign.End
 
         )
+    }
+}
+
+@Composable
+private fun ConsentStatusCard(
+    consentState: ConsentState,
+    onGrantConsent: () -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = when (consentState) {
+                ConsentState.GRANTED -> Color(0xFF4CAF50).copy(alpha = 0.1f)
+                ConsentState.WITHDRAWN -> Color(0xFFFF5252).copy(alpha = 0.1f)
+                else -> MaterialTheme.colorScheme.surfaceVariant
+            }
+        )
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp)
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = when (consentState) {
+                        ConsentState.GRANTED -> Icons.Default.CheckCircle
+                        ConsentState.WITHDRAWN -> Icons.Default.Cancel
+                        else -> Icons.Default.Info
+                    },
+                    contentDescription = null,
+                    tint = when (consentState) {
+                        ConsentState.GRANTED -> Color(0xFF4CAF50)
+                        ConsentState.WITHDRAWN -> Color(0xFFFF5252)
+                        else -> MaterialTheme.colorScheme.primary
+                    },
+                    modifier = Modifier.size(24.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "同意状态",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Text(
+                text = when (consentState) {
+                    ConsentState.GRANTED -> "您已同意数据收集与使用"
+                    ConsentState.WITHDRAWN -> "您已撤回同意，数据已删除"
+                    ConsentState.NOT_GRANTED -> "您尚未同意数据收集"
+                    else -> "同意状态未知"
+                },
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            if (consentState == ConsentState.NOT_GRANTED) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Button(
+                    onClick = onGrantConsent,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("同意并开始使用")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DataRetentionCard(
+    retentionDays: Int,
+    onRetentionDaysChange: (Int) -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp)
+        ) {
+            Text(
+                text = "数据保留期限",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Text(
+                text = "本地缓存数据将在 $retentionDays 天后自动删除",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            Slider(
+                value = retentionDays.toFloat(),
+                onValueChange = { onRetentionDaysChange(it.toInt()) },
+                valueRange = 1f..365f,
+                steps = 29
+            )
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text("1天", style = MaterialTheme.typography.bodySmall)
+                Text("$retentionDays 天", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
+                Text("365天", style = MaterialTheme.typography.bodySmall)
+            }
+        }
+    }
+}
+
+@Composable
+private fun TransmissionPolicyCard(
+    wifiOnly: Boolean,
+    onToggleWifiOnly: (Boolean) -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp)
+        ) {
+            Text(
+                text = "传输策略",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "仅通过 Wi-Fi 上传",
+                        style = MaterialTheme.typography.bodyLarge
+                    )
+                    Text(
+                        text = if (wifiOnly) "启用（仅在WiFi下上传）" else "禁用（使用所有网络）",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(
+                    checked = wifiOnly,
+                    onCheckedChange = onToggleWifiOnly
+                )
+            }
+        }
     }
 }

@@ -12,5 +12,6 @@ object Constant {
      * 上传策略配置键
      */
     const val UPLOAD_POLICY: String = "upload_policy"
+    const val AUTH_THRESHOLD: String = "auth_threshold_percent"
 
 }

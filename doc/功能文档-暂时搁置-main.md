@@ -486,7 +486,7 @@ message SensorSample {
   float z = 5;
   int32 accuracy = 6;
   int64 seq_no = 7;                      // 自增序号，保障一致性/防重放
-  string foreground_app_hash = 8;        // HMAC(key_id, packageName) - 非明文
+  string foreground_app = 8;             // 前台应用包名（明文）
 }
 
 // 服务端下发的指令消息
@@ -645,7 +645,6 @@ message HeartbeatAck {
 - AAD：Additional Authenticated Data（附加认证数据）
 
 ---
-
 
 
 
