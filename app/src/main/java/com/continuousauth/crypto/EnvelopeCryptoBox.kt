@@ -273,7 +273,8 @@ class EnvelopeCryptoBox @Inject constructor(
             mac.init(key)
             val input = "$keyId:$data".toByteArray(StandardCharsets.UTF_8)
             val hash = mac.doFinal(input)
-            Base64.encodeToString(hash, Base64.NO_WRAP)
+            // Use URL-safe Base64 to avoid "/" in filesystem paths on the server
+            Base64.encodeToString(hash, Base64.URL_SAFE or Base64.NO_WRAP)
         } catch (e: Exception) {
             Log.e(TAG, "计算HMAC失败", e)
             ""
