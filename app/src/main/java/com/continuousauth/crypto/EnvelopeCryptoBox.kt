@@ -237,6 +237,8 @@ class EnvelopeCryptoBox @Inject constructor(
         return seqNo
     }
 
+    fun getCurrentPacketSeqNo(): Long = packetSeqNo.get()
+
     fun getDekKeyId(): String = STATIC_KEY_ID
 
     fun getEncryptedDEK(): ByteArray? = null

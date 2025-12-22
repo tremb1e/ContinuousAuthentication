@@ -72,6 +72,18 @@ class SensorCollectorImpl @Inject constructor(
     private var gyroscopeSamplingPeriodUs = TARGET_SAMPLING_PERIOD_US
     private var magnetometerSamplingPeriodUs = TARGET_SAMPLING_PERIOD_US
     private var maxReportLatencyUs: Int = 0
+
+    private data class RateTracker(
+        var windowStartNs: Long = 0L,
+        var windowCount: Int = 0,
+        @Volatile var lastRateHz: Float = 0f
+    )
+
+    private val rateTrackers = mapOf(
+        SensorType.ACCELEROMETER to RateTracker(),
+        SensorType.GYROSCOPE to RateTracker(),
+        SensorType.MAGNETOMETER to RateTracker()
+    )
     
     override suspend fun startCollection() {
         collectionMutex.withLock {
@@ -135,6 +147,13 @@ class SensorCollectorImpl @Inject constructor(
         }
         
         // 返回传感器信息，包含固定的采样率
+        val accCurrent = calculateCurrentRate(accelerometerSamplingPeriodUs)
+        val gyrCurrent = calculateCurrentRate(gyroscopeSamplingPeriodUs)
+        val magCurrent = calculateCurrentRate(magnetometerSamplingPeriodUs)
+        val accActual = getActualRate(SensorType.ACCELEROMETER, accCurrent)
+        val gyrActual = getActualRate(SensorType.GYROSCOPE, gyrCurrent)
+        val magActual = getActualRate(SensorType.MAGNETOMETER, magCurrent)
+
         return SensorInfo(
             accelerometerMaxDelay = accelerometer?.maxDelay ?: 0,
             gyroscopeMaxDelay = gyroscope?.maxDelay ?: 0,
@@ -149,21 +168,26 @@ class SensorCollectorImpl @Inject constructor(
             gyroscopeMaxRate = calculateMaxRate(gyroscope),
             magnetometerMaxRate = calculateMaxRate(magnetometer),
             // 当前有效采样率（根据硬件能力可能 <=100Hz）
-            accelerometerCurrentRate = calculateCurrentRate(accelerometerSamplingPeriodUs),
-            gyroscopeCurrentRate = calculateCurrentRate(gyroscopeSamplingPeriodUs),
-            magnetometerCurrentRate = calculateCurrentRate(magnetometerSamplingPeriodUs)
+            accelerometerCurrentRate = accCurrent,
+            gyroscopeCurrentRate = gyrCurrent,
+            magnetometerCurrentRate = magCurrent,
+            accelerometerActualRate = accActual,
+            gyroscopeActualRate = gyrActual,
+            magnetometerActualRate = magActual
         )
     }
     
     override fun onSensorChanged(event: SensorEvent) {
         if (!isCollecting.get()) return
-        
+
         val sensorType = when (event.sensor.type) {
             Sensor.TYPE_ACCELEROMETER -> SensorType.ACCELEROMETER
             Sensor.TYPE_GYROSCOPE -> SensorType.GYROSCOPE
             Sensor.TYPE_MAGNETIC_FIELD -> SensorType.MAGNETOMETER
             else -> return
         }
+
+        updateRate(sensorType, event.timestamp)
         
         // 使用协程在专用线程上处理传感器数据
         sensorScope.launch {
@@ -277,6 +301,28 @@ class SensorCollectorImpl @Inject constructor(
 
     private fun calculateCurrentRate(periodUs: Int): Float {
         return if (periodUs > 0) 1_000_000f / periodUs else 0f
+    }
+
+    private fun updateRate(sensorType: SensorType, timestampNs: Long) {
+        val tracker = rateTrackers[sensorType] ?: return
+        synchronized(tracker) {
+            if (tracker.windowStartNs == 0L) {
+                tracker.windowStartNs = timestampNs
+            }
+            tracker.windowCount += 1
+            val elapsedNs = timestampNs - tracker.windowStartNs
+            if (elapsedNs >= 1_000_000_000L) {
+                tracker.lastRateHz = tracker.windowCount / (elapsedNs / 1_000_000_000f)
+                tracker.windowStartNs = timestampNs
+                tracker.windowCount = 0
+            }
+        }
+    }
+
+    private fun getActualRate(sensorType: SensorType, fallback: Float): Float {
+        val tracker = rateTrackers[sensorType] ?: return fallback
+        val rate = tracker.lastRateHz
+        return if (rate > 0f) rate else fallback
     }
     
     /**

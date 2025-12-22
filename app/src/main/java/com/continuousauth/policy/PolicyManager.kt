@@ -136,6 +136,7 @@ class PolicyManager @Inject constructor(
                 .map { preferences ->
                     PolicyConfiguration(
                         policyId = preferences[POLICY_ID] ?: "",
+                        policyVersion = preferences[POLICY_VERSION] ?: "",
                         transmissionConfig = TransmissionConfiguration(
                             batchIntervalMs = preferences[BATCH_INTERVAL_MS] ?: DEFAULT_BATCH_INTERVAL,
                             maxPayloadSizeBytes = preferences[MAX_PAYLOAD_SIZE] ?: DEFAULT_MAX_PAYLOAD_SIZE,
@@ -244,6 +245,7 @@ data class Policy(
  */
 data class PolicyConfiguration(
     val policyId: String,
+    val policyVersion: String,
     val transmissionConfig: TransmissionConfiguration,
     val collectionConfig: CollectionConfiguration,
     val securityConfig: SecurityConfiguration

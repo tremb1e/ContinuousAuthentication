@@ -1,6 +1,7 @@
 package com.continuousauth.ui.compose.screens
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -11,30 +12,26 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Insights
-import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.SignalCellularAlt
-import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.outlined.Wifi
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.runtime.livedata.observeAsState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.continuousauth.network.ConnectionStatus
 import com.continuousauth.ui.AuthDecision
@@ -44,28 +41,21 @@ import com.continuousauth.ui.theme.ExtendedColors
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import kotlin.math.roundToInt
-import kotlin.random.Random
 
 /**
  * 持续认证页面
- * 展示服务端推理结果、阈值控制与实时状态
+ * 展示服务端推理结果与实时状态
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PrivacySettingsScreen(
     onNavigateBack: () -> Unit,
-    viewModel: MainViewModel = hiltViewModel()
+    viewModel: MainViewModel
 ) {
     val authUiState by viewModel.authUiState.collectAsStateWithLifecycle()
     val isEncryptedUploading by viewModel.isEncryptedUploading.observeAsState(false)
     val connectionStatus by viewModel.connectionStatus.observeAsState(ConnectionStatus.DISCONNECTED)
     val sessionId by viewModel.sessionId.observeAsState("")
-
-    var threshold by remember { mutableStateOf(authUiState.thresholdPercent) }
-    LaunchedEffect(authUiState.thresholdPercent) {
-        threshold = authUiState.thresholdPercent
-    }
 
     val scrollState = rememberScrollState()
     val history = remember { mutableStateListOf<AuthDecisionHistory>() }
@@ -75,7 +65,7 @@ fun PrivacySettingsScreen(
                 0,
                 AuthDecisionHistory(
                     decision = authUiState.lastDecision,
-                    score = authUiState.lastScore,
+                    message = authUiState.lastDecisionMessage,
                     timestamp = authUiState.lastUpdateTime
                 )
             )
@@ -90,27 +80,16 @@ fun PrivacySettingsScreen(
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        ContinuousAuthHero(authUiState, threshold)
+        ContinuousAuthHero(authUiState)
 
-        RealTimeDecisionCard(
+        AuthControlCard(
             authUiState = authUiState,
-            threshold = threshold,
-            onManualRefresh = {
-                viewModel.updateAuthResult(
-                    score = Random.nextFloat(),
-                    modelVersion = authUiState.modelVersion,
-                    latencyMs = (60..180).random().toLong()
-                )
-            }
+            isEncryptedUploading = isEncryptedUploading,
+            connectionStatus = connectionStatus,
+            onStartAuth = { viewModel.startAuthentication() }
         )
 
-        ThresholdCard(
-            threshold = threshold,
-            onThresholdChange = {
-                threshold = it
-                viewModel.setAuthThreshold(it)
-            }
-        )
+        RealTimeDecisionCard(authUiState = authUiState)
 
         PipelineStatusCard(
             isEncryptedUploading = isEncryptedUploading,
@@ -127,14 +106,13 @@ fun PrivacySettingsScreen(
 
 private data class AuthDecisionHistory(
     val decision: AuthDecision,
-    val score: Float,
+    val message: String,
     val timestamp: Long
 )
 
 @Composable
 private fun ContinuousAuthHero(
-    authUiState: ContinuousAuthUiState,
-    threshold: Int
+    authUiState: ContinuousAuthUiState
 ) {
     val statusColor = when (authUiState.lastDecision) {
         AuthDecision.NORMAL -> ExtendedColors.success
@@ -187,14 +165,23 @@ private fun ContinuousAuthHero(
             Spacer(modifier = Modifier.height(12.dp))
             DecisionBadge(
                 decision = authUiState.lastDecision,
-                score = authUiState.lastScore,
-                threshold = threshold
+                hasResult = authUiState.lastUpdateTime > 0
             )
 
             Spacer(modifier = Modifier.height(12.dp))
             val modelLabel = authUiState.modelVersion.ifBlank { "待同步" }
+            val windowLabel = if (authUiState.windowSizeSec > 0f) {
+                String.format(Locale.getDefault(), "%.1fs", authUiState.windowSizeSec)
+            } else {
+                "--"
+            }
+            val decisionLabel = if (authUiState.decisionTimeSec > 0f) {
+                String.format(Locale.getDefault(), "%.1fs", authUiState.decisionTimeSec)
+            } else {
+                "--"
+            }
             Text(
-                text = "阈值: ${threshold}% · 模型版本: $modelLabel",
+                text = "模型版本: $modelLabel · w=$windowLabel · T=$decisionLabel",
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -203,22 +190,146 @@ private fun ContinuousAuthHero(
 }
 
 @Composable
-private fun RealTimeDecisionCard(
+private fun AuthControlCard(
     authUiState: ContinuousAuthUiState,
-    threshold: Int,
-    onManualRefresh: () -> Unit
+    isEncryptedUploading: Boolean,
+    connectionStatus: ConnectionStatus,
+    onStartAuth: () -> Unit
 ) {
-    val scorePercent = (authUiState.lastScore * 100).coerceIn(0f, 100f)
+    val canStart = connectionStatus == ConnectionStatus.CONNECTED && isEncryptedUploading
+    val statusLabel = if (authUiState.authActive) "认证中" else "未启动"
+    val statusColor = if (authUiState.authActive) ExtendedColors.success else MaterialTheme.colorScheme.secondary
+    val actionLabel = if (authUiState.authActive) "重新认证" else "开始认证"
+    val windowLabel = if (authUiState.windowSizeSec > 0f) {
+        String.format(Locale.getDefault(), "%.1fs", authUiState.windowSizeSec)
+    } else {
+        "--"
+    }
+    val decisionLabel = if (authUiState.decisionTimeSec > 0f) {
+        String.format(Locale.getDefault(), "%.1fs", authUiState.decisionTimeSec)
+    } else {
+        "--"
+    }
+    val helperText = when {
+        authUiState.authMessage.isNotBlank() -> authUiState.authMessage
+        !canStart -> "请先连接服务器并开启加密上传"
+        else -> "点击开始认证，服务端将开始推理"
+    }
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(20.dp)
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Filled.Security,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "认证控制",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+                StatusPill(text = statusLabel, color = statusColor)
+            }
+
+            Text(
+                text = "窗口 $windowLabel · 决策 $decisionLabel",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                val connectionColor = when (connectionStatus) {
+                    ConnectionStatus.CONNECTED -> ExtendedColors.success
+                    ConnectionStatus.CONNECTING, ConnectionStatus.RECONNECTING -> MaterialTheme.colorScheme.secondary
+                    else -> MaterialTheme.colorScheme.error
+                }
+                StatusChip(
+                    icon = Icons.Outlined.Wifi,
+                    label = if (connectionStatus == ConnectionStatus.CONNECTED) "已连接" else "未连接",
+                    color = connectionColor
+                )
+                StatusChip(
+                    icon = Icons.Filled.Bolt,
+                    label = if (isEncryptedUploading) "加密上传中" else "未上传",
+                    color = if (isEncryptedUploading) ExtendedColors.success else MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                StatusChip(
+                    icon = Icons.Filled.Security,
+                    label = if (authUiState.authActive) "认证中" else "未认证",
+                    color = statusColor
+                )
+            }
+
+            Button(
+                onClick = onStartAuth,
+                enabled = canStart,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Icon(Icons.Filled.PlayArrow, contentDescription = null)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(actionLabel)
+            }
+
+            if (helperText.isNotBlank()) {
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant
+                ) {
+                    Text(
+                        text = helperText,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(12.dp)
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun RealTimeDecisionCard(
+    authUiState: ContinuousAuthUiState
+) {
+    val hasResult = authUiState.lastUpdateTime > 0
     val statusColor = when (authUiState.lastDecision) {
         AuthDecision.NORMAL -> ExtendedColors.success
         AuthDecision.ABNORMAL -> MaterialTheme.colorScheme.error
         AuthDecision.UNKNOWN -> MaterialTheme.colorScheme.secondary
     }
-    val subtitle = when (authUiState.lastDecision) {
-        AuthDecision.NORMAL -> "身份匹配，保持会话"
-        AuthDecision.ABNORMAL -> "存在异常，需二次校验"
+    val decisionLabel = when (authUiState.lastDecision) {
+        AuthDecision.NORMAL -> "认证通过"
+        AuthDecision.ABNORMAL -> "认证不通过"
         AuthDecision.UNKNOWN -> "等待推理结果"
     }
+    val decisionMessage = authUiState.lastDecisionMessage.ifBlank {
+        if (hasResult) "--" else "等待推理结果"
+    }
+    val messageColor = if (authUiState.lastDecision == AuthDecision.ABNORMAL) {
+        statusColor
+    } else {
+        MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    val latencyLabel = authUiState.serverLatencyMs?.let { "${it}ms" } ?: "--"
 
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -246,11 +357,11 @@ private fun RealTimeDecisionCard(
                         fontWeight = FontWeight.Bold
                     )
                 }
-                TextButton(onClick = onManualRefresh) {
-                    Icon(Icons.Filled.Refresh, contentDescription = null)
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text("刷新结果")
-                }
+                Text(
+                    text = "延迟 $latencyLabel",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
 
             Row(
@@ -260,14 +371,14 @@ private fun RealTimeDecisionCard(
             ) {
                 Column {
                     Text(
-                        text = "${scorePercent.roundToInt()}%",
+                        text = decisionLabel,
                         style = MaterialTheme.typography.displaySmall.copy(fontWeight = FontWeight.ExtraBold),
                         color = statusColor
                     )
                     Text(
-                        text = subtitle,
+                        text = decisionMessage,
                         style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = messageColor
                     )
                 }
 
@@ -275,80 +386,57 @@ private fun RealTimeDecisionCard(
                     horizontalAlignment = Alignment.End
                 ) {
                     Text(
-                        text = "阈值 $threshold%",
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontWeight = FontWeight.Medium
-                    )
-                    Text(
                         text = "上次更新: ${formatTime(authUiState.lastUpdateTime)}",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
-
-            LinearProgressIndicator(
-                progress = { scorePercent / 100f },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(6.dp)
-                    .clip(RoundedCornerShape(3.dp)),
-                color = statusColor
-            )
         }
     }
 }
 
 @Composable
-private fun ThresholdCard(
-    threshold: Int,
-    onThresholdChange: (Int) -> Unit
-) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(20.dp)
+private fun StatusPill(text: String, color: Color) {
+    Surface(
+        shape = RoundedCornerShape(999.dp),
+        color = color.copy(alpha = 0.12f)
     ) {
-        Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+        Text(
+            text = text,
+            style = MaterialTheme.typography.labelMedium,
+            color = color,
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+        )
+    }
+}
+
+@Composable
+private fun StatusChip(
+    icon: ImageVector,
+    label: String,
+    color: Color
+) {
+    Surface(
+        shape = RoundedCornerShape(999.dp),
+        color = color.copy(alpha = 0.12f)
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Icon(
-                    imageVector = Icons.Filled.Speed,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary
-                )
-                Text(
-                    text = "阈值控制（百分比）",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold
-                )
-            }
-
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = color,
+                modifier = Modifier.size(14.dp)
+            )
             Text(
-                text = "手动调整通过阈值，分数高于阈值判定为正常。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                text = label,
+                style = MaterialTheme.typography.labelMedium,
+                color = color
             )
-
-            Slider(
-                value = threshold.toFloat(),
-                onValueChange = { onThresholdChange(it.roundToInt()) },
-                valueRange = 40f..100f,
-                steps = 12
-            )
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Text("40%", style = MaterialTheme.typography.labelSmall)
-                Text("$threshold%", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-                Text("100%", style = MaterialTheme.typography.labelSmall)
-            }
         }
     }
 }
@@ -408,6 +496,27 @@ private fun PipelineStatusCard(
 
             StatusRow(
                 icon = Icons.Filled.CheckCircle,
+                label = "认证状态",
+                value = if (authUiState.authActive) "运行中" else "未启动",
+                valueColor = if (authUiState.authActive) ExtendedColors.success else MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            StatusRow(
+                icon = Icons.Filled.Insights,
+                label = "推理延迟",
+                value = authUiState.serverLatencyMs?.let { "${it}ms" } ?: "--",
+                valueColor = MaterialTheme.colorScheme.onSurface
+            )
+
+            StatusRow(
+                icon = Icons.Filled.Insights,
+                label = "服务端时间",
+                value = authUiState.serverTimestampMs?.let { formatTime(it) } ?: "--",
+                valueColor = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            StatusRow(
+                icon = Icons.Filled.CheckCircle,
                 label = "模型版本",
                 value = authUiState.modelVersion.ifBlank { "待同步" },
                 valueColor = MaterialTheme.colorScheme.onSurface
@@ -419,6 +528,14 @@ private fun PipelineStatusCard(
                     label = "会话ID",
                     value = it.take(8) + "...",
                     valueColor = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
+            authUiState.authMessage.takeIf { it.isNotBlank() }?.let { message ->
+                Text(
+                    text = message,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
         }
@@ -469,12 +586,11 @@ private fun HistoryCard(history: List<AuthDecisionHistory>) {
 @Composable
 private fun DecisionBadge(
     decision: AuthDecision,
-    score: Float,
-    threshold: Int
+    hasResult: Boolean
 ) {
     val (label, color, icon) = when (decision) {
-        AuthDecision.NORMAL -> Triple("正常", ExtendedColors.success, Icons.Filled.CheckCircle)
-        AuthDecision.ABNORMAL -> Triple("异常", MaterialTheme.colorScheme.error, Icons.Filled.ErrorOutline)
+        AuthDecision.NORMAL -> Triple("认证通过", ExtendedColors.success, Icons.Filled.CheckCircle)
+        AuthDecision.ABNORMAL -> Triple("认证不通过", MaterialTheme.colorScheme.error, Icons.Filled.ErrorOutline)
         AuthDecision.UNKNOWN -> Triple("待判定", MaterialTheme.colorScheme.secondary, Icons.Filled.Insights)
     }
 
@@ -491,7 +607,7 @@ private fun DecisionBadge(
             Column {
                 Text(text = label, color = color, fontWeight = FontWeight.Bold)
                 Text(
-                    text = "分数 ${(score * 100).roundToInt()}% / 阈值 $threshold%",
+                    text = if (hasResult) "服务端已返回结果" else "等待推理结果",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -541,8 +657,8 @@ private fun DecisionHistoryRow(item: AuthDecisionHistory) {
         Column {
             Text(
                 text = when (item.decision) {
-                    AuthDecision.NORMAL -> "正常"
-                    AuthDecision.ABNORMAL -> "异常"
+                    AuthDecision.NORMAL -> "认证通过"
+                    AuthDecision.ABNORMAL -> "认证不通过"
                     AuthDecision.UNKNOWN -> "待判定"
                 },
                 style = MaterialTheme.typography.bodyMedium,
@@ -556,7 +672,7 @@ private fun DecisionHistoryRow(item: AuthDecisionHistory) {
             )
         }
         Text(
-            text = "${(item.score * 100).roundToInt()}%",
+            text = item.message.ifBlank { "--" },
             style = MaterialTheme.typography.titleSmall,
             fontWeight = FontWeight.SemiBold,
             color = color

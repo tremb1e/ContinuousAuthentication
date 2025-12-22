@@ -170,15 +170,7 @@ class DetailedInfoViewModel @Inject constructor(
      * 更新服务器公钥
      */
     suspend fun updateServerPublicKey() {
-        try {
-            // 这里应该通过某种方式获取新的公钥数据
-            // 暂时使用模拟数据
-            val mockKeyData = "MOCK_PUBLIC_KEY_DATA".toByteArray()
-            systemMonitor.updateServerPublicKey(mockKeyData)
-            showToast("服务器公钥已更新")
-        } catch (e: Exception) {
-            showToast("更新公钥失败: ${e.message}")
-        }
+        showToast("服务器公钥需由服务端下发，当前不支持本地模拟更新")
     }
     
     /**

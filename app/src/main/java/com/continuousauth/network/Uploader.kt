@@ -1,5 +1,6 @@
 package com.continuousauth.network
 
+import com.continuousauth.proto.AuthSessionResponse
 import com.continuousauth.proto.DataPacket
 import com.continuousauth.proto.Heartbeat
 import com.continuousauth.proto.HeartbeatAck
@@ -109,6 +110,14 @@ interface Uploader {
     suspend fun getServerPolicy(): ServerPolicy
 
     /**
+     * 开始认证会话
+     */
+    suspend fun startAuthentication(
+        deviceIdHash: String,
+        sessionId: String?
+    ): AuthSessionResponse?
+
+    /**
      * 测试服务器可达性（Socket/HTTP/gRPC）
      */
     suspend fun testServerConnection(
@@ -160,30 +169,42 @@ data class MemoryBufferStats(
  * 服务器策略
  */
 data class ServerPolicy(
-    val version: String = "1.0",
-    val lastUpdated: Long = System.currentTimeMillis(),
-    val fastModeDurationSeconds: Int = 30,
-    val anomalyThreshold: Float = 0.8f,
-    val samplingRates: Map<String, Float> = mapOf(
-        "ACCELEROMETER" to 100f,
-        "GYROSCOPE" to 100f,
-        "MAGNETOMETER" to 50f
-    ),
-    val transmissionStrategy: String = "ADAPTIVE"
+    val policyId: String = "",
+    val policyVersion: String = "",
+    val batchIntervalMs: Int = 0,
+    val maxPayloadSizeBytes: Int = 0,
+    val uploadRateLimit: Float = 0f,
+    val compressionAlgorithm: String = "",
+    val batchSizeThreshold: Int = 0,
+    val enabledSensors: Set<String> = emptySet(),
+    val samplingRates: Map<String, Int> = emptyMap(),
+    val anomalyEnabled: Boolean = false,
+    val anomalyThresholdMultiplier: Float = 0f,
+    val anomalyWindowSizeSec: Int = 0,
+    val anomalyCooldownSec: Int = 0,
+    val lastUpdated: Long = System.currentTimeMillis()
 ) {
     fun toJson(): String {
         return """
             {
-                "version": "$version",
-                "lastUpdated": $lastUpdated,
-                "fastModeDurationSeconds": $fastModeDurationSeconds,
-                "anomalyThreshold": $anomalyThreshold,
+                "policyId": "$policyId",
+                "policyVersion": "$policyVersion",
+                "batchIntervalMs": $batchIntervalMs,
+                "maxPayloadSizeBytes": $maxPayloadSizeBytes,
+                "uploadRateLimit": $uploadRateLimit,
+                "compressionAlgorithm": "$compressionAlgorithm",
+                "batchSizeThreshold": $batchSizeThreshold,
+                "enabledSensors": ${enabledSensors.joinToString(prefix = "[", postfix = "]") { "\"$it\"" }},
                 "samplingRates": {
-                    ${samplingRates.entries.joinToString(",\n                    ") { 
+                    ${samplingRates.entries.joinToString(",\n                    ") {
                         "\"${it.key}\": ${it.value}"
                     }}
                 },
-                "transmissionStrategy": "$transmissionStrategy"
+                "anomalyEnabled": $anomalyEnabled,
+                "anomalyThresholdMultiplier": $anomalyThresholdMultiplier,
+                "anomalyWindowSizeSec": $anomalyWindowSizeSec,
+                "anomalyCooldownSec": $anomalyCooldownSec,
+                "lastUpdated": $lastUpdated
             }
         """.trimIndent()
     }

@@ -49,18 +49,23 @@ import java.security.KeyStore
 import javax.inject.Inject
 import androidx.core.app.NotificationManagerCompat
 import android.os.Process
-import com.continuousauth.utils.Constant
 import com.continuousauth.utils.Constant.UPLOAD_POLICY
-import com.continuousauth.utils.SpUtils
 import kotlinx.coroutines.runBlocking
 
 data class ContinuousAuthUiState(
-    val modelVersion: String = "待同步",
+    val modelVersion: String = "",
     val lastScore: Float = 0f,
-    val thresholdPercent: Int = 85,
+    val scoreValid: Boolean = false,
     val lastDecision: AuthDecision = AuthDecision.UNKNOWN,
+    val lastDecisionMessage: String = "",
     val lastUpdateTime: Long = 0L,
-    val serverLatencyMs: Long? = null
+    val serverLatencyMs: Long? = null,
+    val serverTimestampMs: Long? = null,
+    val authActive: Boolean = false,
+    val authMessage: String = "",
+    val windowSizeSec: Float = 0f,
+    val decisionTimeSec: Float = 0f,
+    val authFailure: Boolean = false
 )
 
 enum class AuthDecision { NORMAL, ABNORMAL, UNKNOWN }
@@ -90,7 +95,7 @@ class MainViewModel @Inject constructor(
     companion object {
         private const val TAG = "MainViewModel"
         private const val DEFAULT_SERVER_IP = "10.0.2.2"
-        private const val DEFAULT_SERVER_PORT = 50051
+        private const val DEFAULT_SERVER_PORT = 8000
         private const val DEFAULT_SERVER_SCHEME = "https"
     }
     
@@ -143,6 +148,8 @@ class MainViewModel @Inject constructor(
     val userId: LiveData<String> = _userId
     private val _userUploadId = MutableLiveData<String>()
     val userUploadId: LiveData<String> = _userUploadId
+    private val _deviceIdHash = MutableLiveData<String>()
+    val deviceIdHash: LiveData<String> = _deviceIdHash
     
     // 文件队列统计
     private val _fileQueueStats = MutableLiveData<QueueStats>()
@@ -244,6 +251,58 @@ class MainViewModel @Inject constructor(
         // 初始化隐私状态
         checkPrivacyConsent()
         initializeAuthUiState()
+
+        // 监听服务端认证结果
+        startAuthResultCollection()
+    }
+
+    private fun startAuthResultCollection() {
+        viewModelScope.launch {
+            uploadManager.authResultFlow.collect { result ->
+                try {
+                    val currentSession = _sessionId.value ?: userIdManager.getCurrentSessionId()
+                    if (currentSession.isNullOrBlank()) {
+                        Log.w(TAG, "忽略认证结果：本地会话未初始化")
+                        return@collect
+                    }
+                    if (currentSession != result.sessionId) {
+                        Log.w(
+                            TAG,
+                            "忽略认证结果：会话不匹配 local=$currentSession, remote=${result.sessionId}"
+                        )
+                        return@collect
+                    }
+                    val expectedDevice = _deviceIdHash.value
+                    if (!expectedDevice.isNullOrBlank() &&
+                        result.deviceIdHash.isNotBlank() &&
+                        result.deviceIdHash != expectedDevice
+                    ) {
+                        Log.w(
+                            TAG,
+                            "忽略认证结果：设备不匹配 local=$expectedDevice, remote=${result.deviceIdHash}"
+                        )
+                        return@collect
+                    }
+                    if (_isEncryptedUploading.value != true) {
+                        Log.w(TAG, "忽略认证结果：加密上传未开启")
+                        return@collect
+                    }
+                    val latency = System.currentTimeMillis() - result.serverTimestampMs
+                    updateAuthResult(
+                        score = result.normalizedScore,
+                        modelVersion = result.modelVersion,
+                        latencyMs = latency.coerceAtLeast(0),
+                        accepted = result.accept,
+                        interrupt = result.interrupt,
+                        windowSizeSec = result.windowSizeSec,
+                        serverTimestampMs = result.serverTimestampMs,
+                        message = result.message
+                    )
+                } catch (error: Exception) {
+                    Log.e(TAG, "处理认证结果异常", error)
+                }
+            }
+        }
     }
     
     /**
@@ -413,6 +472,72 @@ class MainViewModel @Inject constructor(
             }
         }
     }
+
+    /**
+     * 开始认证会话
+     */
+    fun startAuthentication() {
+        viewModelScope.launch {
+            try {
+                if (_connectionStatus.value != ConnectionStatus.CONNECTED) {
+                    _errorMessage.value = "尚未连接服务器，无法开始认证"
+                    return@launch
+                }
+                if (_isEncryptedUploading.value != true) {
+                    _errorMessage.value = "请先开始加密上传，再发起认证"
+                    return@launch
+                }
+
+                envelopeCryptoBox.initialize()
+                val deviceIdHash = envelopeCryptoBox.getDeviceIdHash()
+                val currentSession = _sessionId.value ?: userIdManager.getCurrentSessionId()
+                val response = uploadManager.startAuthentication(deviceIdHash, currentSession)
+                if (response == null) {
+                    _errorMessage.value = "认证会话启动失败"
+                    return@launch
+                }
+                if (!response.accepted) {
+                    val message = formatAuthStartMessage(response.message)
+                    _errorMessage.value = message
+                    _authUiState.value = _authUiState.value.copy(
+                        authActive = false,
+                        authMessage = message,
+                        lastScore = 0f,
+                        lastDecision = AuthDecision.UNKNOWN,
+                        lastDecisionMessage = "",
+                        lastUpdateTime = 0L,
+                        serverLatencyMs = null,
+                        serverTimestampMs = null,
+                        authFailure = false,
+                        scoreValid = false
+                    )
+                    return@launch
+                }
+
+                if (response.sessionId.isNotBlank()) {
+                    _sessionId.value = response.sessionId
+                }
+                _authUiState.value = _authUiState.value.copy(
+                    modelVersion = response.modelVersion.ifBlank { _authUiState.value.modelVersion },
+                    authActive = true,
+                    authMessage = response.message,
+                    lastScore = 0f,
+                    lastDecision = AuthDecision.UNKNOWN,
+                    lastDecisionMessage = "",
+                    lastUpdateTime = 0L,
+                    serverLatencyMs = null,
+                    serverTimestampMs = null,
+                    windowSizeSec = response.windowSizeSec,
+                    decisionTimeSec = response.decisionTimeSec,
+                    authFailure = false,
+                    scoreValid = false
+                )
+            } catch (e: Exception) {
+                _errorMessage.value = "认证会话启动异常: ${e.message}"
+                _authUiState.value = _authUiState.value.copy(authActive = false)
+            }
+        }
+    }
     
     /**
      * 开始数据采集（保留兼容性）
@@ -433,11 +558,18 @@ class MainViewModel @Inject constructor(
      * 初始化持续认证UI状态
      */
     private fun initializeAuthUiState() {
-        val storedThreshold = SpUtils.decodeInt(Constant.AUTH_THRESHOLD).takeIf { it > 0 } ?: 85
         _authUiState.value = _authUiState.value.copy(
-            thresholdPercent = storedThreshold.coerceIn(1, 100),
-            modelVersion = "服务端模型",
-            lastDecision = AuthDecision.UNKNOWN
+            modelVersion = "",
+            lastDecision = AuthDecision.UNKNOWN,
+            lastDecisionMessage = "",
+            lastScore = 0f,
+            lastUpdateTime = 0L,
+            serverLatencyMs = null,
+            serverTimestampMs = null,
+            windowSizeSec = 0f,
+            decisionTimeSec = 0f,
+            authFailure = false,
+            scoreValid = false
         )
     }
 
@@ -451,6 +583,8 @@ class MainViewModel @Inject constructor(
                 val uid = _userId.value ?: userIdManager.getUserId()
                 val uploadId = envelopeCryptoBox.getUserIdHash(uid)
                 _userUploadId.postValue(uploadId)
+                val deviceHash = envelopeCryptoBox.getDeviceIdHash()
+                _deviceIdHash.postValue(deviceHash)
             } catch (e: Exception) {
                 Log.w(TAG, "初始化上传标识失败: ${e.message}")
             }
@@ -458,41 +592,62 @@ class MainViewModel @Inject constructor(
     }
 
     /**
-     * 设置认证阈值（百分比）
+     * 更新服务端推理结果
      */
-    fun setAuthThreshold(percent: Int) {
-        val normalized = percent.coerceIn(1, 100)
-        SpUtils.encode(Constant.AUTH_THRESHOLD, normalized)
+    fun updateAuthResult(
+        score: Float,
+        modelVersion: String? = null,
+        latencyMs: Long? = null,
+        accepted: Boolean,
+        interrupt: Boolean = false,
+        windowSizeSec: Float? = null,
+        serverTimestampMs: Long? = null,
+        message: String? = null
+    ) {
+        val isValidScore = score.isFinite()
+        val clampedScore = if (isValidScore) score.coerceIn(0f, 1f) else 0f
         val current = _authUiState.value
-        val updatedDecision = when {
-            current.lastUpdateTime == 0L -> AuthDecision.UNKNOWN
-            current.lastScore * 100 >= normalized -> AuthDecision.NORMAL
-            else -> AuthDecision.ABNORMAL
-        }
+        val decision = if (accepted) AuthDecision.NORMAL else AuthDecision.ABNORMAL
         _authUiState.value = current.copy(
-            thresholdPercent = normalized,
-            lastDecision = updatedDecision
+            lastScore = clampedScore,
+            scoreValid = isValidScore,
+            lastDecision = decision,
+            lastDecisionMessage = message ?: current.lastDecisionMessage,
+            lastUpdateTime = System.currentTimeMillis(),
+            modelVersion = modelVersion ?: current.modelVersion,
+            serverLatencyMs = latencyMs ?: current.serverLatencyMs,
+            serverTimestampMs = serverTimestampMs ?: current.serverTimestampMs,
+            windowSizeSec = windowSizeSec ?: current.windowSizeSec,
+            authFailure = interrupt,
+            authActive = true
         )
     }
 
-    /**
-     * 更新服务端推理结果
-     */
-    fun updateAuthResult(score: Float, modelVersion: String? = null, latencyMs: Long? = null) {
-        val clampedScore = score.coerceIn(0f, 1f)
-        val current = _authUiState.value
-        val decision = when {
-            current.thresholdPercent <= 0 -> AuthDecision.UNKNOWN
-            clampedScore * 100 >= current.thresholdPercent -> AuthDecision.NORMAL
-            else -> AuthDecision.ABNORMAL
+    private fun formatAuthStartMessage(rawMessage: String?): String {
+        val message = rawMessage?.trim().orEmpty()
+        if (message.isBlank()) return "模型未就绪，稍后重试"
+
+        val dataMatch = Regex("data_insufficient:\\s*([0-9.]+)MB/([0-9.]+)MB", RegexOption.IGNORE_CASE)
+            .find(message)
+        if (dataMatch != null) {
+            val uploaded = dataMatch.groupValues[1]
+            val required = dataMatch.groupValues[2]
+            return "数据不足：已上传 ${uploaded}MB / 需要 ${required}MB"
         }
-        _authUiState.value = current.copy(
-            lastScore = clampedScore,
-            lastDecision = decision,
-            lastUpdateTime = System.currentTimeMillis(),
-            modelVersion = modelVersion ?: current.modelVersion,
-            serverLatencyMs = latencyMs ?: current.serverLatencyMs
-        )
+
+        return when {
+            message.startsWith("training_in_progress") -> "模型训练中，请稍后重试"
+            message.startsWith("training_failed") -> {
+                val detail = message.removePrefix("training_failed").trimStart(':', ' ')
+                if (detail.isNotBlank()) "模型训练失败：$detail" else "模型训练失败，请稍后重试"
+            }
+            message.startsWith("model_not_ready") -> {
+                val detail = message.removePrefix("model_not_ready").trimStart(':', ' ')
+                if (detail.isNotBlank()) "模型未就绪：$detail" else "模型未就绪，请稍后重试"
+            }
+            message.startsWith("data_insufficient") -> "数据不足，请继续上传后再试"
+            else -> message
+        }
     }
     
     /**
@@ -605,6 +760,21 @@ class MainViewModel @Inject constructor(
                 _connectionStatus.value = ConnectionStatus.DISCONNECTED
                 _transmissionStats.value = TransmissionStats()
                 _fileQueueStats.value = QueueStats()
+                _authUiState.value = _authUiState.value.copy(
+                    authActive = false,
+                    authMessage = "",
+                    lastDecision = AuthDecision.UNKNOWN,
+                    lastDecisionMessage = "",
+                    lastScore = 0f,
+                    lastUpdateTime = 0L,
+                    serverLatencyMs = null,
+                    serverTimestampMs = null,
+                    windowSizeSec = 0f,
+                    decisionTimeSec = 0f,
+                    modelVersion = "",
+                    authFailure = false,
+                    scoreValid = false
+                )
 
                 stopForegroundCollectionService()
 

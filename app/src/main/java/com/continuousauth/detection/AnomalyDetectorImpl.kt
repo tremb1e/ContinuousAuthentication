@@ -45,6 +45,7 @@ class AnomalyDetectorImpl @Inject constructor(
     // 设备解锁监听
     private var unlockReceiver: BroadcastReceiver? = null
     private var lastUnlockTime = 0L
+    private var timeProvider: () -> Long = { System.currentTimeMillis() }
     
     // 加速度计数据处理 - 使用滑动窗口实现
     private val accelerometerData = ConcurrentLinkedQueue<AccelerometerSample>()
@@ -118,6 +119,11 @@ class AnomalyDetectorImpl @Inject constructor(
         detectionJob = null
         detectorScope.cancel()
         detectorScope = CoroutineScope(SupervisorJob() + dispatcher)
+    }
+
+    @VisibleForTesting
+    internal fun overrideTimeProviderForTests(provider: () -> Long) {
+        timeProvider = provider
     }
     
     override fun setOnAnomalyListener(listener: OnAnomalyListener?) {
@@ -201,7 +207,7 @@ class AnomalyDetectorImpl @Inject constructor(
      * 处理设备解锁事件
      */
     private fun handleDeviceUnlock() {
-        val currentTime = System.currentTimeMillis()
+        val currentTime = timeProvider()
         
         // 检查冷却期
         if (currentTime - lastUnlockTime < currentPolicy.deviceUnlockCooldownMs) {
@@ -248,7 +254,7 @@ class AnomalyDetectorImpl @Inject constructor(
         val usageStats = usageStatsManager ?: return
         
         try {
-            val currentTime = System.currentTimeMillis()
+            val currentTime = timeProvider()
             // 扩大查询时间窗口到5分钟，确保能获取到数据
             val startTime = currentTime - 5 * 60 * 1000L
             

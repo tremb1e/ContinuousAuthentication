@@ -35,6 +35,9 @@ import com.continuousauth.ui.compose.components.LineChart
 import com.continuousauth.ui.viewmodels.DetailedInfoViewModel
 import kotlinx.coroutines.launch
 import java.text.DecimalFormat
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 /**
  * 详细信息页面
@@ -285,23 +288,60 @@ fun DetailedInfoScreen(
                     title = "服务器策略",
                     icon = Icons.Default.Policy
                 ) {
-                    InfoRow("策略版本", serverPolicy.version)
-                    InfoRow("快速模式时长", "${serverPolicy.fastModeDurationSeconds} 秒")
-                    InfoRow("异常阈值", decimalFormat.format(serverPolicy.anomalyThreshold))
-                    InfoRow("传输策略", serverPolicy.transmissionStrategy)
-                    
-                    // 采样率信息
+                    val updatedLabel = if (serverPolicy.lastUpdated > 0) {
+                        formatTimestamp(serverPolicy.lastUpdated)
+                    } else {
+                        "未同步"
+                    }
+                    val maxPayloadMb = if (serverPolicy.maxPayloadSizeBytes > 0) {
+                        decimalFormat.format(serverPolicy.maxPayloadSizeBytes / (1024f * 1024f))
+                    } else {
+                        "0"
+                    }
+
+                    InfoRow("策略ID", serverPolicy.policyId.ifBlank { "未分配" })
+                    InfoRow("策略版本", serverPolicy.policyVersion.ifBlank { "未同步" })
+                    InfoRow("更新时间", updatedLabel)
+                    InfoRow("批处理间隔", "${serverPolicy.batchIntervalMs} ms")
+                    InfoRow("最大包大小", "$maxPayloadMb MB")
+                    InfoRow("上传速率限制", "${decimalFormat.format(serverPolicy.uploadRateLimit)} 包/秒")
+                    InfoRow("压缩算法", serverPolicy.compressionAlgorithm.ifBlank { "LZ4" })
+                    InfoRow("批次触发阈值", "${serverPolicy.batchSizeThreshold}")
+                    InfoRow(
+                        "启用传感器",
+                        if (serverPolicy.enabledSensors.isEmpty()) "默认" else serverPolicy.enabledSensors.joinToString()
+                    )
+
                     Text(
                         text = "采样率配置:",
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.Bold,
                         modifier = Modifier.padding(top = 8.dp)
                     )
-                    serverPolicy.samplingRates.forEach { (sensor, rate) ->
-                        InfoRow("  $sensor", "${decimalFormat.format(rate)} Hz")
+                    if (serverPolicy.samplingRates.isEmpty()) {
+                        InfoRow("  默认", "ACC=100Hz / GYR=100Hz / MAG=100Hz")
+                    } else {
+                        serverPolicy.samplingRates.forEach { (sensor, rate) ->
+                            InfoRow("  $sensor", "${decimalFormat.format(rate)} Hz")
+                        }
                     }
-                    
-                    // JSON展示（可展开）
+
+                    Text(
+                        text = "异常检测:",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(top = 8.dp)
+                    )
+                    InfoRow("  状态", if (serverPolicy.anomalyEnabled) "启用" else "禁用")
+                    if (serverPolicy.anomalyEnabled) {
+                        InfoRow(
+                            "  阈值倍数",
+                            decimalFormat.format(serverPolicy.anomalyThresholdMultiplier)
+                        )
+                        InfoRow("  窗口大小", "${serverPolicy.anomalyWindowSizeSec} 秒")
+                        InfoRow("  冷却期", "${serverPolicy.anomalyCooldownSec} 秒")
+                    }
+
                     var showJson by remember { mutableStateOf(false) }
                     TextButton(
                         onClick = { showJson = !showJson },
@@ -309,7 +349,7 @@ fun DetailedInfoScreen(
                     ) {
                         Text(if (showJson) "隐藏策略JSON" else "显示策略JSON")
                     }
-                    
+
                     AnimatedVisibility(visible = showJson) {
                         Surface(
                             modifier = Modifier
@@ -361,7 +401,7 @@ fun DetailedInfoScreen(
                     
                     // 内存使用率
                     Text(
-                        text = "本App内存使用 (${performanceMetrics.memoryUsedMB}MB / ${performanceMetrics.memoryTotalMB}MB)",
+                        text = "本App堆内存使用 (${performanceMetrics.memoryUsedMB}MB / ${performanceMetrics.memoryTotalMB}MB)",
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.Bold
                     )
@@ -609,6 +649,12 @@ fun InfoRow(
 
         )
     }
+}
+
+private fun formatTimestamp(timestamp: Long): String {
+    if (timestamp <= 0L) return "--"
+    val formatter = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
+    return formatter.format(Date(timestamp))
 }
 
 @Composable

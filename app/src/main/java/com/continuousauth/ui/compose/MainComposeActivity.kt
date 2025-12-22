@@ -301,7 +301,8 @@ class MainComposeActivity : FragmentActivity() {
 
                     composable(Screen.Privacy.route) {
                         PrivacySettingsScreen(
-                            onNavigateBack = { navController.popBackStack() }
+                            onNavigateBack = { navController.popBackStack() },
+                            viewModel = viewModel
                         )
                     }
                 }

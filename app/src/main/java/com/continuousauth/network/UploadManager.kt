@@ -61,6 +61,9 @@ class UploadManager @Inject constructor(
     // 策略管理
     private var currentPolicy: PolicyUpdate? = null
     private var policyUpdateCallback: ((PolicyUpdate) -> Unit)? = null
+
+    private val _authResultFlow = MutableSharedFlow<AuthResult>(extraBufferCapacity = 64)
+    val authResultFlow: SharedFlow<AuthResult> = _authResultFlow
     
     // 网络模式管理
     private var isWifiOnlyMode = false
@@ -192,6 +195,14 @@ class UploadManager @Inject constructor(
      * 获取当前策略
      */
     fun getCurrentPolicy(): PolicyUpdate? = currentPolicy
+
+    /**
+     * 发起认证会话
+     */
+    suspend fun startAuthentication(deviceIdHash: String, sessionId: String?): AuthSessionResponse? {
+        if (!isConnected()) return null
+        return uploader.startAuthentication(deviceIdHash, sessionId)
+    }
     
     /**
      * 获取上传状态
@@ -552,6 +563,9 @@ class UploadManager @Inject constructor(
                 }
                 directive.hasPolicy() -> {
                     processPolicyUpdate(directive.policy)
+                }
+                directive.hasAuthResult() -> {
+                    _authResultFlow.emit(directive.authResult)
                 }
                 else -> {
                     Log.w(TAG, "收到未知类型的服务器指令")

@@ -69,6 +69,7 @@ message ServerDirective {
         PolicyUpdate policy = 2;
         KeyRotationNotice key_rotation = 3;
         EmergencyStop emergency = 4;
+        AuthResult auth_result = 5;
     }
 }
 
@@ -146,6 +147,39 @@ message PolicyRequest {
     string current_policy_id = 4;
 }
 
+// 认证会话请求
+message AuthSessionRequest {
+    string device_id_hash = 1;
+    string session_id = 2;
+    string app_version = 3;
+    int32 android_api_level = 4;
+}
+
+message AuthSessionResponse {
+    bool accepted = 1;
+    string session_id = 2;
+    string message = 3;
+    string model_version = 4;
+    float window_size_sec = 5;
+    float decision_time_sec = 6;
+}
+
+message AuthResult {
+    string device_id_hash = 1;
+    string session_id = 2;
+    int64 server_timestamp_ms = 3;
+    float score = 4;
+    float threshold = 5;
+    bool accept = 6;
+    bool interrupt = 7;
+    float window_size_sec = 8;
+    int64 window_id = 9;
+    float normalized_score = 10;
+    int32 k_rejects = 11;
+    string model_version = 12;
+    string message = 13;
+}
+
 // 可观测性指标消息
 message MetricsReport {
     string device_id_hash = 1;              // HMAC(key_id, device_instance_id) - 非明文
@@ -180,6 +214,9 @@ service SensorDataService {
     
     // 单向RPC：获取初始策略配置
     rpc GetInitialPolicy(PolicyRequest) returns (PolicyUpdate);
+
+    // 单向RPC：开始认证会话
+    rpc StartAuthentication(AuthSessionRequest) returns (AuthSessionResponse);
     
     // 单向RPC：心跳检测
     rpc SendHeartbeat(Heartbeat) returns (HeartbeatAck);

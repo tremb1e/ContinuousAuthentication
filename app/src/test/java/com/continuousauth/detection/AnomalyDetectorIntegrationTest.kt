@@ -8,13 +8,11 @@ import android.content.Intent
 import io.mockk.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.TestDispatcher
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceTimeBy
-import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
@@ -42,6 +40,7 @@ class AnomalyDetectorIntegrationTest {
     private lateinit var testDispatcher: TestDispatcher
     private lateinit var testScope: TestScope
     private lateinit var capturedReceiver: BroadcastReceiver
+    private var fakeNowMs: Long = 0L
 
     @Before
     fun setup() {
@@ -65,6 +64,8 @@ class AnomalyDetectorIntegrationTest {
         
         anomalyDetector = AnomalyDetectorImpl(mockContext)
         anomalyDetector.overrideDispatcherForTests(testDispatcher)
+        fakeNowMs = 1_000_000L
+        anomalyDetector.overrideTimeProviderForTests { fakeNowMs }
     }
 
     @After
@@ -94,7 +95,7 @@ class AnomalyDetectorIntegrationTest {
         // 启动检测（这会注册广播接收器）
         anomalyDetector.startDetection()
         
-        advanceUntilIdle()
+        runCurrent()
         
         // 验证广播接收器已注册
         verify { mockContext.registerReceiver(any(), any()) }
@@ -103,7 +104,7 @@ class AnomalyDetectorIntegrationTest {
         val unlockIntent = Intent(Intent.ACTION_USER_PRESENT)
         capturedReceiver.onReceive(mockContext, unlockIntent)
         
-        advanceUntilIdle()
+        runCurrent()
         
         // 验证异常被检测到
         assertTrue("设备解锁异常应该被检测到", anomalyDetected)
@@ -136,28 +137,29 @@ class AnomalyDetectorIntegrationTest {
         anomalyDetector.setOnAnomalyListener(listener)
         anomalyDetector.startDetection()
         
-        advanceUntilIdle()
+        runCurrent()
         
         // 第一次解锁
         val unlockIntent = Intent(Intent.ACTION_USER_PRESENT)
         capturedReceiver.onReceive(mockContext, unlockIntent)
         
-        advanceUntilIdle()
+        runCurrent()
         assertEquals("应该检测到第一次解锁", 1, anomalyCount)
         
         // 立即再次解锁（应该被冷却期阻止）
         capturedReceiver.onReceive(mockContext, unlockIntent)
         
-        advanceUntilIdle()
+        runCurrent()
         assertEquals("冷却期内的解锁应该被忽略", 1, anomalyCount)
         
         // 等待冷却期结束
-        delay(150L)
+        fakeNowMs += 150L
+        runCurrent()
         
         // 冷却期后再次解锁
         capturedReceiver.onReceive(mockContext, unlockIntent)
         
-        advanceUntilIdle()
+        runCurrent()
         assertEquals("冷却期后应该检测到第二次解锁", 2, anomalyCount)
         
         anomalyDetector.stopDetection()
@@ -167,6 +169,7 @@ class AnomalyDetectorIntegrationTest {
      * 测试前台应用监控功能
      */
     @Test
+    @Config(sdk = [28])
     fun testForegroundAppMonitoring() = testScope.runTest {
         var anomalyDetected = false
         var detectedTrigger: AnomalyTrigger? = null
@@ -187,11 +190,12 @@ class AnomalyDetectorIntegrationTest {
         // 模拟UsageStats
         val mockUsageStats = mockk<UsageStats>()
         every { mockUsageStats.packageName } returns "com.sensitive.app"
-        every { mockUsageStats.lastTimeUsed } returns System.currentTimeMillis()
+        every { mockUsageStats.lastTimeUsed } answers { fakeNowMs }
+        every { mockUsageStats.totalTimeInForeground } returns 1000L
         
-        every { 
+        every {
             mockUsageStatsManager.queryUsageStats(
-                UsageStatsManager.INTERVAL_DAILY,
+                any(),
                 any(),
                 any()
             )
@@ -202,8 +206,9 @@ class AnomalyDetectorIntegrationTest {
         anomalyDetector.startDetection()
         
         // 等待前台应用检查周期
+        fakeNowMs += 100L
         advanceTimeBy(100L)
-        advanceUntilIdle()
+        runCurrent()
         
         // 验证敏感应用异常被检测到
         assertTrue("敏感应用进入异常应该被检测到", anomalyDetected)
@@ -219,6 +224,7 @@ class AnomalyDetectorIntegrationTest {
      * 测试前台应用监控的异常处理
      */
     @Test
+    @Config(sdk = [28])
     fun testForegroundAppMonitoringErrorHandling() = testScope.runTest {
         var anomalyDetected = false
         
@@ -244,8 +250,9 @@ class AnomalyDetectorIntegrationTest {
         anomalyDetector.startDetection()
         
         // 等待前台应用检查周期
+        fakeNowMs += 100L
         advanceTimeBy(100L)
-        advanceUntilIdle()
+        runCurrent()
         
         // 异常处理应该防止崩溃，不应该检测到异常
         assertFalse("异常情况下不应该误报异常", anomalyDetected)
@@ -279,10 +286,10 @@ class AnomalyDetectorIntegrationTest {
         anomalyDetector.setOnAnomalyListener(listener)
         anomalyDetector.startDetection()
         
-        advanceUntilIdle()
+        runCurrent()
         
         // 1. 触发加速度计异常
-        repeat(15) { index ->
+        repeat(60) { index ->
             anomalyDetector.processSensorData(0.1f, 0.2f, 9.8f, System.nanoTime() + index * 1000000L)
         }
         anomalyDetector.processSensorData(10.0f, 8.0f, 15.0f, System.nanoTime())
@@ -291,7 +298,7 @@ class AnomalyDetectorIntegrationTest {
         val unlockIntent = Intent(Intent.ACTION_USER_PRESENT)
         capturedReceiver.onReceive(mockContext, unlockIntent)
         
-        advanceUntilIdle()
+        runCurrent()
         
         // 验证检测到多种异常
         assertTrue("应该检测到至少2种异常", detectedTriggers.size >= 2)
@@ -337,7 +344,7 @@ class AnomalyDetectorIntegrationTest {
         }
         anomalyDetector.processSensorData(20.0f, 20.0f, 20.0f, System.nanoTime())
         
-        advanceUntilIdle()
+        runCurrent()
         
         // 禁用状态下不应该检测到任何异常
         assertFalse("禁用策略下不应该检测到异常", anomalyDetected)
@@ -361,7 +368,7 @@ class AnomalyDetectorIntegrationTest {
         anomalyDetector.setOnAnomalyListener(listener)
         anomalyDetector.startDetection()
         
-        advanceUntilIdle()
+        runCurrent()
         
         // 发送错误的Intent（null）
         capturedReceiver.onReceive(mockContext, null)
@@ -370,7 +377,7 @@ class AnomalyDetectorIntegrationTest {
         val wrongIntent = Intent("wrong.action")
         capturedReceiver.onReceive(mockContext, wrongIntent)
         
-        advanceUntilIdle()
+        runCurrent()
         
         // 错误的广播不应该触发异常检测
         assertFalse("错误的广播不应该触发异常", anomalyDetected)
@@ -379,7 +386,7 @@ class AnomalyDetectorIntegrationTest {
         val correctIntent = Intent(Intent.ACTION_USER_PRESENT)
         capturedReceiver.onReceive(mockContext, correctIntent)
         
-        advanceUntilIdle()
+        runCurrent()
         
         assertTrue("正确的广播应该触发异常", anomalyDetected)
         
@@ -393,7 +400,7 @@ class AnomalyDetectorIntegrationTest {
     fun testResourceCleanup() = testScope.runTest {
         anomalyDetector.startDetection()
         
-        advanceUntilIdle()
+        runCurrent()
         
         // 验证资源已分配
         verify { mockContext.registerReceiver(any(), any()) }
@@ -401,7 +408,7 @@ class AnomalyDetectorIntegrationTest {
         // 调用清理方法
         anomalyDetector.cleanup()
         
-        advanceUntilIdle()
+        runCurrent()
         
         // 验证检测已停止
         assertFalse("清理后检测应该停止", anomalyDetector.isDetecting())
@@ -450,7 +457,9 @@ class AnomalyDetectorIntegrationTest {
         
         // 插入一些突变
         repeat(5) { spikeIndex ->
-            delay(60L) // 等待冷却期
+            fakeNowMs += 60L
+            advanceTimeBy(60L) // 等待冷却期
+            runCurrent()
             anomalyDetector.processSensorData(
                 x = 10.0f + spikeIndex,
                 y = 10.0f + spikeIndex,
@@ -458,8 +467,8 @@ class AnomalyDetectorIntegrationTest {
                 timestamp = System.nanoTime() + (100 + spikeIndex) * 1000000L
             )
         }
-        
-        advanceUntilIdle()
+
+        runCurrent()
         
         val endTime = System.currentTimeMillis()
         val duration = endTime - startTime

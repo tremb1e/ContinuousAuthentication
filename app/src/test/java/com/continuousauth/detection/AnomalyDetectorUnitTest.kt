@@ -5,13 +5,10 @@ import android.content.Context
 import io.mockk.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.TestDispatcher
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
-import kotlinx.coroutines.test.advanceTimeBy
-import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
@@ -177,7 +174,7 @@ class AnomalyDetectorUnitTest {
             anomalyDetector.processSensorData(x, y, z, System.nanoTime() + index * 1000000L)
         }
         
-        advanceUntilIdle()
+        runCurrent()
         
         // 正常数据不应该触发异常
         assertFalse("正常数据不应该触发异常", anomalyDetected)
@@ -217,7 +214,7 @@ class AnomalyDetectorUnitTest {
         val spikeZ = 15.0f
         anomalyDetector.processSensorData(spikeX, spikeY, spikeZ, System.nanoTime() + 16 * 1000000L)
         
-        advanceUntilIdle()
+        runCurrent()
         
         // 突变数据应该触发异常
         assertTrue("突变数据应该触发异常", anomalyDetected)
@@ -267,7 +264,7 @@ class AnomalyDetectorUnitTest {
         anomalyDetector.processSensorData(10.0f, 8.0f, 15.0f, baseTime + 17 * 1000000L) // 冷却期内
         anomalyDetector.processSensorData(10.0f, 8.0f, 15.0f, baseTime + 18 * 1000000L) // 冷却期内
         
-        advanceUntilIdle()
+        runCurrent()
         
         // 应该只触发一次异常（因为冷却期）
         assertEquals("冷却期内应该只触发一次异常", 1, anomalyCount)
@@ -276,7 +273,7 @@ class AnomalyDetectorUnitTest {
         val postCooldownTs = baseTime + TimeUnit.MILLISECONDS.toNanos(200)
         anomalyDetector.processSensorData(10.0f, 8.0f, 15.0f, postCooldownTs)
         
-        advanceUntilIdle()
+        runCurrent()
         
         // 现在应该触发第二次异常
         assertEquals("冷却期后应该能再次触发异常", 2, anomalyCount)
@@ -304,16 +301,19 @@ class AnomalyDetectorUnitTest {
         }
         
         // 设置监听器
+        val testPolicy = DetectionPolicy(accelerometerCooldownMs = 100L)
+        anomalyDetector.updatePolicy(testPolicy)
         anomalyDetector.setOnAnomalyListener(listener)
         anomalyDetector.startDetection()
         
         // 建立基线并发送突变数据
+        val baseTime = System.nanoTime()
         repeat(60) { index ->
-            anomalyDetector.processSensorData(0.1f, 0.2f, 9.8f, System.nanoTime() + index * 1000000L)
+            anomalyDetector.processSensorData(0.1f, 0.2f, 9.8f, baseTime + index * 1000000L)
         }
-        anomalyDetector.processSensorData(10.0f, 8.0f, 15.0f, System.nanoTime() + 16 * 1000000L)
+        anomalyDetector.processSensorData(10.0f, 8.0f, 15.0f, baseTime + 16 * 1000000L)
         
-        advanceUntilIdle()
+        runCurrent()
         
         assertEquals("应该调用一次回调", 1, callbackCount)
         assertTrue("回调参数应该是加速度计突变", lastTrigger is AnomalyTrigger.AccelerometerSpike)
@@ -322,10 +322,10 @@ class AnomalyDetectorUnitTest {
         anomalyDetector.setOnAnomalyListener(null)
         
         // 再次发送突变数据
-        delay(200L) // 等待冷却期
-        anomalyDetector.processSensorData(10.0f, 8.0f, 15.0f, System.nanoTime())
+        val postCooldownTs = baseTime + TimeUnit.MILLISECONDS.toNanos(200)
+        anomalyDetector.processSensorData(10.0f, 8.0f, 15.0f, postCooldownTs)
         
-        advanceUntilIdle()
+        runCurrent()
         
         // 回调次数不应该增加
         assertEquals("清除监听器后不应该有新的回调", 1, callbackCount)
@@ -358,7 +358,7 @@ class AnomalyDetectorUnitTest {
         }
         anomalyDetector.processSensorData(20.0f, 20.0f, 20.0f, System.nanoTime())
         
-        advanceUntilIdle()
+        runCurrent()
         
         // 禁用状态下不应该检测到异常
         assertFalse("禁用状态下不应该检测到异常", anomalyDetected)
@@ -385,7 +385,7 @@ class AnomalyDetectorUnitTest {
         anomalyDetector.processSensorData(10.0f, 10.0f, 10.0f, System.nanoTime())
         anomalyDetector.processSensorData(20.0f, 20.0f, 20.0f, System.nanoTime() + 1000000L)
         
-        advanceUntilIdle()
+        runCurrent()
         
         // 数据不足时不应该触发异常
         assertFalse("数据不足时不应该触发异常", anomalyDetected)
@@ -416,7 +416,7 @@ class AnomalyDetectorUnitTest {
         // 发送轻微变化
         anomalyDetector.processSensorData(0.1f, 0.1f, 0.1f, System.nanoTime() + 21 * 1000000L)
         
-        advanceUntilIdle()
+        runCurrent()
         
         // 零基线的轻微变化不应该触发异常（由于stdDev检查）
         assertFalse("零基线的轻微变化不应该触发异常", anomalyDetected)

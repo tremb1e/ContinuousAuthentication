@@ -77,7 +77,7 @@ fun ServerConfigScreen(viewModel: MainViewModel) {
         mutableStateOf(SpUtils.decodeString(Constant.SERVER_IP, "192.168.1.100"))
     }
     var serverPort by remember {
-        mutableStateOf(SpUtils.decodeString(Constant.SERVER_PORT, "50051"))
+        mutableStateOf(SpUtils.decodeString(Constant.SERVER_PORT, "8000"))
     }
     var isTestingConnection by remember { mutableStateOf(false) }
 

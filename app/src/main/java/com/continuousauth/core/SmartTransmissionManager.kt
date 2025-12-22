@@ -224,7 +224,7 @@ class SmartTransmissionManager @Inject constructor(
     private fun resolveServerEndpoint(): String {
         val prefs = context.getSharedPreferences("server_config", Context.MODE_PRIVATE)
         val host = prefs.getString("server_ip", "10.0.2.2").orEmpty().ifBlank { "10.0.2.2" }
-        val port = prefs.getInt("server_port", 50051).takeIf { it > 0 } ?: 50051
+        val port = prefs.getInt("server_port", 8000).takeIf { it > 0 } ?: 8000
         val scheme = prefs.getString("server_scheme", "https")
             ?.lowercase()
             ?.takeIf { it == "http" || it == "https" } ?: "https"

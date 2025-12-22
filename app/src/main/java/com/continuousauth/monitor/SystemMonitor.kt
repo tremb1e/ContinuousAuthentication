@@ -14,6 +14,7 @@ import com.continuousauth.crypto.EnvelopeCryptoBox
 import com.continuousauth.network.TransportMode
 import com.continuousauth.network.Uploader
 import com.continuousauth.network.UploadManager
+import com.continuousauth.sensor.SensorCollector
 import com.continuousauth.storage.FileQueueManager
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.*
@@ -33,6 +34,7 @@ class SystemMonitor @Inject constructor(
     private val uploader: Uploader,
     private val uploadManager: UploadManager,
     private val fileQueueManager: FileQueueManager,
+    private val sensorCollector: SensorCollector,
     private val cryptoBox: EnvelopeCryptoBox,
     private val enhancedTimeSync: com.continuousauth.time.EnhancedTimeSync
 ) {
@@ -126,12 +128,20 @@ class SystemMonitor @Inject constructor(
     // 服务器策略
     data class ServerPolicy(
         val policyJson: String = "{}",
-        val version: String = "",
+        val policyId: String = "",
+        val policyVersion: String = "",
         val lastUpdated: Long = 0L,
-        val fastModeDurationSeconds: Int = 30,
-        val anomalyThreshold: Float = 0.8f,
-        val samplingRates: Map<String, Float> = emptyMap(),
-        val transmissionStrategy: String = "ADAPTIVE"
+        val batchIntervalMs: Int = 0,
+        val maxPayloadSizeBytes: Int = 0,
+        val uploadRateLimit: Float = 0f,
+        val compressionAlgorithm: String = "",
+        val batchSizeThreshold: Int = 0,
+        val enabledSensors: Set<String> = emptySet(),
+        val samplingRates: Map<String, Int> = emptyMap(),
+        val anomalyEnabled: Boolean = false,
+        val anomalyThresholdMultiplier: Float = 0f,
+        val anomalyWindowSizeSec: Int = 0,
+        val anomalyCooldownSec: Int = 0
     )
     
     // 性能指标
@@ -186,6 +196,8 @@ class SystemMonitor @Inject constructor(
     
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var monitoringJob: Job? = null
+    private var lastProcCpuTime: Long = 0L
+    private var lastSysCpuTime: Long = 0L
     
     private val sensorManager = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
     private val batteryManager = context.getSystemService(Context.BATTERY_SERVICE) as BatteryManager
@@ -318,20 +330,36 @@ class SystemMonitor @Inject constructor(
     private suspend fun monitorSensorInfo() {
         while (currentCoroutineContext().isActive) {
             val sensorInfoMap = mutableMapOf<String, SensorDetailedInfo>()
+            val collectorInfo = sensorCollector.getSensorInfo()
             
             // 加速度计
             sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)?.let { sensor ->
-                sensorInfoMap["Accelerometer"] = createSensorInfo(sensor, "ACCELEROMETER")
+                sensorInfoMap["Accelerometer"] = createSensorInfo(
+                    sensor,
+                    "ACCELEROMETER",
+                    collectorInfo.accelerometerCurrentRate,
+                    collectorInfo.accelerometerActualRate
+                )
             }
             
             // 陀螺仪
             sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE)?.let { sensor ->
-                sensorInfoMap["Gyroscope"] = createSensorInfo(sensor, "GYROSCOPE")
+                sensorInfoMap["Gyroscope"] = createSensorInfo(
+                    sensor,
+                    "GYROSCOPE",
+                    collectorInfo.gyroscopeCurrentRate,
+                    collectorInfo.gyroscopeActualRate
+                )
             }
             
             // 磁力计
             sensorManager.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD)?.let { sensor ->
-                sensorInfoMap["Magnetometer"] = createSensorInfo(sensor, "MAGNETOMETER")
+                sensorInfoMap["Magnetometer"] = createSensorInfo(
+                    sensor,
+                    "MAGNETOMETER",
+                    collectorInfo.magnetometerCurrentRate,
+                    collectorInfo.magnetometerActualRate
+                )
             }
             
             _sensorInfoMap.value = sensorInfoMap
@@ -343,18 +371,27 @@ class SystemMonitor @Inject constructor(
     /**
      * 创建传感器信息
      */
-    private fun createSensorInfo(sensor: Sensor, type: String): SensorDetailedInfo {
+    private fun createSensorInfo(
+        sensor: Sensor,
+        type: String,
+        currentRateHz: Float,
+        actualRateHz: Float
+    ): SensorDetailedInfo {
         return SensorDetailedInfo(
             sensorType = type,
-            hardwareMaxSamplingRateHz = 1000000f / sensor.minDelay, // 微秒转Hz
-            currentSamplingRateHz = getCurrentSamplingRate(type),
+            hardwareMaxSamplingRateHz = if (sensor.minDelay > 0) {
+                1000000f / sensor.minDelay
+            } else {
+                0f
+            }, // 微秒转Hz
+            currentSamplingRateHz = currentRateHz,
             fifoMaxEventCount = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
                 sensor.fifoMaxEventCount
             } else 0,
             fifoReservedEventCount = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
                 sensor.fifoReservedEventCount
             } else 0,
-            actualSamplingRateHz = getActualSamplingRate(type),
+            actualSamplingRateHz = actualRateHz,
             vendor = sensor.vendor,
             power = sensor.power
         )
@@ -406,12 +443,20 @@ class SystemMonitor @Inject constructor(
             
             _serverPolicy.value = ServerPolicy(
                 policyJson = policy.toJson(),
-                version = policy.version,
+                policyId = policy.policyId,
+                policyVersion = policy.policyVersion,
                 lastUpdated = policy.lastUpdated,
-                fastModeDurationSeconds = policy.fastModeDurationSeconds,
-                anomalyThreshold = policy.anomalyThreshold,
+                batchIntervalMs = policy.batchIntervalMs,
+                maxPayloadSizeBytes = policy.maxPayloadSizeBytes,
+                uploadRateLimit = policy.uploadRateLimit,
+                compressionAlgorithm = policy.compressionAlgorithm,
+                batchSizeThreshold = policy.batchSizeThreshold,
+                enabledSensors = policy.enabledSensors,
                 samplingRates = policy.samplingRates,
-                transmissionStrategy = policy.transmissionStrategy
+                anomalyEnabled = policy.anomalyEnabled,
+                anomalyThresholdMultiplier = policy.anomalyThresholdMultiplier,
+                anomalyWindowSizeSec = policy.anomalyWindowSizeSec,
+                anomalyCooldownSec = policy.anomalyCooldownSec
             )
             
             delay(10000) // 每10秒更新
@@ -452,7 +497,7 @@ class SystemMonitor @Inject constructor(
                 isInitialized = securityStatus.isInitialized,
                 hasServerPublicKey = securityStatus.hasValidKeys,
                 currentDekKeyId = cryptoBox.getDekKeyId(),
-                packetSequenceNumber = 0,
+                packetSequenceNumber = cryptoBox.getCurrentPacketSeqNo(),
                 encryptionAlgorithm = keyInfo.encryptionAlgorithm,
                 keyProvider = keyInfo.keysetProvider
             )
@@ -472,42 +517,39 @@ class SystemMonitor @Inject constructor(
     private fun getCpuUsage(): Float {
         return try {
             val pid = android.os.Process.myPid()
-            val reader = RandomAccessFile("/proc/$pid/stat", "r")
-            val procStatLine = reader.readLine()
-            reader.close()
+            val procStatLine = RandomAccessFile("/proc/$pid/stat", "r").use { it.readLine() }
             
             // 解析进程stat文件
-            val fields = procStatLine.split(" ")
+            val fields = procStatLine.trim().split(Regex("\\s+"))
             // 第14个字段是utime（用户态时间），第15个是stime（内核态时间）
-            val utime = fields[13].toLong()
-            val stime = fields[14].toLong()
+            val utime = fields.getOrNull(13)?.toLongOrNull() ?: 0L
+            val stime = fields.getOrNull(14)?.toLongOrNull() ?: 0L
             val totalCpuTime = utime + stime
             
             // 获取系统总CPU时间
-            val sysReader = RandomAccessFile("/proc/stat", "r")
-            val sysCpuLine = sysReader.readLine()
-            sysReader.close()
+            val sysCpuLine = RandomAccessFile("/proc/stat", "r").use { it.readLine() }
             
-            val sysToks = sysCpuLine.split(" ")
-            val sysTotal = sysToks.drop(2).take(7).map { it.toLongOrNull() ?: 0L }.sum()
+            val sysToks = sysCpuLine.trim().split(Regex("\\s+"))
+            val sysTotal = sysToks.drop(1).take(7).mapNotNull { it.toLongOrNull() }.sum()
             
-            // 计算CPU使用率百分比（简化计算，实际需要计算时间差）
-            val cpuUsage = if (sysTotal > 0) {
-                (totalCpuTime.toFloat() / sysTotal * 100).coerceIn(0f, 100f)
+            if (lastProcCpuTime == 0L || lastSysCpuTime == 0L) {
+                lastProcCpuTime = totalCpuTime
+                lastSysCpuTime = sysTotal
+                return 0f
+            }
+
+            val procDelta = totalCpuTime - lastProcCpuTime
+            val sysDelta = sysTotal - lastSysCpuTime
+            lastProcCpuTime = totalCpuTime
+            lastSysCpuTime = sysTotal
+
+            if (sysDelta <= 0L || procDelta < 0L) {
+                0f
             } else {
-                0f
+                (procDelta.toFloat() / sysDelta.toFloat() * 100f).coerceIn(0f, 100f)
             }
-            
-            cpuUsage
         } catch (e: Exception) {
-            // 备用方法：使用Debug类
-            try {
-                val info = android.os.Debug.MemoryInfo()
-                // 粗略估算，因为没有直接的CPU使用率API
-                5.0f // 返回一个合理的默认值
-            } catch (ex: Exception) {
-                0f
-            }
+            0f
         }
     }
     
@@ -617,32 +659,6 @@ class SystemMonitor @Inject constructor(
             "TRANSIENT_FAILURE" -> ConnectionState.TRANSIENT_FAILURE
             "ERROR" -> ConnectionState.TRANSIENT_FAILURE
             else -> ConnectionState.DISCONNECTED
-        }
-    }
-    
-    /**
-     * 获取当前采样率
-     */
-    private fun getCurrentSamplingRate(sensorType: String): Float {
-        // 返回固定的采样率设置
-        return when (sensorType) {
-            "ACCELEROMETER" -> 200f  // 固定200Hz
-            "GYROSCOPE" -> 200f      // 固定200Hz
-            "MAGNETOMETER" -> 100f   // 固定100Hz
-            else -> 0f
-        }
-    }
-    
-    /**
-     * 获取实际采样率
-     */
-    private fun getActualSamplingRate(sensorType: String): Float {
-        // 实际采样率可能略低于设定值，这里返回接近设定值的数据
-        return when (sensorType) {
-            "ACCELEROMETER" -> 198f  // 实际接近200Hz
-            "GYROSCOPE" -> 198f      // 实际接近200Hz  
-            "MAGNETOMETER" -> 99f    // 实际接近100Hz
-            else -> 0f
         }
     }
     

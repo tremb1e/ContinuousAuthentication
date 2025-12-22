@@ -1,6 +1,7 @@
 package com.continuousauth.network
 
 import android.util.Log
+import com.continuousauth.BuildConfig
 import com.continuousauth.buffer.InMemoryBuffer
 import com.continuousauth.proto.*
 import com.continuousauth.policy.PolicyManager
@@ -48,7 +49,7 @@ class UploaderImpl @Inject constructor(
         private const val KEEPALIVE_TIMEOUT_SECONDS = 5L
         private const val MAX_RETRY_ATTEMPTS = 3
         private const val ACK_TIMEOUT_MS = 10000L // 10秒ACK超时
-        private const val DEFAULT_GRPC_PORT = 50051
+        private const val DEFAULT_GRPC_PORT = 8000
     }
 
     // gRPC相关
@@ -486,6 +487,7 @@ class UploaderImpl @Inject constructor(
                     directive.hasPolicy() -> handlePolicyUpdate(directive.policy)
                     directive.hasKeyRotation() -> handleKeyRotation(directive.keyRotation)
                     directive.hasEmergency() -> handleEmergencyStop(directive.emergency)
+                    directive.hasAuthResult() -> handleAuthResult(directive.authResult)
                 }
 
                 // 发送到指令流
@@ -553,6 +555,10 @@ class UploaderImpl @Inject constructor(
     private fun handleKeyRotation(keyRotation: KeyRotationNotice) {
         Log.i(TAG, "收到密钥轮换通知: ${keyRotation.newKeyId}")
         // TODO: 实现密钥轮换逻辑
+    }
+
+    private fun handleAuthResult(authResult: AuthResult) {
+        Log.d(TAG, "收到认证结果: session=${authResult.sessionId}, score=${authResult.score}")
     }
     
     /**
@@ -710,21 +716,49 @@ class UploaderImpl @Inject constructor(
         }
     }
 
+    override suspend fun startAuthentication(
+        deviceIdHash: String,
+        sessionId: String?
+    ): AuthSessionResponse? = withContext(Dispatchers.IO) {
+        val ch = channel ?: return@withContext null
+        val request = AuthSessionRequest.newBuilder()
+            .setDeviceIdHash(deviceIdHash)
+            .setAppVersion(BuildConfig.VERSION_NAME)
+            .setAndroidApiLevel(android.os.Build.VERSION.SDK_INT)
+            .apply {
+                if (!sessionId.isNullOrBlank()) {
+                    setSessionId(sessionId)
+                }
+            }
+            .build()
+        return@withContext try {
+            SensorDataServiceGrpc.newBlockingStub(ch).startAuthentication(request)
+        } catch (e: Exception) {
+            Log.e(TAG, "开始认证会话失败", e)
+            null
+        }
+    }
+
     /**
      * 获取服务器策略
      */
     override suspend fun getServerPolicy(): ServerPolicy {
+        val config = policyManager.getCurrentPolicyConfiguration()
         return ServerPolicy(
-            version = "1.0",
-            lastUpdated = System.currentTimeMillis(),
-            fastModeDurationSeconds = 30,  // 默认值，规范中已移除快速模式
-            anomalyThreshold = 0.8f,       // 默认值，规范中已移除
-            samplingRates = mapOf(
-                "ACCELEROMETER" to 200f,    // 规范中加速度计200Hz
-                "GYROSCOPE" to 200f,        // 规范中陀螺仪200Hz
-                "MAGNETOMETER" to 100f      // 规范中磁力计100Hz
-            ),
-            transmissionStrategy = "ADAPTIVE"
+            policyId = config.policyId,
+            policyVersion = config.policyVersion,
+            batchIntervalMs = config.transmissionConfig.batchIntervalMs,
+            maxPayloadSizeBytes = config.transmissionConfig.maxPayloadSizeBytes,
+            uploadRateLimit = config.transmissionConfig.uploadRateLimit,
+            compressionAlgorithm = config.transmissionConfig.compressionAlgorithm,
+            batchSizeThreshold = config.transmissionConfig.batchSizeThreshold,
+            enabledSensors = config.collectionConfig.enabledSensors,
+            samplingRates = config.collectionConfig.sensorSamplingRates,
+            anomalyEnabled = config.collectionConfig.anomalyEnabled,
+            anomalyThresholdMultiplier = config.collectionConfig.anomalyThresholdMultiplier,
+            anomalyWindowSizeSec = config.collectionConfig.anomalyWindowSizeSec,
+            anomalyCooldownSec = config.collectionConfig.anomalyCooldownSec,
+            lastUpdated = System.currentTimeMillis()
         )
     }
 
