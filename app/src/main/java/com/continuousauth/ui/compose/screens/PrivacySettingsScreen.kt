@@ -20,9 +20,10 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.livedata.observeAsState
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
@@ -58,18 +59,17 @@ fun PrivacySettingsScreen(
     val sessionId by viewModel.sessionId.observeAsState("")
 
     val scrollState = rememberScrollState()
-    val history = remember { mutableStateListOf<AuthDecisionHistory>() }
+    var history by remember { mutableStateOf(listOf<AuthDecisionHistory>()) }
     LaunchedEffect(authUiState.lastUpdateTime) {
         if (authUiState.lastUpdateTime > 0) {
-            history.add(
-                0,
+            val updated = listOf(
                 AuthDecisionHistory(
                     decision = authUiState.lastDecision,
                     message = authUiState.lastDecisionMessage,
                     timestamp = authUiState.lastUpdateTime
                 )
             )
-            if (history.size > 5) history.removeLast()
+            history = (updated + history).take(5)
         }
     }
 
