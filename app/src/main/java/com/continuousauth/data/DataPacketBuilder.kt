@@ -3,7 +3,6 @@ package com.continuousauth.data
 import android.content.Context
 import android.os.Build
 import android.os.SystemClock
-import android.provider.Settings
 import com.continuousauth.model.SensorSample
 import com.continuousauth.proto.DataPacket
 import com.continuousauth.proto.Metadata
@@ -30,8 +29,7 @@ class DataPacketBuilder @Inject constructor(
         private const val SCHEMA_VERSION = "1.0"  // proto中是string类型
         private const val TAG = "DataPacketBuilder"
     }
-    
-    private val deviceId by lazy { generateDeviceId() }
+
     private var packetSeqNo = 0L
     
     /**
@@ -42,12 +40,13 @@ class DataPacketBuilder @Inject constructor(
         sensorSamples: List<SensorSample>,
         encryptedPayload: ByteArray,
         packetSeqNo: Long? = null,
-        userId: String,
         sessionId: String,
         encryptedDek: ByteArray? = null,
         dekKeyId: String = "",
         sha256: ByteArray? = null,
-        compressionType: String = "LZ4"
+        compressionType: String = "LZ4",
+        uncompressedSizeBytes: Int = 0,
+        clientProcessingTimeMs: Long = 0L
     ): DataPacket {
         
         // 记录批次创建时的关键时间戳
@@ -59,7 +58,11 @@ class DataPacketBuilder @Inject constructor(
         val packetId = UUID.randomUUID().toString()
         
         // 构建元数据
-        val metadata = buildMetadata(compressionType)
+        val metadata = buildMetadata(
+            compressionType = compressionType,
+            uncompressedSizeBytes = uncompressedSizeBytes,
+            clientProcessingTimeMs = clientProcessingTimeMs
+        )
         
         // 获取设备ID的HMAC哈希
         val deviceIdHash = envelopeCryptoBox.getDeviceIdHash()
@@ -106,7 +109,6 @@ class DataPacketBuilder @Inject constructor(
      */
     fun buildSensorBatch(
         sensorSamples: List<SensorSample>,
-        userId: String,
         sessionId: String
     ): SerializedSensorBatch {
         
@@ -121,20 +123,16 @@ class DataPacketBuilder @Inject constructor(
             .setAccuracy(sample.accuracy)
             .setSeqNo(sample.seqNo)
             
-            // 前台应用使用明文字段，确保日志能看到真实包名
+            // 前台应用只发送 HMAC，避免把包名明文写入服务端。
             if (sample.foregroundApp.isNotEmpty()) {
-                builder.setForegroundApp(sample.foregroundApp)
+                builder.setForegroundAppHash(envelopeCryptoBox.getAppPackageHash(sample.foregroundApp))
             }
             
             builder.build()
         }
-        
-        // 使用HMAC哈希用户ID
-        val userIdHash = envelopeCryptoBox.getUserIdHash(userId)
-        
+
         return SerializedSensorBatch.newBuilder()
             .addAllSamples(protoSamples)
-            .setUserIdHash(userIdHash)  // 使用HMAC哈希
             .setSessionId(sessionId)
             .build()
     }
@@ -142,7 +140,11 @@ class DataPacketBuilder @Inject constructor(
     /**
      * 构建元数据
      */
-    private fun buildMetadata(compressionType: String = "LZ4"): Metadata {
+    private fun buildMetadata(
+        compressionType: String = "LZ4",
+        uncompressedSizeBytes: Int = 0,
+        clientProcessingTimeMs: Long = 0L
+    ): Metadata {
         return Metadata.newBuilder()
             .setAppVersion(getAppVersion())
             .setAndroidApiLevel(Build.VERSION.SDK_INT)  // 这是正确的，proto定义中是int32
@@ -150,6 +152,8 @@ class DataPacketBuilder @Inject constructor(
             .setCompression(compressionType)  // 使用传入的压缩类型
             .setEncryptionScheme("AES-256-GCM")  // 与服务端共享密钥的对称加密
             .setKeyVersion(envelopeCryptoBox.getDekKeyId())  // 密钥版本
+            .setUncompressedSizeBytes(uncompressedSizeBytes)
+            .setClientProcessingTimeMs(clientProcessingTimeMs)
             .build()
     }
     
@@ -161,19 +165,6 @@ class DataPacketBuilder @Inject constructor(
             com.continuousauth.model.SensorType.ACCELEROMETER -> com.continuousauth.proto.SensorType.ACCELEROMETER
             com.continuousauth.model.SensorType.GYROSCOPE -> com.continuousauth.proto.SensorType.GYROSCOPE
             com.continuousauth.model.SensorType.MAGNETOMETER -> com.continuousauth.proto.SensorType.MAGNETOMETER
-        }
-    }
-    
-    /**
-     * 获取设备ID
-     */
-    private fun generateDeviceId(): String {
-        return try {
-            Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID)
-                ?: UUID.randomUUID().toString()
-        } catch (e: Exception) {
-            Log.w(TAG, "无法获取ANDROID_ID，使用随机UUID", e)
-            UUID.randomUUID().toString()
         }
     }
     

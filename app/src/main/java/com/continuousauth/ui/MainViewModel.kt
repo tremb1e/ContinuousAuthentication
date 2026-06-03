@@ -26,7 +26,7 @@ import com.continuousauth.network.UploadStatus
 import com.continuousauth.observability.MetricsCollectorImpl
 import com.continuousauth.observability.PerformanceMonitorImpl
 import com.continuousauth.pool.SensorEventPool
-import com.continuousauth.utils.UserIdManager
+import com.continuousauth.utils.SessionManager
 import com.continuousauth.crypto.EnvelopeCryptoBox
 import com.continuousauth.network.TlsSecurityManager
 import com.continuousauth.network.TlsConfigInfo
@@ -45,6 +45,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import java.util.Locale
 import java.security.KeyStore
 import javax.inject.Inject
 import androidx.core.app.NotificationManagerCompat
@@ -55,6 +56,8 @@ import kotlinx.coroutines.runBlocking
 data class ContinuousAuthUiState(
     val modelVersion: String = "",
     val lastScore: Float = 0f,
+    val lastThreshold: Float = 0f,
+    val lastWindowId: Long = 0L,
     val scoreValid: Boolean = false,
     val lastDecision: AuthDecision = AuthDecision.UNKNOWN,
     val lastDecisionMessage: String = "",
@@ -65,10 +68,19 @@ data class ContinuousAuthUiState(
     val authMessage: String = "",
     val windowSizeSec: Float = 0f,
     val decisionTimeSec: Float = 0f,
-    val authFailure: Boolean = false
+    val authFailure: Boolean = false,
+    val rejectLogs: List<RejectLogEntry> = emptyList()
 )
 
 enum class AuthDecision { NORMAL, ABNORMAL, UNKNOWN }
+
+data class RejectLogEntry(
+    val timestampMs: Long,
+    val windowId: Long,
+    val score: Float,
+    val threshold: Float,
+    val message: String
+)
 
 /**
  * 主界面ViewModel
@@ -83,7 +95,7 @@ class MainViewModel @Inject constructor(
     private val performanceMonitor: PerformanceMonitorImpl,
     private val memoryMonitor: MemoryMonitor,
     private val sensorEventPool: SensorEventPool,
-    private val userIdManager: UserIdManager,
+    private val sessionManager: SessionManager,
     private val fileQueueManager: FileQueueManager,
     private val tlsSecurityManager: TlsSecurityManager,
     private val privacyManager: PrivacyManager,
@@ -94,8 +106,8 @@ class MainViewModel @Inject constructor(
     
     companion object {
         private const val TAG = "MainViewModel"
-        private const val DEFAULT_SERVER_IP = "10.0.2.2"
-        private const val DEFAULT_SERVER_PORT = 8000
+        private const val DEFAULT_SERVER_IP = "ty.macrz.com"
+        private const val DEFAULT_SERVER_PORT = 10500
         private const val DEFAULT_SERVER_SCHEME = "https"
     }
     
@@ -143,11 +155,8 @@ class MainViewModel @Inject constructor(
     private val _debugInfo = MutableLiveData<String>()
     val debugInfo: LiveData<String> = _debugInfo
     
-    // 用户ID
-    private val _userId = MutableLiveData<String>()
-    val userId: LiveData<String> = _userId
-    private val _userUploadId = MutableLiveData<String>()
-    val userUploadId: LiveData<String> = _userUploadId
+    private val _uploadIdentity = MutableLiveData<String>()
+    val uploadIdentity: LiveData<String> = _uploadIdentity
     private val _deviceIdHash = MutableLiveData<String>()
     val deviceIdHash: LiveData<String> = _deviceIdHash
     
@@ -191,6 +200,8 @@ class MainViewModel @Inject constructor(
     // 上传策略状态
     private val _uploadPolicyWiFiOnly = MutableLiveData<Boolean>()
     val uploadPolicyWiFiOnly: LiveData<Boolean> = _uploadPolicyWiFiOnly
+    private val _smartTransmissionEnabled = MutableLiveData<Boolean>()
+    val smartTransmissionEnabled: LiveData<Boolean> = _smartTransmissionEnabled
 
     // 传输状态
     val transmissionStatus: StateFlow<SystemMonitor.TransmissionStatus> =
@@ -223,9 +234,7 @@ class MainViewModel @Inject constructor(
         _debugModeEnabled.value = false
         _visualizationEnabled.value = false
         
-        // 初始化用户ID
-        _userId.value = userIdManager.getUserId()
-        initializeUserIdentifiers()
+        initializeUploadIdentity()
         
         // 初始化上传策略设置
         initializeUploadPolicy()
@@ -260,7 +269,7 @@ class MainViewModel @Inject constructor(
         viewModelScope.launch {
             uploadManager.authResultFlow.collect { result ->
                 try {
-                    val currentSession = _sessionId.value ?: userIdManager.getCurrentSessionId()
+                    val currentSession = _sessionId.value ?: sessionManager.getCurrentSessionId()
                     if (currentSession.isNullOrBlank()) {
                         Log.w(TAG, "忽略认证结果：本地会话未初始化")
                         return@collect
@@ -290,6 +299,8 @@ class MainViewModel @Inject constructor(
                     val latency = System.currentTimeMillis() - result.serverTimestampMs
                     updateAuthResult(
                         score = result.normalizedScore,
+                        threshold = result.threshold,
+                        windowId = result.windowId,
                         modelVersion = result.modelVersion,
                         latencyMs = latency.coerceAtLeast(0),
                         accepted = result.accept,
@@ -441,9 +452,9 @@ class MainViewModel @Inject constructor(
                 }
 
                 // 开始新的会话
-                val sessionId = userIdManager.startNewSession()
+                val sessionId = sessionManager.startNewSession()
                 _sessionId.value = sessionId
-                _sessionStartTime.value = userIdManager.getSessionStartTime()
+                _sessionStartTime.value = sessionManager.getSessionStartTime()
 
                 // 确保前台服务运行，避免切后台被系统限制网络/传感器
                 startForegroundCollectionService()
@@ -468,7 +479,7 @@ class MainViewModel @Inject constructor(
             } catch (e: Exception) {
                 _collectionStatus.value = "ERROR"
                 _errorMessage.value = "启动加密数据上传异常: ${e.message}"
-                userIdManager.endSession()
+                sessionManager.endSession()
             }
         }
     }
@@ -490,7 +501,7 @@ class MainViewModel @Inject constructor(
 
                 envelopeCryptoBox.initialize()
                 val deviceIdHash = envelopeCryptoBox.getDeviceIdHash()
-                val currentSession = _sessionId.value ?: userIdManager.getCurrentSessionId()
+                val currentSession = _sessionId.value ?: sessionManager.getCurrentSessionId()
                 val response = uploadManager.startAuthentication(deviceIdHash, currentSession)
                 if (response == null) {
                     _errorMessage.value = "认证会话启动失败"
@@ -503,13 +514,16 @@ class MainViewModel @Inject constructor(
                         authActive = false,
                         authMessage = message,
                         lastScore = 0f,
+                        lastThreshold = 0f,
+                        lastWindowId = 0L,
                         lastDecision = AuthDecision.UNKNOWN,
                         lastDecisionMessage = "",
                         lastUpdateTime = 0L,
                         serverLatencyMs = null,
                         serverTimestampMs = null,
                         authFailure = false,
-                        scoreValid = false
+                        scoreValid = false,
+                        rejectLogs = emptyList()
                     )
                     return@launch
                 }
@@ -522,6 +536,8 @@ class MainViewModel @Inject constructor(
                     authActive = true,
                     authMessage = response.message,
                     lastScore = 0f,
+                    lastThreshold = 0f,
+                    lastWindowId = 0L,
                     lastDecision = AuthDecision.UNKNOWN,
                     lastDecisionMessage = "",
                     lastUpdateTime = 0L,
@@ -530,7 +546,8 @@ class MainViewModel @Inject constructor(
                     windowSizeSec = response.windowSizeSec,
                     decisionTimeSec = response.decisionTimeSec,
                     authFailure = false,
-                    scoreValid = false
+                    scoreValid = false,
+                    rejectLogs = emptyList()
                 )
             } catch (e: Exception) {
                 _errorMessage.value = "认证会话启动异常: ${e.message}"
@@ -563,27 +580,28 @@ class MainViewModel @Inject constructor(
             lastDecision = AuthDecision.UNKNOWN,
             lastDecisionMessage = "",
             lastScore = 0f,
+            lastThreshold = 0f,
+            lastWindowId = 0L,
             lastUpdateTime = 0L,
             serverLatencyMs = null,
             serverTimestampMs = null,
             windowSizeSec = 0f,
             decisionTimeSec = 0f,
             authFailure = false,
-            scoreValid = false
+            scoreValid = false,
+            rejectLogs = emptyList()
         )
     }
 
     /**
-     * 初始化上传用的用户标识（HMAC，服务端路径使用）
+     * 初始化上传标识（HMAC，服务端路径使用）
      */
-    private fun initializeUserIdentifiers() {
+    private fun initializeUploadIdentity() {
         viewModelScope.launch {
             try {
                 envelopeCryptoBox.initialize()
-                val uid = _userId.value ?: userIdManager.getUserId()
-                val uploadId = envelopeCryptoBox.getUserIdHash(uid)
-                _userUploadId.postValue(uploadId)
                 val deviceHash = envelopeCryptoBox.getDeviceIdHash()
+                _uploadIdentity.postValue(deviceHash)
                 _deviceIdHash.postValue(deviceHash)
             } catch (e: Exception) {
                 Log.w(TAG, "初始化上传标识失败: ${e.message}")
@@ -596,6 +614,8 @@ class MainViewModel @Inject constructor(
      */
     fun updateAuthResult(
         score: Float,
+        threshold: Float,
+        windowId: Long,
         modelVersion: String? = null,
         latencyMs: Long? = null,
         accepted: Boolean,
@@ -606,20 +626,39 @@ class MainViewModel @Inject constructor(
     ) {
         val isValidScore = score.isFinite()
         val clampedScore = if (isValidScore) score.coerceIn(0f, 1f) else 0f
+        val isValidThreshold = threshold.isFinite()
+        val clampedThreshold = if (isValidThreshold) threshold.coerceIn(0f, 1f) else 0f
         val current = _authUiState.value
         val decision = if (accepted) AuthDecision.NORMAL else AuthDecision.ABNORMAL
+        val now = System.currentTimeMillis()
+        val decisionMessage = message ?: current.lastDecisionMessage
+        val eventTimestampMs = serverTimestampMs ?: now
+        val updatedRejectLogs = if (!accepted && current.rejectLogs.size < 10) {
+            current.rejectLogs + RejectLogEntry(
+                timestampMs = eventTimestampMs,
+                windowId = windowId,
+                score = clampedScore,
+                threshold = clampedThreshold,
+                message = decisionMessage
+            )
+        } else {
+            current.rejectLogs
+        }
         _authUiState.value = current.copy(
             lastScore = clampedScore,
+            lastThreshold = clampedThreshold,
+            lastWindowId = windowId,
             scoreValid = isValidScore,
             lastDecision = decision,
-            lastDecisionMessage = message ?: current.lastDecisionMessage,
-            lastUpdateTime = System.currentTimeMillis(),
+            lastDecisionMessage = decisionMessage,
+            lastUpdateTime = now,
             modelVersion = modelVersion ?: current.modelVersion,
             serverLatencyMs = latencyMs ?: current.serverLatencyMs,
             serverTimestampMs = serverTimestampMs ?: current.serverTimestampMs,
             windowSizeSec = windowSizeSec ?: current.windowSizeSec,
             authFailure = interrupt,
-            authActive = true
+            authActive = true,
+            rejectLogs = updatedRejectLogs
         )
     }
 
@@ -656,12 +695,18 @@ class MainViewModel @Inject constructor(
     private fun initializeUploadPolicy() {
         val prefs = context.getSharedPreferences(UPLOAD_POLICY, Context.MODE_PRIVATE)
         val wifiOnly = prefs.getBoolean("wifi_only", false) // 默认不限制
+        val smartEnabled = prefs.getBoolean("smart_transmission_enabled", false)
         _uploadPolicyWiFiOnly.value = wifiOnly
+        _smartTransmissionEnabled.value = smartEnabled
         
         // 应用策略到上传管理器
         applyUploadPolicy(wifiOnly)
+        smartTransmissionManager.setSmartTransmissionEnabled(smartEnabled)
         
-        Log.d(TAG, "上传策略初始化: ${if (wifiOnly) "仅WiFi" else "不限制"}")
+        Log.d(
+            TAG,
+            "上传策略初始化: ${if (wifiOnly) "仅WiFi" else "不限制"}, 智能传输=${if (smartEnabled) "开启" else "关闭"}"
+        )
     }
     
     /**
@@ -694,6 +739,18 @@ class MainViewModel @Inject constructor(
      */
     fun getUploadPolicyWiFiOnly(): Boolean {
         return _uploadPolicyWiFiOnly.value ?: false
+    }
+
+    fun setSmartTransmissionEnabled(enabled: Boolean) {
+        val prefs = context.getSharedPreferences(UPLOAD_POLICY, Context.MODE_PRIVATE)
+        prefs.edit().putBoolean("smart_transmission_enabled", enabled).apply()
+        _smartTransmissionEnabled.value = enabled
+        smartTransmissionManager.setSmartTransmissionEnabled(enabled)
+        Log.i(TAG, "智能传输已${if (enabled) "开启" else "关闭"}")
+    }
+
+    fun getSmartTransmissionEnabled(): Boolean {
+        return _smartTransmissionEnabled.value ?: false
     }
     
     /**
@@ -748,7 +805,7 @@ class MainViewModel @Inject constructor(
                 uploadStatsJob?.cancel()
                 
                 // 结束会话
-                userIdManager.endSession()
+                sessionManager.endSession()
                 _sessionId.value = null
                 _sessionStartTime.value = 0
                 _sessionDuration.value = "00:00"
@@ -766,6 +823,8 @@ class MainViewModel @Inject constructor(
                     lastDecision = AuthDecision.UNKNOWN,
                     lastDecisionMessage = "",
                     lastScore = 0f,
+                    lastThreshold = 0f,
+                    lastWindowId = 0L,
                     lastUpdateTime = 0L,
                     serverLatencyMs = null,
                     serverTimestampMs = null,
@@ -773,7 +832,8 @@ class MainViewModel @Inject constructor(
                     decisionTimeSec = 0f,
                     modelVersion = "",
                     authFailure = false,
-                    scoreValid = false
+                    scoreValid = false,
+                    rejectLogs = emptyList()
                 )
 
                 stopForegroundCollectionService()
@@ -1204,7 +1264,7 @@ class MainViewModel @Inject constructor(
     private fun startSessionDurationUpdate() {
         viewModelScope.launch { 
             while (_isEncryptedUploading.value == true) {
-                _sessionDuration.value = userIdManager.getFormattedSessionDuration()
+                _sessionDuration.value = sessionManager.getFormattedSessionDuration()
                 delay(1000) // 每秒更新一次
             }
         }
@@ -1333,12 +1393,8 @@ class MainViewModel @Inject constructor(
                     _sessionId.value = null
                     _sessionStartTime.value = 0
                     _sessionDuration.value = "00:00"
-                    // 重置用户ID
-                    userIdManager.resetUserId()
-                    // 重新获取并更新用户ID，这会触发UI更新
-                    val newUserId = userIdManager.getUserId()
-                    _userId.value = newUserId
-                    initializeUserIdentifiers()
+                    sessionManager.clearAllData()
+                    initializeUploadIdentity()
 
                     Log.i(TAG, "用户撤回同意，所有数据已删除")
                 } else {

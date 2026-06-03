@@ -68,6 +68,9 @@ fun DetailedInfoScreen(
     val consentState by mainViewModel.consentState.observeAsState(initial = ConsentState.UNKNOWN)
     val deletionState by mainViewModel.deletionState.observeAsState(initial = DeletionState.IDLE)
     val wifiOnly by mainViewModel.uploadPolicyWiFiOnly.observeAsState(initial = false)
+    val smartTransmissionEnabled by mainViewModel.smartTransmissionEnabled.observeAsState(
+        initial = mainViewModel.getSmartTransmissionEnabled()
+    )
     var dataRetentionDays by remember { mutableIntStateOf(30) }
 
     LaunchedEffect(Unit) {
@@ -276,8 +279,12 @@ fun DetailedInfoScreen(
             item {
                 TransmissionPolicyCard(
                     wifiOnly = wifiOnly,
+                    smartTransmissionEnabled = smartTransmissionEnabled,
                     onToggleWifiOnly = { isChecked ->
                         mainViewModel.setUploadPolicyWiFiOnly(isChecked)
+                    },
+                    onToggleSmartTransmission = { isChecked ->
+                        mainViewModel.setSmartTransmissionEnabled(isChecked)
                     }
                 )
             }
@@ -461,20 +468,6 @@ fun DetailedInfoScreen(
                     Column(
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        // 触发快速模式
-                        OutlinedButton(
-                            onClick = { 
-                                scope.launch {
-                                    viewModel.triggerFastMode()
-                                }
-                            },
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Icon(Icons.Default.Speed, contentDescription = null)
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("触发快速模式")
-                        }
-                        
                         // 清空本地队列
                         OutlinedButton(
                             onClick = { 
@@ -516,21 +509,7 @@ fun DetailedInfoScreen(
                             Spacer(modifier = Modifier.width(8.dp))
                             Text("强制密钥轮换")
                         }
-                        
-                        // 更新服务器公钥
-                        OutlinedButton(
-                            onClick = { 
-                                scope.launch {
-                                    viewModel.updateServerPublicKey()
-                                }
-                            },
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Icon(Icons.Default.PublishedWithChanges, contentDescription = null)
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("更新服务器公钥")
-                        }
-                        
+
                         // 导出调试日志
                         OutlinedButton(
                             onClick = { 
@@ -775,7 +754,9 @@ private fun DataRetentionCard(
 @Composable
 private fun TransmissionPolicyCard(
     wifiOnly: Boolean,
-    onToggleWifiOnly: (Boolean) -> Unit
+    smartTransmissionEnabled: Boolean,
+    onToggleWifiOnly: (Boolean) -> Unit,
+    onToggleSmartTransmission: (Boolean) -> Unit
 ) {
     Card(
         modifier = Modifier.fillMaxWidth()
@@ -810,6 +791,30 @@ private fun TransmissionPolicyCard(
                 Switch(
                     checked = wifiOnly,
                     onCheckedChange = onToggleWifiOnly
+                )
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "智能传输",
+                        style = MaterialTheme.typography.bodyLarge
+                    )
+                    Text(
+                        text = "开启后仅在电量>60%且空闲状态（凌晨0点后并锁屏）上传；其余时段先压缩再加密后落盘，最大占用3GB。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(
+                    checked = smartTransmissionEnabled,
+                    onCheckedChange = onToggleSmartTransmission
                 )
             }
         }

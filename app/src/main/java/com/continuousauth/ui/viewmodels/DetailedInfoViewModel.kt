@@ -123,14 +123,6 @@ class DetailedInfoViewModel @Inject constructor(
     }
     
     /**
-     * 触发快速模式（规范中已移除）
-     */
-    suspend fun triggerFastMode() {
-        // 快速模式已从规范中移除，此功能已禁用
-        showToast("快速模式功能已移除")
-    }
-    
-    /**
      * 清空本地队列
      */
     suspend fun clearLocalQueue() {
@@ -164,13 +156,6 @@ class DetailedInfoViewModel @Inject constructor(
         } catch (e: Exception) {
             showToast("密钥轮换失败: ${e.message}")
         }
-    }
-    
-    /**
-     * 更新服务器公钥
-     */
-    suspend fun updateServerPublicKey() {
-        showToast("服务器公钥需由服务端下发，当前不支持本地模拟更新")
     }
     
     /**

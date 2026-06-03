@@ -10,7 +10,7 @@ import com.continuousauth.database.ContinuousAuthDatabase
 // import com.continuousauth.proto.DataDeletionRequest
 // import com.continuousauth.proto.DataDeletionResponse
 import com.continuousauth.storage.FileQueueManager
-import com.continuousauth.utils.UserIdManager
+import com.continuousauth.utils.SessionManager
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -31,7 +31,7 @@ class PrivacyManager @Inject constructor(
     @ApplicationContext private val context: Context,
     private val database: ContinuousAuthDatabase,
     private val fileQueueManager: FileQueueManager,
-    private val userIdManager: UserIdManager
+    private val sessionManager: SessionManager
 ) {
     
     companion object {
@@ -190,8 +190,8 @@ class PrivacyManager @Inject constructor(
                 // 3. 清空缓存目录
                 clearCacheDirectory()
                 
-                // 4. 清除用户ID和会话信息
-                userIdManager.clearAllData()
+                // 4. 清除会话信息
+                sessionManager.clearAllData()
                 
                 // 5. 清除所有SharedPreferences（保留同意撤回记录）
                 clearPreferences()

@@ -19,7 +19,6 @@ import com.continuousauth.storage.FileQueueManager
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
-import java.io.RandomAccessFile
 import java.security.KeyStore
 import java.text.DecimalFormat
 import javax.inject.Inject
@@ -196,8 +195,9 @@ class SystemMonitor @Inject constructor(
     
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var monitoringJob: Job? = null
-    private var lastProcCpuTime: Long = 0L
-    private var lastSysCpuTime: Long = 0L
+    private var lastProcessCpuTimeMs: Long = 0L
+    private var lastWallClockTimeMs: Long = 0L
+    private val availableProcessors = Runtime.getRuntime().availableProcessors().coerceAtLeast(1)
     
     private val sensorManager = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
     private val batteryManager = context.getSystemService(Context.BATTERY_SERVICE) as BatteryManager
@@ -516,37 +516,27 @@ class SystemMonitor @Inject constructor(
      */
     private fun getCpuUsage(): Float {
         return try {
-            val pid = android.os.Process.myPid()
-            val procStatLine = RandomAccessFile("/proc/$pid/stat", "r").use { it.readLine() }
-            
-            // 解析进程stat文件
-            val fields = procStatLine.trim().split(Regex("\\s+"))
-            // 第14个字段是utime（用户态时间），第15个是stime（内核态时间）
-            val utime = fields.getOrNull(13)?.toLongOrNull() ?: 0L
-            val stime = fields.getOrNull(14)?.toLongOrNull() ?: 0L
-            val totalCpuTime = utime + stime
-            
-            // 获取系统总CPU时间
-            val sysCpuLine = RandomAccessFile("/proc/stat", "r").use { it.readLine() }
-            
-            val sysToks = sysCpuLine.trim().split(Regex("\\s+"))
-            val sysTotal = sysToks.drop(1).take(7).mapNotNull { it.toLongOrNull() }.sum()
-            
-            if (lastProcCpuTime == 0L || lastSysCpuTime == 0L) {
-                lastProcCpuTime = totalCpuTime
-                lastSysCpuTime = sysTotal
+            val processCpuTimeMs = android.os.Process.getElapsedCpuTime()
+            val wallClockMs = SystemClock.elapsedRealtime()
+
+            if (lastProcessCpuTimeMs == 0L || lastWallClockTimeMs == 0L) {
+                lastProcessCpuTimeMs = processCpuTimeMs
+                lastWallClockTimeMs = wallClockMs
                 return 0f
             }
 
-            val procDelta = totalCpuTime - lastProcCpuTime
-            val sysDelta = sysTotal - lastSysCpuTime
-            lastProcCpuTime = totalCpuTime
-            lastSysCpuTime = sysTotal
+            val processDelta = processCpuTimeMs - lastProcessCpuTimeMs
+            val wallDelta = wallClockMs - lastWallClockTimeMs
 
-            if (sysDelta <= 0L || procDelta < 0L) {
+            lastProcessCpuTimeMs = processCpuTimeMs
+            lastWallClockTimeMs = wallClockMs
+
+            if (wallDelta <= 0L || processDelta < 0L) {
                 0f
             } else {
-                (procDelta.toFloat() / sysDelta.toFloat() * 100f).coerceIn(0f, 100f)
+                val usagePercent = processDelta.toDouble() /
+                    (wallDelta.toDouble() * availableProcessors) * 100.0
+                usagePercent.coerceIn(0.0, 100.0).toFloat()
             }
         } catch (e: Exception) {
             0f
@@ -681,13 +671,6 @@ class SystemMonitor @Inject constructor(
      */
     suspend fun forceKeyRotation() {
         cryptoBox.rotateKeys()
-    }
-    
-    /**
-     * 更新服务器公钥
-     */
-    suspend fun updateServerPublicKey(keyData: ByteArray) {
-        cryptoBox.updateServerPublicKey(keyData)
     }
     
     /**

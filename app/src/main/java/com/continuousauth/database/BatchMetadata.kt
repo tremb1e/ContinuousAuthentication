@@ -25,7 +25,6 @@ data class BatchMetadata(
     val retryCount: Int = 0,               // 重试次数
     val lastError: String? = null,         // 最后错误信息
     val sequenceNumber: Long? = null,      // 序列号（用于排序）
-    val userId: String? = null,            // 用户标识
     val sessionId: String? = null,         // 会话标识
     val deviceId: String,                  // 设备标识
     val sha256: String? = null             // SHA256校验和

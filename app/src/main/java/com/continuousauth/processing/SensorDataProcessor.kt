@@ -49,7 +49,6 @@ class SensorDataProcessor @Inject constructor(
     private var processingJob: Job? = null
     
     // 当前会话信息
-    private var currentUserId = ""
     private var currentSessionId = ""
     
     /**
@@ -57,7 +56,6 @@ class SensorDataProcessor @Inject constructor(
      */
     suspend fun startProcessing(
         sensorDataFlow: Flow<SensorSample>,
-        userId: String,
         sessionId: String = UUID.randomUUID().toString()
     ): Boolean {
         if (isProcessing.get()) {
@@ -71,7 +69,6 @@ class SensorDataProcessor @Inject constructor(
             return false
         }
         
-        currentUserId = userId
         currentSessionId = sessionId
         
         // 启动数据处理协程
@@ -151,7 +148,6 @@ class SensorDataProcessor @Inject constructor(
             // 1. 构建传感器批次数据 (明文) - 序列化
             val sensorBatch = dataPacketBuilder.buildSensorBatch(
                 sensorSamples = samples,
-                userId = currentUserId,
                 sessionId = currentSessionId
             )
             
@@ -200,12 +196,12 @@ class SensorDataProcessor @Inject constructor(
                 sensorSamples = samples,
                 encryptedPayload = encryptedPayload,
                 packetSeqNo = packetSeqNo,
-                userId = currentUserId,
                 sessionId = currentSessionId,
                 encryptedDek = encryptedDek,
                 dekKeyId = dekKeyId,
                 sha256 = sha256,
-                compressionType = compressionManager.getCompressionTypeString(compressionType)
+                compressionType = compressionManager.getCompressionTypeString(compressionType),
+                uncompressedSizeBytes = sensorBatchBytes.size
             )
             
             // 8. 检查是否需要分片（Epic 1.4.4）
@@ -322,7 +318,6 @@ class SensorDataProcessor @Inject constructor(
                     retryCount = 0,
                     lastError = null,
                     sequenceNumber = packet.packetSeqNo,
-                    userId = currentUserId,
                     sessionId = currentSessionId,
                     deviceId = packet.deviceIdHash,
                     sha256 = null

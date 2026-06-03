@@ -4,7 +4,7 @@ import android.util.Log
 import com.continuousauth.proto.MetricsReport
 import com.continuousauth.proto.MetricsResponse
 import com.continuousauth.proto.SensorDataServiceGrpc
-import com.continuousauth.utils.UserIdManager
+import com.continuousauth.crypto.EnvelopeCryptoBox
 import io.grpc.ManagedChannel
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
@@ -24,7 +24,7 @@ import kotlin.math.min
 class MetricsUploader @Inject constructor(
     private val metricsCollector: MetricsCollectorImpl,
     private val performanceMonitor: PerformanceMonitorImpl,
-    private val userIdManager: UserIdManager
+    private val envelopeCryptoBox: EnvelopeCryptoBox
 ) {
     
     companion object {
@@ -181,9 +181,8 @@ class MetricsUploader @Inject constructor(
         val metricsSnapshot = metricsCollector.getSnapshot()
         val performanceStats = performanceMonitor.getPerformanceStats(periodMs)
         
-        // 获取设备标识的HMAC（非明文）
-        // TODO: 实现HMAC计算，当前使用userId的哈希值作为替代
-        val deviceIdHash = userIdManager.getUserId().hashCode().toString()
+        // 获取与数据包一致的设备标识 HMAC（非明文）
+        val deviceIdHash = envelopeCryptoBox.getDeviceIdHash()
         
         return MetricsReport.newBuilder().apply {
             this.deviceIdHash = deviceIdHash

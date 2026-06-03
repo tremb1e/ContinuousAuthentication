@@ -62,8 +62,7 @@ fun ServerConfigScreen(viewModel: MainViewModel) {
     val connectionStatus by viewModel.connectionStatus.observeAsState(ConnectionStatus.DISCONNECTED)
     val isCollectionRunning by viewModel.isCollectionRunning.observeAsState(false)
     val isEncryptedUploading by viewModel.isEncryptedUploading.observeAsState(false)
-    val userId by viewModel.userId.observeAsState("")
-    val userUploadId by viewModel.userUploadId.observeAsState("")
+    val uploadIdentity by viewModel.uploadIdentity.observeAsState("")
     val sessionId by viewModel.sessionId.observeAsState(null)
     val sessionStartTime by viewModel.sessionStartTime.observeAsState(0L)
     val sessionDuration by viewModel.sessionDuration.observeAsState("00:00")
@@ -74,10 +73,10 @@ fun ServerConfigScreen(viewModel: MainViewModel) {
     var showClearQueueDialog by remember { mutableStateOf(false) }
     // 本地状态
     var serverIp by remember {
-        mutableStateOf(SpUtils.decodeString(Constant.SERVER_IP, "192.168.1.100"))
+        mutableStateOf(SpUtils.decodeString(Constant.SERVER_IP, "https://ty.macrz.com"))
     }
     var serverPort by remember {
-        mutableStateOf(SpUtils.decodeString(Constant.SERVER_PORT, "8000"))
+        mutableStateOf(SpUtils.decodeString(Constant.SERVER_PORT, "10500"))
     }
     var isTestingConnection by remember { mutableStateOf(false) }
 
@@ -148,15 +147,11 @@ fun ServerConfigScreen(viewModel: MainViewModel) {
             // 连接状态卡片
             ConnectionStatusCard(connectionStatus, serverIp, serverPort)
             
-            // ID 信息卡片（仅显示用户ID）
+            // 上传标识信息卡片
             IdentificationCard(
-                userId = userId,
-                uploadId = userUploadId,
-                onCopyUserId = {
-                    clipboardManager.setText(AnnotatedString(userId))
-                },
+                uploadId = uploadIdentity,
                 onCopyUploadId = {
-                    clipboardManager.setText(AnnotatedString(userUploadId))
+                    clipboardManager.setText(AnnotatedString(uploadIdentity))
                 }
             )
             
@@ -523,13 +518,11 @@ fun AnimatedConnectionIcon(
 }
 
 /**
- * 身份信息卡片（仅显示用户ID）
+ * 上传标识信息卡片
  */
 @Composable
 fun IdentificationCard(
-    userId: String,
     uploadId: String,
-    onCopyUserId: () -> Unit,
     onCopyUploadId: () -> Unit
 ) {
     Card(
@@ -547,14 +540,6 @@ fun IdentificationCard(
                 fontWeight = FontWeight.Bold
             )
             
-            // 用户ID
-            IdRow(
-                icon = Icons.Outlined.Person,
-                label = stringResource(R.string.user_id_label),
-                value = userId,
-                onCopy = onCopyUserId
-            )
-
             IdRow(
                 icon = Icons.Filled.VpnKey,
                 label = "上传标识 (HMAC)",
@@ -670,7 +655,7 @@ fun ServerSettingsCard(
                     Icon(Icons.Outlined.Computer, contentDescription = null)
                 },
                 keyboardOptions = KeyboardOptions(
-                    keyboardType = KeyboardType.Number,
+                    keyboardType = KeyboardType.Uri,
                     imeAction = ImeAction.Next
                 ),
                 modifier = Modifier.fillMaxWidth(),

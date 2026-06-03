@@ -38,6 +38,7 @@ import com.continuousauth.network.ConnectionStatus
 import com.continuousauth.ui.AuthDecision
 import com.continuousauth.ui.ContinuousAuthUiState
 import com.continuousauth.ui.MainViewModel
+import com.continuousauth.ui.RejectLogEntry
 import com.continuousauth.ui.theme.ExtendedColors
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -98,7 +99,10 @@ fun PrivacySettingsScreen(
             authUiState = authUiState
         )
 
-        HistoryCard(history = history)
+        HistoryCard(
+            history = history,
+            rejectLogs = authUiState.rejectLogs
+        )
 
         Spacer(modifier = Modifier.height(24.dp))
     }
@@ -330,6 +334,17 @@ private fun RealTimeDecisionCard(
         MaterialTheme.colorScheme.onSurfaceVariant
     }
     val latencyLabel = authUiState.serverLatencyMs?.let { "${it}ms" } ?: "--"
+    val scoreLabel = if (authUiState.scoreValid) {
+        String.format(Locale.getDefault(), "%.3f", authUiState.lastScore)
+    } else {
+        "--"
+    }
+    val thresholdLabel = if (authUiState.scoreValid) {
+        String.format(Locale.getDefault(), "%.3f", authUiState.lastThreshold)
+    } else {
+        "--"
+    }
+    val windowLabel = if (authUiState.lastWindowId > 0L) authUiState.lastWindowId.toString() else "--"
 
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -392,6 +407,57 @@ private fun RealTimeDecisionCard(
                     )
                 }
             }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                ResultMetric(
+                    label = "分数",
+                    value = scoreLabel,
+                    modifier = Modifier.weight(1f)
+                )
+                ResultMetric(
+                    label = "阈值",
+                    value = thresholdLabel,
+                    modifier = Modifier.weight(1f)
+                )
+                ResultMetric(
+                    label = "窗口",
+                    value = windowLabel,
+                    modifier = Modifier.weight(1f)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ResultMetric(
+    label: String,
+    value: String,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp)
+        ) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Text(
+                text = value,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurface
+            )
         }
     }
 }
@@ -543,7 +609,10 @@ private fun PipelineStatusCard(
 }
 
 @Composable
-private fun HistoryCard(history: List<AuthDecisionHistory>) {
+private fun HistoryCard(
+    history: List<AuthDecisionHistory>,
+    rejectLogs: List<RejectLogEntry>
+) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(20.dp)
@@ -577,6 +646,26 @@ private fun HistoryCard(history: List<AuthDecisionHistory>) {
             } else {
                 history.forEach { item ->
                     DecisionHistoryRow(item)
+                }
+            }
+
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+
+            Text(
+                text = "恶意用户检测日志",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold
+            )
+
+            if (rejectLogs.isEmpty()) {
+                Text(
+                    text = "暂无认证不通过记录。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            } else {
+                rejectLogs.forEach { item ->
+                    RejectLogRow(item)
                 }
             }
         }
@@ -680,8 +769,67 @@ private fun DecisionHistoryRow(item: AuthDecisionHistory) {
     }
 }
 
+@Composable
+private fun RejectLogRow(item: RejectLogEntry) {
+    val detail = buildString {
+        if (item.windowId > 0L) append("窗口 ${item.windowId} · ")
+        append("分数 ")
+        append(String.format(Locale.getDefault(), "%.3f", item.score))
+        append(" / 阈值 ")
+        append(String.format(Locale.getDefault(), "%.3f", item.threshold))
+    }
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(2.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "认证不通过",
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.error
+            )
+            Text(
+                text = "${formatTime(item.timestampMs)} · ${formatRelativeTime(item.timestampMs)}",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.End
+            )
+        }
+        Text(
+            text = detail,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        if (item.message.isNotBlank()) {
+            Text(
+                text = item.message,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
 private fun formatTime(timestamp: Long): String {
     if (timestamp == 0L) return "--"
     val formatter = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
     return formatter.format(Date(timestamp))
+}
+
+private fun formatRelativeTime(timestamp: Long): String {
+    if (timestamp == 0L) return "--"
+    val elapsedMs = (System.currentTimeMillis() - timestamp).coerceAtLeast(0L)
+    val seconds = elapsedMs / 1000L
+    return if (seconds < 600L) {
+        "${seconds.coerceAtLeast(1L)}s前"
+    } else if (seconds < 3600L) {
+        "${(seconds / 60L).coerceAtLeast(1L)}分钟前"
+    } else {
+        "${(seconds / 3600L).coerceAtLeast(1L)}小时前"
+    }
 }

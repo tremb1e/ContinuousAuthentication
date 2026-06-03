@@ -1,6 +1,8 @@
 package com.continuousauth.crypto
 
 import android.content.Context
+import android.media.MediaDrm
+import android.os.Build
 import android.util.Base64
 import android.util.Log
 import androidx.security.crypto.EncryptedSharedPreferences
@@ -13,6 +15,7 @@ import kotlinx.coroutines.withContext
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.security.SecureRandom
+import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
@@ -46,6 +49,8 @@ class EnvelopeCryptoBox @Inject constructor(
 
         private const val SHARED_SECRET = "Continuous_Authentication"
         private const val STATIC_KEY_ID = "STATIC_KEY_V1"
+        private const val DEVICE_HMAC_DOMAIN = "ca-device-upload-id-v1"
+        private const val APP_HMAC_DOMAIN = "ca-foreground-app-v1"
 
         private const val AES_KEY_SIZE = 32
         private const val IV_LENGTH = 12
@@ -81,26 +86,13 @@ class EnvelopeCryptoBox @Inject constructor(
     override suspend fun initialize(): Boolean = withContext(Dispatchers.IO) {
         try {
             mutex.withLock {
-                // 设备实例 ID
-                deviceInstanceId = encryptedPrefs.getString(KEY_DEVICE_ID, null)
-                if (deviceInstanceId == null) {
-                    deviceInstanceId = UUID.randomUUID().toString()
-                    encryptedPrefs.edit().putString(KEY_DEVICE_ID, deviceInstanceId).apply()
-                    Log.i(TAG, "生成新的设备实例ID")
-                }
+                deviceInstanceId = buildStableDeviceMaterial()
+                encryptedPrefs.edit().putString(KEY_DEVICE_ID, deviceInstanceId).apply()
 
-                // HMAC 密钥
-                val savedHmac = encryptedPrefs.getString(KEY_HMAC_KEY, null)
-                hmacKey = if (savedHmac == null) {
-                    val newKey = generateRandomBytes(32)
-                    encryptedPrefs.edit()
-                        .putString(KEY_HMAC_KEY, Base64.encodeToString(newKey, Base64.NO_WRAP))
-                        .apply()
-                    Log.i(TAG, "生成新的HMAC密钥")
-                    newKey
-                } else {
-                    Base64.decode(savedHmac, Base64.NO_WRAP)
-                }
+                hmacKey = deriveStableHmacKey()
+                encryptedPrefs.edit()
+                    .putString(KEY_HMAC_KEY, Base64.encodeToString(hmacKey, Base64.NO_WRAP))
+                    .apply()
 
                 // 序列号与轮换计数
                 packetSeqNo.set(encryptedPrefs.getLong(KEY_PACKET_SEQ_NO, 0))
@@ -243,11 +235,12 @@ class EnvelopeCryptoBox @Inject constructor(
 
     fun getEncryptedDEK(): ByteArray? = null
 
-    fun getDeviceIdHash(): String = computeHmac(deviceInstanceId ?: "", getDekKeyId())
+    fun getDeviceIdHash(): String {
+        val material = deviceInstanceId ?: buildStableDeviceMaterial().also { deviceInstanceId = it }
+        return computeHmac(material, DEVICE_HMAC_DOMAIN)
+    }
 
-    fun getAppPackageHash(packageName: String): String = computeHmac(packageName, getDekKeyId())
-
-    fun getUserIdHash(userId: String): String = computeHmac(userId, getDekKeyId())
+    fun getAppPackageHash(packageName: String): String = computeHmac(packageName, APP_HMAC_DOMAIN)
 
     fun isCryptoDisabled(): Boolean = failureCount.get() >= MAX_FAILURE_COUNT
 
@@ -264,6 +257,59 @@ class EnvelopeCryptoBox @Inject constructor(
         return key
     }
 
+    private fun deriveStableHmacKey(): ByteArray {
+        return MessageDigest.getInstance("SHA-256")
+            .digest("$SHARED_SECRET:hmac:v1".toByteArray(StandardCharsets.UTF_8))
+    }
+
+    private fun buildStableDeviceMaterial(): String {
+        val widevineHash = getWidevineDeviceHash()
+        if (widevineHash.isNotBlank()) {
+            return "widevine:$widevineHash"
+        }
+
+        val androidId = runCatching {
+            android.provider.Settings.Secure.getString(
+                context.contentResolver,
+                android.provider.Settings.Secure.ANDROID_ID
+            )
+        }.getOrNull().orEmpty()
+        if (androidId.isNotBlank()) {
+            return "android_id:${androidId.trim().lowercase()}"
+        }
+
+        val hardwareMaterial = listOf(
+            Build.MANUFACTURER,
+            Build.BRAND,
+            Build.DEVICE,
+            Build.PRODUCT,
+            Build.MODEL,
+            Build.BOARD,
+            Build.HARDWARE
+        ).joinToString("|") { it.trim().lowercase() }
+        return "hardware:$hardwareMaterial"
+    }
+
+    private fun getWidevineDeviceHash(): String {
+        return runCatching {
+            val widevineUuid = UUID.fromString("edef8ba9-79d6-4ace-a3c8-27dcd51d21ed")
+            val drm = MediaDrm(widevineUuid)
+            try {
+                sha256Hex(drm.getPropertyByteArray(MediaDrm.PROPERTY_DEVICE_UNIQUE_ID))
+            } finally {
+                @Suppress("DEPRECATION")
+                drm.release()
+            }
+        }.getOrNull().orEmpty()
+    }
+
+    private fun sha256Hex(data: ByteArray): String {
+        val digest = MessageDigest.getInstance("SHA-256").digest(data)
+        return digest.joinToString("") { byte ->
+            String.format(Locale.US, "%02x", byte.toInt() and 0xff)
+        }
+    }
+
     private fun generateRandomBytes(size: Int): ByteArray {
         return ByteArray(size).also { SecureRandom().nextBytes(it) }
     }
@@ -271,7 +317,7 @@ class EnvelopeCryptoBox @Inject constructor(
     private fun computeHmac(data: String, keyId: String): String {
         return try {
             val mac = Mac.getInstance("HmacSHA256")
-            val key = SecretKeySpec(hmacKey ?: generateRandomBytes(32), "HmacSHA256")
+            val key = SecretKeySpec(hmacKey ?: deriveStableHmacKey().also { hmacKey = it }, "HmacSHA256")
             mac.init(key)
             val input = "$keyId:$data".toByteArray(StandardCharsets.UTF_8)
             val hash = mac.doFinal(input)

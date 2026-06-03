@@ -33,8 +33,10 @@ class FileQueueManager @Inject constructor(
     companion object {
         private const val TAG = "FileQueueManager"
         private const val QUEUE_DIR = "data_queue"
-        private const val MAX_QUEUE_SIZE_MB = 200  // 最大队列大小：200MB
-        private const val MAX_QUEUE_SIZE_BYTES = MAX_QUEUE_SIZE_MB * 1024 * 1024L
+        private const val DEFAULT_MAX_QUEUE_SIZE_MB = 200  // 默认最大队列大小：200MB
+        private const val SMART_MAX_QUEUE_SIZE_MB = 3 * 1024  // 智能传输最大队列大小：3GB
+        private const val DEFAULT_MAX_QUEUE_SIZE_BYTES = DEFAULT_MAX_QUEUE_SIZE_MB * 1024 * 1024L
+        private const val SMART_MAX_QUEUE_SIZE_BYTES = SMART_MAX_QUEUE_SIZE_MB * 1024 * 1024L
         private const val MIN_FREE_SPACE_MB = 50   // 最小剩余空间：50MB
         private const val MIN_FREE_SPACE_BYTES = MIN_FREE_SPACE_MB * 1024 * 1024L
         private const val CLEANUP_THRESHOLD = 0.9f  // 清理阈值：90%
@@ -55,6 +57,8 @@ class FileQueueManager @Inject constructor(
     
     // 是否正在清理
     private var isCleaningUp = false
+    @Volatile
+    private var maxQueueSizeBytes: Long = DEFAULT_MAX_QUEUE_SIZE_BYTES
     
     init {
         // 启动时更新统计信息
@@ -361,7 +365,7 @@ class FileQueueManager @Inject constructor(
             val currentSize = getQueueSizeBytes()
             
             // 计算需要清理的大小
-            val targetSize = (MAX_QUEUE_SIZE_BYTES * 0.7).toLong()  // 清理到70%
+            val targetSize = (maxQueueSizeBytes * 0.7).toLong()  // 清理到70%
             val needToFree = currentSize - targetSize
             
             if (needToFree <= 0) {
@@ -430,7 +434,7 @@ class FileQueueManager @Inject constructor(
         val freeSpace = queueDir.freeSpace
         
         // 检查队列大小限制
-        if (currentQueueSize + dataSize > MAX_QUEUE_SIZE_BYTES) {
+        if (currentQueueSize + dataSize > maxQueueSizeBytes) {
             return false
         }
         
@@ -491,7 +495,9 @@ class FileQueueManager @Inject constructor(
                 uploadingCount = uploading,
                 failedCount = failed,
                 acknowledgedCount = uploaded,
-                queueUsagePercent = (totalSize.toFloat() / MAX_QUEUE_SIZE_BYTES * 100).coerceIn(0f, 100f),
+                queueUsagePercent = (
+                    totalSize.toFloat() / maxQueueSizeBytes.coerceAtLeast(1L) * 100
+                ).coerceIn(0f, 100f),
                 totalPackets = total,
                 pendingPackets = pendingTotal,
                 uploadedPackets = uploaded + pendingAck,
@@ -631,6 +637,24 @@ class FileQueueManager @Inject constructor(
      */
     fun cleanup() {
         scope.cancel()
+    }
+
+    /**
+     * 切换智能传输模式的磁盘占用上限
+     */
+    fun setSmartTransmissionMode(enabled: Boolean) {
+        maxQueueSizeBytes = if (enabled) {
+            SMART_MAX_QUEUE_SIZE_BYTES
+        } else {
+            DEFAULT_MAX_QUEUE_SIZE_BYTES
+        }
+        scope.launch {
+            updateQueueStats()
+        }
+        Log.i(
+            TAG,
+            "磁盘队列上限已切换: ${if (enabled) "智能模式(3GB)" else "默认模式(200MB)"}"
+        )
     }
     
     /**

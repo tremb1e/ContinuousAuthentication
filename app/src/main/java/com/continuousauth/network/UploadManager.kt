@@ -67,6 +67,8 @@ class UploadManager @Inject constructor(
     
     // 网络模式管理
     private var isWifiOnlyMode = false
+    private val smartTransmissionEnabled = AtomicBoolean(false)
+    private val smartTransmissionUploadAllowed = AtomicBoolean(true)
 
     // 连接状态跟踪
     private var lastConnectionStatus: ConnectionStatus = ConnectionStatus.DISCONNECTED
@@ -331,6 +333,11 @@ class UploadManager @Inject constructor(
         // 检查是否处于暂停状态
         if (isPaused.get()) {
             Log.v(TAG, "上传已暂停，跳过批次上传")
+            return 0
+        }
+
+        // 智能传输启用时，仅在满足窗口条件后才允许上传
+        if (smartTransmissionEnabled.get() && !smartTransmissionUploadAllowed.get()) {
             return 0
         }
         
@@ -694,6 +701,30 @@ class UploadManager @Inject constructor(
             disableOfflineMode()
         }
     }
+
+    fun setSmartTransmissionEnabled(enabled: Boolean) {
+        val previous = smartTransmissionEnabled.getAndSet(enabled)
+        if (!enabled) {
+            smartTransmissionUploadAllowed.set(true)
+        }
+        if (previous != enabled) {
+            Log.i(TAG, "智能传输开关: $enabled")
+        }
+    }
+
+    fun setSmartTransmissionUploadAllowed(allowed: Boolean) {
+        if (!smartTransmissionEnabled.get()) {
+            return
+        }
+        val previous = smartTransmissionUploadAllowed.getAndSet(allowed)
+        if (previous != allowed) {
+            Log.i(TAG, "智能传输上传窗口: ${if (allowed) "允许上传" else "仅落盘"}")
+        }
+    }
+
+    fun isSmartTransmissionEnabled(): Boolean = smartTransmissionEnabled.get()
+
+    fun isSmartTransmissionUploadAllowed(): Boolean = smartTransmissionUploadAllowed.get()
     /**
      * 启用离线模式的具体逻辑
      */

@@ -165,7 +165,7 @@
     <!-- 隐私协议对话框 -->
     <string name="privacy_welcome">欢迎使用持续性认证。本应用专为持续身份认证系统的学术研究而设计。请仔细阅读并接受我们的隐私政策以继续使用。</string>
     <string name="privacy_data_collection_title">数据采集：</string>
-    <string name="privacy_data_collection_content">我们为研究目的采集以下数据：\n• 运动传感器：加速度计（200Hz）、陀螺仪（200Hz）、磁力计（100Hz）\n• 设备信息：型号、Android版本、硬件能力\n• 应用使用统计：前台应用名称（已哈希处理以保护隐私）\n• 仅在设备解锁且您明确同意后进行数据采集</string>
+    <string name="privacy_data_collection_content">我们为研究目的采集以下数据：\n• 运动传感器：加速度计（100Hz）、陀螺仪（100Hz）、磁力计（100Hz）\n• 设备信息：型号、Android版本、硬件能力\n• 应用使用统计：前台应用名称（已哈希处理以保护隐私）\n• 仅在设备解锁且您明确同意后进行数据采集</string>
     <string name="privacy_data_usage_title">数据用途：</string>
     <string name="privacy_data_usage_content">所有采集的数据专门用于：\n• 持续身份认证系统的学术研究\n• 算法开发和准确性改进\n• 认证模式的统计分析\n• 不进行商业使用或数据销售</string>
     <string name="privacy_data_storage_title">数据存储与加密：</string>
@@ -302,8 +302,7 @@
     <string name="upload_stop_failed">停止上传失败: %s</string>
     
     <!-- ServerConfig Screen Additional Strings -->
-    <string name="identity_label">身份标识</string>
-    <string name="user_id_label">用户 ID</string>
+    <string name="identity_label">上传标识</string>
     <string name="copy">复制</string>
     <string name="server_ip_label">服务器 IP</string>
     <string name="port_label">端口</string>

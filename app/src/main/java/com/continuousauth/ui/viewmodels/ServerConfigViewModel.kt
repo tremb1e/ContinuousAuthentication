@@ -32,8 +32,8 @@ class ServerConfigViewModel @Inject constructor(
     }
     
     data class ServerConfig(
-        val ip: String = "",
-        val port: Int = 8000  // 默认对齐服务端 gRPC 端口
+        val ip: String = "https://ty.macrz.com",
+        val port: Int = 10500
     )
     
     // 设备ID
@@ -82,8 +82,8 @@ class ServerConfigViewModel @Inject constructor(
         viewModelScope.launch {
             // 从SharedPreferences或DataStore加载配置
             val prefs = context.getSharedPreferences("server_config", Context.MODE_PRIVATE)
-            val ip = prefs.getString("server_ip", "") ?: ""  // 默认为空字符串
-            val port = prefs.getInt("server_port", 8000)  // 默认指向 gRPC 端口
+            val ip = prefs.getString("server_ip", "https://ty.macrz.com") ?: "https://ty.macrz.com"
+            val port = prefs.getInt("server_port", 10500)
             
             _serverConfig.value = ServerConfig(ip, port)
         }

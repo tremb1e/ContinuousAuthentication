@@ -1,7 +1,9 @@
 # Continuous Authentication - Android 持续认证数据采集器  (功能规范)
 
 > 版本：v1.0
-> 更新日期：2025-09-09
+> 更新日期：2026-06-01
+
+> 当前状态：历史规划参考。当前可执行实现以 `2025-11-18-技术方案.md`、`2025-11-18-需求规格.md` 和 app/server `sensor_data.proto` 为准。
 
 ---
 
@@ -44,17 +46,17 @@
 
 **目标**：开发一款用于持续性身份认证研究的 Android 数据采集应用 `Continuous Authentication`，高保真采集加速度计、陀螺仪、磁力计，在设备端进行加密封包并通过 gRPC 双向流可靠上传至服务器，服务器对数据进行解密，存储与后续处理。
 
-**关键要点（更新/强调）**：
-- **加密方案优化**：采用 **Envelope Encryption（信封加密）** 但使用会话级DEK策略。客户端为每个会话（1小时）生成一个DEK，避免频繁密钥生成开销。使用 `StreamingAead` 或 AEAD（AES-GCM）对传感器序列进行加密；使用服务器公钥通过 Tink 的 HybridEncrypt 加密 DEK
-- **压缩与加密顺序**：**先序列化 -> 先压缩（LZ4） -> 再加密（StreamingAead）。**
+**当前实现要点（更新/强调）**：
+- **加密方案**：当前采用共享密钥派生 AES-256-GCM，密文格式为 `IV(12)|TAG(16)|ciphertext`。旧版 Tink Envelope DEK / HybridEncrypt 设计暂不作为当前联调协议。
+- **压缩与加密顺序**：**先序列化 -> 先压缩（LZ4） -> 再加密（AES-GCM）。**
 - **传输策略**：支持 `仅 Wi-Fi 上传` 与 `不限制` 两种选项（默认不限制，前端给出相应button供用户选择）。
-- **流式加密**：对大 payload 使用 `StreamingAead`（Tink）以避免整体内存峰值。
+- **流式加密**：历史规划保留；当前 App 使用单包 AES-GCM，与 server 解密链路一致。
 - **文件队列与写入原子性**：写入磁盘采用写 `.tmp` -> fsync -> rename 的原子化流程，并在 DB（Room）中保存路径与校验值（SHA256/CRC32）。
 - **抗重放与顺序保障**：加 `packet_seq_no`（全局递增）与 `creation_server_ts`（ACK 回填）用于端/服务器校验顺序和重放防护。
-- **AAD 隐私保护**：避免在 AAD 中放敏感明文（device_id/user_id）；对需要验证的标识使用 `HMAC(key_id, device_instance_id)`，仍能提供防篡改但不泄露原始值。
-- **Key Rotation 与兼容性**：在 packet metadata 中携带 `dek_key_id` / `key_version`；服务器须保存所有版本公钥解密历史包。  
-- **首次密钥发布与 pinning**：客户端首次注册时从服务器获取并验证公钥指纹（保存以供 pinning），服务器支持公钥多版本轮换，客户端在包里附 `dek_key_id`。
-- **设备唯一标识**：不使用 IMEI/AndroidID；安装时生成 `device_instance_id = UUIDv4()` 并通过 EncryptedSharedPreferences / Tink 保存。上报时使用 `HMAC(key_id, device_instance_id)`。
+- **AAD 隐私保护**：当前 server 未校验 AAD，App 不设置 AAD，避免解密不一致。网络中不放明文设备 ID 或前台应用包名。
+- **Key Rotation 与兼容性**：当前 `dek_key_id` 为 `STATIC_KEY_V1`，保留字段用于后续扩展。
+- **首次密钥发布与 pinning**：历史规划保留；当前联调使用固定共享密钥和可配置 TLS/证书检查。
+- **上传标识**：不使用 IMEI，不生成用户 ID，不使用卸载后丢失的随机安装实例。当前 `device_id_hash` 由 Widevine 设备唯一材料摘要优先、`ANDROID_ID` 次之、硬件 `Build.*` 字段兜底的稳定材料 HMAC 得到。
 - **错误处理架构**：统一的错误处理机制，包括本地恢复策略、服务端错误码处理、降级方案
 
 ---
@@ -87,7 +89,7 @@
 
 
 #### Epic 1.3: 端侧加密模块
-**总体策略（优化）**：采用 **Envelope Encryption** 但使用会话级DEK管理。
+**当前策略**：采用共享密钥派生 AES-256-GCM，与 server 解密链路一致。以下 Tink Envelope 任务为历史规划，不代表当前联调实现。
 
 - **Task 1.3.1**: 设计 `CryptoBox` 模块基于 Google Tink：使用 `StreamingAead` 优先；fallback 到 AEAD (AES256_GCM) 以兼容小 payload。
 - **Task 1.3.2**: 优化的密钥层级：
@@ -95,7 +97,7 @@
   - 使用会话级DEK策略：每个会话（1小时）生成一个 `DEK`，减少密钥生成开销。DEK 用 `StreamingAead` 或 AEAD 加密传感器数据。
   - 使用服务器的公钥（HybridEncrypt via Tink）对 DEK 加密，生成 `encrypted_dek`。在 `DataPacket` 中附 `dek_key_id`/`key_version` 供服务器选择私钥解密。
 - **Task 1.3.3**: **严禁自行管理 IV/Nonce**，依赖 Tink 自动生成与管理。
-- **Task 1.3.4**: AAD 构建器（`AADBuilder`）应包含不可泄露的摘要值（如 `HMAC(key_id, device_instance_id)`），并包含 `packet_id`, `packet_seq_no`, `dek_key_id` 等用于防篡改的非机密标识。**避免直接在 AAD 中放置 device_id/user_id 明文**。
+- **Task 1.3.4**: 历史规划中 AAD 构建器包含不可泄露的摘要值，并包含 `packet_id`, `packet_seq_no`, `dek_key_id` 等用于防篡改的非机密标识。当前 server 未校验 AAD，App 加密时不设置 AAD。
 
   ```kotlin
   // 客户端必须严格按照以下顺序构建 AAD（与服务端保持完全一致）
@@ -248,29 +250,12 @@
       }
   }
   ```
-- **Task 2.3.2**: HMAC 密钥管理：
+- **Task 2.3.2**: HMAC 密钥管理（历史规划，当前运行时代码已由 `EnvelopeCryptoBox` 统一处理）：
   ```kotlin
-  // 使用 EncryptedSharedPreferences 安全存储 HMAC 密钥
-  class HmacKeyManager(context: Context) {
-      private val encryptedPrefs = EncryptedSharedPreferences.create(
-          "hmac_keys",
-          "hmac_master_key",
-          context,
-          EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-          EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
-      )
-      
-      fun saveHmacKey(keyId: String, key: String) {
-          encryptedPrefs.edit()
-              .putString("hmac_key_id", keyId)
-              .putString("hmac_key", key)
-              .apply()
-      }
-      
-      fun generateDeviceIdHash(deviceInstanceId: String): String {
-          val keyId = encryptedPrefs.getString("hmac_key_id", null)
-          val key = encryptedPrefs.getString("hmac_key", null)
-          return computeHMAC(key, deviceInstanceId)
+  class StableUploadIdentity(context: Context) {
+      fun generateDeviceHash(stableDeviceMaterial: String): String {
+          // 当前实现：EnvelopeCryptoBox.getDeviceIdHash()
+          return hmacSha256UrlSafe("ca-device-upload-id-v1:$stableDeviceMaterial")
       }
   }
   ```
@@ -473,7 +458,6 @@ message Metadata {
 
 message SerializedSensorBatch {
   repeated SensorSample samples = 1;
-  string user_id_hash = 2;               // HMAC(key_id, user_id) - 非明文
   string session_id = 3;
 }
 
@@ -486,7 +470,7 @@ message SensorSample {
   float z = 5;
   int32 accuracy = 6;
   int64 seq_no = 7;                      // 自增序号，保障一致性/防重放
-  string foreground_app = 8;             // 前台应用包名（明文）
+  string foreground_app_hash = 8;        // 前台应用包名的 HMAC
 }
 
 // 服务端下发的指令消息
@@ -496,6 +480,7 @@ message ServerDirective {
     PolicyUpdate policy = 2;
     KeyRotationNotice key_rotation = 3;
     EmergencyStop emergency = 4;
+    AuthResult auth_result = 5;
   }
 }
 
@@ -569,7 +554,7 @@ message HeartbeatAck {
 ---
 
 ## 5. 安全/隐私/合规要点
-- **设备ID/用户ID 处理**：不在网络或 AAD 中放明文 device_id 或 user_id；改为 HMAC 摘要（`HMAC(key_id, device_instance_id)`）以满足验证需求同时降低泄露风险。
+- **标识处理**：不在网络中放明文设备 ID、前台应用包名或用户 ID；当前运行时不生成用户 ID。上传标识为稳定设备材料的 HMAC 摘要。
 - **撤回同意**：用户可撤回同意，撤回后客户端删除本地缓存并向服务器发起删除请求（服务器需支持删除 API 并记录删除结果）。
 - **法律合规**：准备并审查 GDPR / PDPA 风控文档（数据用途、最小化、访问、删除、数据传输、第三方依赖等）。
 
@@ -583,18 +568,19 @@ message HeartbeatAck {
 
 ---
 
-## 7. 设备唯一标识与存储建议
-- 安装时生成 `device_instance_id = UUIDv4()`。
-- 将 `device_instance_id` 保存在 `EncryptedSharedPreferences` 或使用 Tink 的 `AndroidKeysetManager` 进行加密存储。
-- 上报时使用 `device_id_hash = HMAC(key_id, device_instance_id)`。
+## 7. 上传标识与存储建议
+- 当前实现不再使用安装时随机 UUID 作为上传标识材料。
+- 上传标识由 Widevine 设备唯一材料摘要优先、`ANDROID_ID` 次之、硬件 `Build.*` 字段兜底的稳定材料 HMAC 得到。
+- 该标识不依赖 App 私有存储中的随机值，普通卸载重装后保持稳定。
+- Room / EncryptedSharedPreferences 可缓存中间状态，但缓存不是标识稳定性的来源。
 
 ---
 
 ## 8. 实施要点与工程注意事项
 
 ### 8.1 性能优化要点
-- **StreamingAead**：优先采用 Tink 的 `StreamingAead` 实现流式加密/解密，减少单次内存占用
-- **单包大小限制**：默认最大单包大小 10MB（可通过 PolicyUpdate 动态调整，由服务端设置再下发策略）
+- **AES-GCM**：当前使用共享密钥派生 AES-256-GCM 单包加密，与 server 解密格式一致。
+- **单包大小限制**：server gRPC 默认最大消息大小 4MB，HTTP 管理接口最大请求由 server 配置控制。
 - **压缩**：先序列化再压缩；推荐 LZ4 
 - **Atomic file write**：写磁盘文件流程为 `write tmp -> fsync -> rename`
 - **校验**：在 DB (Room) 中保存 `sha256` 并在读取时校验。校验失败标 `CORRUPT`
@@ -625,28 +611,25 @@ message HeartbeatAck {
 
 ### 8.3 gRPC 配置优化
 - **Keepalive**：30秒心跳，5秒超时
-- **Max message size**：10MB（可调整）
+- **Max message size**：默认 4MB（可在 server 配置中调整）
 - **线程池**：根据CPU核心数动态配置
 - **流控策略**：动态窗口调整
 
 ### 8.4 ProGuard/R8 配置
-- 包含 Tink/gRPC/protobuf 官方混淆规则
+- 包含 gRPC/protobuf 以及现有依赖的官方混淆规则
 - CI 中验证混淆后功能完整性
 - 保留关键调试信息用于崩溃分析
 
 ---
 
 ## 9. 术语表（简短）
-- DEK：Data Encryption Key（每包/会话的对称密钥）
-- KEK：Key Encryption Key（保存在 Android Keystore，用于保护 keyset）
-- StreamingAead：Tink 的流式 AEAD 接口，适用于大数据加密
-- Envelope Encryption：信封加密（对称 DEK 加密数据，DEK 用公钥加密）
+- DEK：Data Encryption Key（历史规划术语，当前联调不发送有效 DEK）
+- KEK：Key Encryption Key（历史规划术语）
+- StreamingAead：历史规划中的流式 AEAD 接口，当前联调未使用
+- Envelope Encryption：历史规划中的信封加密方案，当前联调未使用
 - FIFO：First In First Out（硬件传感器缓冲区）
 - AAD：Additional Authenticated Data（附加认证数据）
 
 ---
-
-
-
 
 

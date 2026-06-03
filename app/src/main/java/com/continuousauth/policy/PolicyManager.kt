@@ -51,6 +51,11 @@ class PolicyManager @Inject constructor(
         private const val DEFAULT_BATCH_INTERVAL = 1000
         private const val DEFAULT_MAX_PAYLOAD_SIZE = 10 * 1024 * 1024 // 10MB
         private const val DEFAULT_ANOMALY_THRESHOLD_MULTIPLIER = 2.0f
+        private val FIXED_SENSOR_SAMPLING_RATES = mapOf(
+            "ACCELEROMETER" to 100,
+            "GYROSCOPE" to 100,
+            "MAGNETOMETER" to 100
+        )
     }
     
     private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(
@@ -111,7 +116,9 @@ class PolicyManager @Inject constructor(
                 }
                 if (policyUpdate.sensorSamplingRatesCount > 0) {
                     // 将map转换为JSON存储
-                    val ratesJson = org.json.JSONObject(policyUpdate.sensorSamplingRatesMap).toString()
+                    val ratesJson = org.json.JSONObject(
+                        normalizeSamplingRates(policyUpdate.sensorSamplingRatesMap)
+                    ).toString()
                     preferences[SENSOR_SAMPLING_RATES] = ratesJson
                 }
             }
@@ -208,11 +215,7 @@ class PolicyManager @Inject constructor(
      */
     private fun parseSamplingRates(json: String?): Map<String, Int> {
         if (json.isNullOrEmpty()) {
-            return mapOf(
-                "ACCELEROMETER" to 200,
-                "GYROSCOPE" to 200,
-                "MAGNETOMETER" to 100
-            )
+            return FIXED_SENSOR_SAMPLING_RATES
         }
         return try {
             val jsonObject = org.json.JSONObject(json)
@@ -220,14 +223,20 @@ class PolicyManager @Inject constructor(
             jsonObject.keys().forEach { key ->
                 map[key] = jsonObject.getInt(key)
             }
-            map
+            normalizeSamplingRates(map)
         } catch (e: Exception) {
-            mapOf(
-                "ACCELEROMETER" to 200,
-                "GYROSCOPE" to 200,
-                "MAGNETOMETER" to 100
-            )
+            FIXED_SENSOR_SAMPLING_RATES
         }
+    }
+
+    private fun normalizeSamplingRates(raw: Map<String, Int>): Map<String, Int> {
+        val normalized = raw.entries
+            .associate { it.key.uppercase() to it.value }
+            .toMutableMap()
+        FIXED_SENSOR_SAMPLING_RATES.forEach { (sensor, rate) ->
+            normalized[sensor] = rate
+        }
+        return normalized
     }
 }
 

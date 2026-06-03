@@ -11,7 +11,7 @@ import androidx.room.TypeConverters
  */
 @Database(
     entities = [BatchMetadata::class],
-    version = 1,
+    version = 2,
     exportSchema = true
 )
 @TypeConverters(Converters::class)

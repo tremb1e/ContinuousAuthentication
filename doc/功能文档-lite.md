@@ -3,10 +3,21 @@
 
 # **Continuous Authentication - Android 持续认证数据采集器**
 > **版本**：Lite v1.0  
-> **最后更新日期**：2025-09-16  
+> **最后更新日期**：2026-06-01
 > **状态**：功能规格说明书  
 
 ---
+
+## **0. 当前实现说明**
+
+本文保留早期功能规划内容；与当前代码冲突时，以 `2025-11-18-技术方案.md`、`2025-11-18-需求规格.md` 和当前 app/server proto 为准。当前实现的关键差异如下：
+
+- 主链路为 gRPC `SensorDataService.StreamSensorData`，server 默认端口 `10500`。
+- 上传体为 Protobuf `DataPacket`，`encrypted_sensor_payload` 内部是 LZ4 压缩后的 `SerializedSensorBatch`，再经 AES-GCM 加密为 `IV(12)|TAG(16)|ciphertext`。
+- 不再生成、保存或上传用户 ID；`SerializedSensorBatch` 只包含 `samples` 与 `session_id`。
+- “上传标识 (HMAC)”由硬件稳定材料派生，普通卸载重装后不依赖 App 私有随机值。
+- 前台应用字段为 `foreground_app_hash`，不上传明文包名。
+- 持续认证 UI 显示的模型、分数、阈值、窗口、EMA / y-of-x 文本均来自 server 响应。
 
 ## **1. 项目概述**
 
@@ -288,7 +299,9 @@ data class ContextInfo(
 )
 ```
 
-### **5.3 API接口规格（参考）**
+### **5.3 API接口规格（历史参考）**
+
+当前 App 不再按下列 JSON body 直接上传。现行网络包是 gRPC `DataPacket`；该小节仅作为早期 HTTP Lite 设计参考。
 
 #### **数据上传接口（需补全必要内容）**：
 ```http
@@ -300,7 +313,7 @@ X-Packet-Sequence: <packet_seq_no>
 <binary_encrypted_envelope>
 ```
 
-##### **binary_encrypted_envelope 参考（需补全必要内容）**：
+##### **binary_encrypted_envelope 历史参考**：
 ```json
 {
   "device_id_hash": 123456789,
@@ -322,4 +335,3 @@ X-Packet-Sequence: <packet_seq_no>
   ]
 }
 ```
-
