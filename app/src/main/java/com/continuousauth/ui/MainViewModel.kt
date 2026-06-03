@@ -70,18 +70,10 @@ data class ContinuousAuthUiState(
     val windowSizeSec: Float = 0f,
     val decisionTimeSec: Float = 0f,
     val authFailure: Boolean = false,
-    val rejectLogs: List<RejectLogEntry> = emptyList()
+    val authAnalysis: AuthAnalysisState = AuthAnalysisState()
 )
 
 enum class AuthDecision { NORMAL, ABNORMAL, UNKNOWN }
-
-data class RejectLogEntry(
-    val timestampMs: Long,
-    val windowId: Long,
-    val score: Float,
-    val threshold: Float,
-    val message: String
-)
 
 /**
  * 主界面ViewModel
@@ -174,6 +166,7 @@ class MainViewModel @Inject constructor(
 
     // 上传统计更新任务
     private var uploadStatsJob: Job? = null
+    private var authAnalysisTimerJob: Job? = null
 
     // 服务器测试结果
     private val _serverTestResult = MutableLiveData<String?>()
@@ -513,8 +506,7 @@ class MainViewModel @Inject constructor(
                         serverLatencyMs = null,
                         serverTimestampMs = null,
                         authFailure = false,
-                        scoreValid = false,
-                        rejectLogs = emptyList()
+                        scoreValid = false
                     )
                     return@launch
                 }
@@ -537,8 +529,7 @@ class MainViewModel @Inject constructor(
                     windowSizeSec = response.windowSizeSec,
                     decisionTimeSec = response.decisionTimeSec,
                     authFailure = false,
-                    scoreValid = false,
-                    rejectLogs = emptyList()
+                    scoreValid = false
                 )
             } catch (e: Exception) {
                 _errorMessage.value = "认证会话启动异常: ${e.message}"
@@ -579,8 +570,7 @@ class MainViewModel @Inject constructor(
             windowSizeSec = 0f,
             decisionTimeSec = 0f,
             authFailure = false,
-            scoreValid = false,
-            rejectLogs = emptyList()
+            scoreValid = false
         )
     }
 
@@ -620,21 +610,10 @@ class MainViewModel @Inject constructor(
         val isValidThreshold = threshold.isFinite()
         val clampedThreshold = if (isValidThreshold) threshold.coerceIn(0f, 1f) else 0f
         val current = _authUiState.value
-        val decision = if (accepted) AuthDecision.NORMAL else AuthDecision.ABNORMAL
+        val acceptedDecision = accepted && !interrupt
+        val decision = if (acceptedDecision) AuthDecision.NORMAL else AuthDecision.ABNORMAL
         val now = System.currentTimeMillis()
         val decisionMessage = message ?: current.lastDecisionMessage
-        val eventTimestampMs = serverTimestampMs ?: now
-        val updatedRejectLogs = if (!accepted && current.rejectLogs.size < 10) {
-            current.rejectLogs + RejectLogEntry(
-                timestampMs = eventTimestampMs,
-                windowId = windowId,
-                score = clampedScore,
-                threshold = clampedThreshold,
-                message = decisionMessage
-            )
-        } else {
-            current.rejectLogs
-        }
         _authUiState.value = current.copy(
             lastScore = clampedScore,
             lastThreshold = clampedThreshold,
@@ -649,8 +628,38 @@ class MainViewModel @Inject constructor(
             windowSizeSec = windowSizeSec ?: current.windowSizeSec,
             authFailure = interrupt,
             authActive = true,
-            rejectLogs = updatedRejectLogs
+            authAnalysis = current.authAnalysis.recordResult(acceptedDecision, now)
         )
+    }
+
+    fun startAuthAnalysis() {
+        val now = System.currentTimeMillis()
+        authAnalysisTimerJob?.cancel()
+        _authUiState.value = _authUiState.value.copy(
+            authAnalysis = _authUiState.value.authAnalysis.start(now)
+        )
+        startAuthAnalysisTimer()
+    }
+
+    fun stopAuthAnalysis() {
+        authAnalysisTimerJob?.cancel()
+        val now = System.currentTimeMillis()
+        _authUiState.value = _authUiState.value.copy(
+            authAnalysis = _authUiState.value.authAnalysis.stop(now)
+        )
+    }
+
+    private fun startAuthAnalysisTimer() {
+        authAnalysisTimerJob = viewModelScope.launch {
+            while (_authUiState.value.authAnalysis.isRunning) {
+                val now = System.currentTimeMillis()
+                val current = _authUiState.value
+                _authUiState.value = current.copy(
+                    authAnalysis = current.authAnalysis.tick(now)
+                )
+                delay(1000L)
+            }
+        }
     }
 
     private fun formatAuthStartMessage(rawMessage: String?): String {
@@ -758,13 +767,13 @@ class MainViewModel @Inject constructor(
                     // 如果正在上传，暂停上传
                     if (_isCollectionRunning.value == true) {
                         Log.i(TAG, "当前非WiFi网络，暂停数据上传")
-                        uploadManager.pauseUpload()
+                        uploadManager.pauseUpload("network_policy")
                     }
                 } else {
                     // 恢复上传（如果之前被暂停）
                     if (_isCollectionRunning.value == true) {
                         Log.i(TAG, "网络条件满足，恢复数据上传")
-                        uploadManager.resumeUpload()
+                        uploadManager.resumeUpload("network_policy")
                     }
                 }
                 
@@ -823,8 +832,7 @@ class MainViewModel @Inject constructor(
                     decisionTimeSec = 0f,
                     modelVersion = "",
                     authFailure = false,
-                    scoreValid = false,
-                    rejectLogs = emptyList()
+                    scoreValid = false
                 )
 
                 stopForegroundCollectionService()
@@ -1442,6 +1450,7 @@ class MainViewModel @Inject constructor(
         performanceMonitor.cleanup()
         memoryMonitor.cleanup()
         uploadStatsJob?.cancel()
+        authAnalysisTimerJob?.cancel()
         viewModelScope.launch {
             performanceMonitor.stopMonitoring()
             memoryMonitor.stopMonitoring()

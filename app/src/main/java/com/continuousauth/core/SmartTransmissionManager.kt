@@ -167,6 +167,7 @@ class SmartTransmissionManager @Inject constructor(
         }
         
         Log.i(TAG, "Pausing data collection")
+        uploadManager.pauseUpload("collection_paused")
         // SensorCollector doesn't have pause method - stop and restart when needed
         sensorCollector.stopCollection()
     }
@@ -180,6 +181,7 @@ class SmartTransmissionManager @Inject constructor(
         }
         
         Log.i(TAG, "Resuming data collection")
+        uploadManager.resumeUpload("collection_paused")
         // SensorCollector doesn't have resume method - start collection again
         sensorCollector.startCollection()
     }

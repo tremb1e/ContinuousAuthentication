@@ -50,6 +50,7 @@ class UploadManager @Inject constructor(
     // 状态管理
     private val isRunning = AtomicBoolean(false)
     private val isPaused = AtomicBoolean(false)
+    private val uploadPauseReasons = mutableSetOf<String>()
     private val uploadedPackets = AtomicLong(0L)
     
     // 协程作用域
@@ -90,6 +91,10 @@ class UploadManager @Inject constructor(
         }
         
         isRunning.set(true)
+        isPaused.set(false)
+        synchronized(uploadPauseReasons) {
+            uploadPauseReasons.clear()
+        }
 
         // 保存服务器端点，以便离线模式关闭时重新连接
         lastServerEndpoint = serverEndpoint
@@ -116,6 +121,10 @@ class UploadManager @Inject constructor(
         }
         
         isRunning.set(false)
+        isPaused.set(false)
+        synchronized(uploadPauseReasons) {
+            uploadPauseReasons.clear()
+        }
         
         // 取消所有任务
         uploadJob?.cancel()
@@ -145,14 +154,20 @@ class UploadManager @Inject constructor(
     /**
      * 暂停上传
      */
-    fun pauseUpload() {
+    fun pauseUpload(reason: String = "manual") {
         if (!isRunning.get()) {
             Log.w(TAG, "上传管理器未运行，无法暂停")
             return
         }
-        
-        if (isPaused.get()) {
-            Log.i(TAG, "上传已经处于暂停状态")
+
+        val shouldPause = synchronized(uploadPauseReasons) {
+            val wasActive = uploadPauseReasons.isEmpty()
+            uploadPauseReasons.add(reason)
+            wasActive
+        }
+
+        if (!shouldPause) {
+            Log.i(TAG, "上传已经处于暂停状态，新增暂停原因: $reason")
             return
         }
         
@@ -161,18 +176,28 @@ class UploadManager @Inject constructor(
         // 取消上传任务，但保持指令处理运行
         uploadJob?.cancel()
         
-        Log.i(TAG, "上传已暂停 - 数据收集继续，但暂停上传到服务器")
+        Log.i(TAG, "上传已暂停 - reason=$reason")
     }
     
     /**
      * 恢复上传
      */
-    fun resumeUpload() {
+    fun resumeUpload(reason: String = "manual") {
         if (!isRunning.get()) {
             Log.w(TAG, "上传管理器未运行，无法恢复")
             return
         }
-        
+
+        val remainingReasons = synchronized(uploadPauseReasons) {
+            uploadPauseReasons.remove(reason)
+            uploadPauseReasons.toList()
+        }
+
+        if (remainingReasons.isNotEmpty()) {
+            Log.i(TAG, "上传仍因 ${remainingReasons.joinToString()} 暂停，暂不恢复")
+            return
+        }
+
         if (!isPaused.get()) {
             Log.i(TAG, "上传未暂停，无需恢复")
             return
@@ -183,7 +208,7 @@ class UploadManager @Inject constructor(
         // 重新启动上传循环
         startUploadLoop()
         
-        Log.i(TAG, "上传已恢复 - 继续上传数据到服务器")
+        Log.i(TAG, "上传已恢复 - reason=$reason")
     }
     
     /**
@@ -483,8 +508,13 @@ class UploadManager @Inject constructor(
 
         // 如果上传循环没有运行，重新启动它
         if (isRunning.get() && isPaused.get()) {
-            isPaused.set(false)
-            startUploadLoop()
+            val hasPauseReasons = synchronized(uploadPauseReasons) {
+                uploadPauseReasons.isNotEmpty()
+            }
+            if (!hasPauseReasons) {
+                isPaused.set(false)
+                startUploadLoop()
+            }
         }
 
         // 重新处理失败的数据包

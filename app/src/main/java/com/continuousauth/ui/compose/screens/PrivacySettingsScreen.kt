@@ -15,6 +15,7 @@ import androidx.compose.material.icons.filled.Insights
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.SignalCellularAlt
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.outlined.Wifi
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
@@ -34,11 +35,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.continuousauth.ui.AuthAnalysisLogEntry
+import com.continuousauth.ui.AuthAnalysisState
 import com.continuousauth.network.ConnectionStatus
 import com.continuousauth.ui.AuthDecision
 import com.continuousauth.ui.ContinuousAuthUiState
 import com.continuousauth.ui.MainViewModel
-import com.continuousauth.ui.RejectLogEntry
 import com.continuousauth.ui.theme.ExtendedColors
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -99,9 +101,15 @@ fun PrivacySettingsScreen(
             authUiState = authUiState
         )
 
+        AuthResultAnalysisCard(
+            analysisState = authUiState.authAnalysis,
+            onStart = { viewModel.startAuthAnalysis() },
+            onStop = { viewModel.stopAuthAnalysis() }
+        )
+
         HistoryCard(
             history = history,
-            rejectLogs = authUiState.rejectLogs
+            analysisLogs = authUiState.authAnalysis.logs
         )
 
         Spacer(modifier = Modifier.height(24.dp))
@@ -611,7 +619,7 @@ private fun PipelineStatusCard(
 @Composable
 private fun HistoryCard(
     history: List<AuthDecisionHistory>,
-    rejectLogs: List<RejectLogEntry>
+    analysisLogs: List<AuthAnalysisLogEntry>
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -652,22 +660,165 @@ private fun HistoryCard(
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
 
             Text(
-                text = "恶意用户检测日志",
+                text = "认证结果分析日志",
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.Bold
             )
 
-            if (rejectLogs.isEmpty()) {
+            if (analysisLogs.isEmpty()) {
                 Text(
-                    text = "暂无认证不通过记录。",
+                    text = "暂无认证结果分析记录。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             } else {
-                rejectLogs.forEach { item ->
-                    RejectLogRow(item)
+                analysisLogs.forEach { item ->
+                    AuthAnalysisLogRow(item)
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun AuthResultAnalysisCard(
+    analysisState: AuthAnalysisState,
+    onStart: () -> Unit,
+    onStop: () -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(20.dp)
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Filled.Insights,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "认证结果分析",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+                StatusPill(
+                    text = if (analysisState.isRunning) "记录中" else "已停止",
+                    color = if (analysisState.isRunning) ExtendedColors.success else MaterialTheme.colorScheme.secondary
+                )
+            }
+
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant
+            ) {
+                Column(
+                    modifier = Modifier.padding(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        AnalysisMetric(
+                            label = "运行时间",
+                            value = formatDuration(analysisState.elapsedMs),
+                            modifier = Modifier.weight(1f)
+                        )
+                        AnalysisMetric(
+                            label = "通过率",
+                            value = formatPassRate(analysisState.passRatePercent, analysisState.totalCount),
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        AnalysisMetric(
+                            label = "通过",
+                            value = analysisState.passCount.toString(),
+                            valueColor = ExtendedColors.success,
+                            modifier = Modifier.weight(1f)
+                        )
+                        AnalysisMetric(
+                            label = "不通过",
+                            value = analysisState.failCount.toString(),
+                            valueColor = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Button(
+                    onClick = onStart,
+                    enabled = !analysisState.isRunning,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(Icons.Filled.PlayArrow, contentDescription = null)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("开始")
+                }
+                OutlinedButton(
+                    onClick = onStop,
+                    enabled = analysisState.isRunning,
+                    modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        contentColor = MaterialTheme.colorScheme.error
+                    )
+                ) {
+                    Icon(Icons.Filled.Stop, contentDescription = null)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("停止")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AnalysisMetric(
+    label: String,
+    value: String,
+    modifier: Modifier = Modifier,
+    valueColor: Color = MaterialTheme.colorScheme.onSurface
+) {
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surface
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp)
+        ) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Text(
+                text = value,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                color = valueColor
+            )
         }
     }
 }
@@ -770,14 +921,7 @@ private fun DecisionHistoryRow(item: AuthDecisionHistory) {
 }
 
 @Composable
-private fun RejectLogRow(item: RejectLogEntry) {
-    val detail = buildString {
-        if (item.windowId > 0L) append("窗口 ${item.windowId} · ")
-        append("分数 ")
-        append(String.format(Locale.getDefault(), "%.3f", item.score))
-        append(" / 阈值 ")
-        append(String.format(Locale.getDefault(), "%.3f", item.threshold))
-    }
+private fun AuthAnalysisLogRow(item: AuthAnalysisLogEntry) {
     Column(
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(2.dp)
@@ -788,30 +932,23 @@ private fun RejectLogRow(item: RejectLogEntry) {
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                text = "认证不通过",
+                text = formatTime(item.startTimeMs),
                 style = MaterialTheme.typography.bodyMedium,
                 fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.error
+                color = MaterialTheme.colorScheme.onSurface
             )
             Text(
-                text = "${formatTime(item.timestampMs)} · ${formatRelativeTime(item.timestampMs)}",
+                text = formatDuration(item.durationMs),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.End
             )
         }
         Text(
-            text = detail,
+            text = "通过 ${item.passCount} · 不通过 ${item.failCount} · 通过率 ${String.format(Locale.getDefault(), "%.1f%%", item.passRatePercent)}",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
-        if (item.message.isNotBlank()) {
-            Text(
-                text = item.message,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
     }
 }
 
@@ -821,15 +958,22 @@ private fun formatTime(timestamp: Long): String {
     return formatter.format(Date(timestamp))
 }
 
-private fun formatRelativeTime(timestamp: Long): String {
-    if (timestamp == 0L) return "--"
-    val elapsedMs = (System.currentTimeMillis() - timestamp).coerceAtLeast(0L)
-    val seconds = elapsedMs / 1000L
-    return if (seconds < 600L) {
-        "${seconds.coerceAtLeast(1L)}s前"
-    } else if (seconds < 3600L) {
-        "${(seconds / 60L).coerceAtLeast(1L)}分钟前"
+private fun formatDuration(durationMs: Long): String {
+    val totalSeconds = (durationMs / 1000L).coerceAtLeast(0L)
+    val hours = totalSeconds / 3600L
+    val minutes = (totalSeconds % 3600L) / 60L
+    val seconds = totalSeconds % 60L
+    return if (hours > 0L) {
+        String.format(Locale.getDefault(), "%02d:%02d:%02d", hours, minutes, seconds)
     } else {
-        "${(seconds / 3600L).coerceAtLeast(1L)}小时前"
+        String.format(Locale.getDefault(), "%02d:%02d", minutes, seconds)
+    }
+}
+
+private fun formatPassRate(passRatePercent: Float, totalCount: Int): String {
+    return if (totalCount <= 0) {
+        "--"
+    } else {
+        String.format(Locale.getDefault(), "%.1f%%", passRatePercent)
     }
 }

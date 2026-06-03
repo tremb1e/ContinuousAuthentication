@@ -5,6 +5,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.app.KeyguardManager
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -41,6 +42,8 @@ class DataCollectionService : Service() {
         const val ACTION_STOP_COLLECTION = "com.continuousauth.STOP_COLLECTION"
         const val ACTION_PAUSE_COLLECTION = "com.continuousauth.PAUSE_COLLECTION"
         const val ACTION_RESUME_COLLECTION = "com.continuousauth.RESUME_COLLECTION"
+        const val PREFS_NAME = "app_prefs"
+        const val COLLECTION_REQUESTED_KEY = "collection_requested"
     }
     
     @Inject
@@ -79,6 +82,22 @@ class DataCollectionService : Service() {
                 Intent.ACTION_POWER_DISCONNECTED -> {
                     Log.i(TAG, "充电器已断开")
                     updateCollectionStrategy(isCharging = false)
+                }
+                Intent.ACTION_SCREEN_OFF -> {
+                    Log.i(TAG, "屏幕关闭，暂停数据采集和上传")
+                    pauseCollection()
+                }
+                Intent.ACTION_SCREEN_ON -> {
+                    if (isDeviceUnlocked()) {
+                        Log.i(TAG, "屏幕打开且设备已解锁，恢复数据采集和上传")
+                        resumeCollection()
+                    } else {
+                        Log.i(TAG, "屏幕打开但设备仍锁定，等待解锁后恢复")
+                    }
+                }
+                Intent.ACTION_USER_PRESENT -> {
+                    Log.i(TAG, "设备已解锁，恢复数据采集和上传")
+                    resumeCollection()
                 }
             }
         }
@@ -264,6 +283,7 @@ class DataCollectionService : Service() {
         }
         
         Log.i(TAG, "启动数据采集")
+        setCollectionRequested(true)
         isCollecting = true
         isPaused = false
         
@@ -275,6 +295,7 @@ class DataCollectionService : Service() {
                 Log.i(TAG, "数据采集启动成功")
             } catch (e: Exception) {
                 Log.e(TAG, "启动数据采集失败", e)
+                setCollectionRequested(false)
                 isCollecting = false
                 updateNotification()
             }
@@ -285,6 +306,7 @@ class DataCollectionService : Service() {
      * 停止数据采集
      */
     private fun stopCollection() {
+        setCollectionRequested(false)
         if (!isCollecting) {
             Log.w(TAG, "数据采集未运行")
             return
@@ -334,7 +356,14 @@ class DataCollectionService : Service() {
      * 恢复数据采集
      */
     private fun resumeCollection() {
-        if (!isCollecting || !isPaused) {
+        if (!isCollecting) {
+            if (isCollectionRequested()) {
+                Log.i(TAG, "收到恢复命令但服务未采集，按用户已启动状态重新开始采集")
+                startCollection()
+            }
+            return
+        }
+        if (!isPaused) {
             return
         }
         
@@ -369,6 +398,9 @@ class DataCollectionService : Service() {
             addAction(Intent.ACTION_BATTERY_OKAY)
             addAction(Intent.ACTION_POWER_CONNECTED)
             addAction(Intent.ACTION_POWER_DISCONNECTED)
+            addAction(Intent.ACTION_SCREEN_OFF)
+            addAction(Intent.ACTION_SCREEN_ON)
+            addAction(Intent.ACTION_USER_PRESENT)
         }
         registerReceiver(systemEventReceiver, filter)
     }
@@ -423,5 +455,27 @@ class DataCollectionService : Service() {
             )
             Log.i(TAG, "保持1秒批次发送策略，isCharging=$isCharging")
         }
+    }
+
+    private fun isDeviceUnlocked(): Boolean {
+        val keyguardManager = getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            !keyguardManager.isDeviceLocked
+        } else {
+            @Suppress("DEPRECATION")
+            !keyguardManager.isKeyguardLocked
+        }
+    }
+
+    private fun setCollectionRequested(requested: Boolean) {
+        getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+            .edit()
+            .putBoolean(COLLECTION_REQUESTED_KEY, requested)
+            .apply()
+    }
+
+    private fun isCollectionRequested(): Boolean {
+        return getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+            .getBoolean(COLLECTION_REQUESTED_KEY, false)
     }
 }

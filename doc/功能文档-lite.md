@@ -18,6 +18,8 @@
 - “上传标识 (HMAC)”由硬件稳定材料派生，普通卸载重装后不依赖 App 私有随机值。
 - 前台应用字段为 `foreground_app_name`，内容为当前前台应用的明文包名，并随加密 payload 上传。
 - 持续认证 UI 显示的模型、分数、阈值、窗口、EMA / y-of-x 文本均来自 server 响应。
+- 持续认证页提供“认证结果分析”，由用户手动开始/停止统计一段时间内的通过次数、不通过次数、运行时间和通过率，并在“认证结果分析日志”中保留最近 10 段分析记录。
+- 锁屏后前台服务暂停传感器采集和上传循环，解锁后在用户此前已启动采集/上传时自动恢复。
 
 ## **1. 项目概述**
 
@@ -174,7 +176,7 @@ val maxReportLatencyUs = if (fifoMaxEventCount > 0) {
 **状态**：已实现，需测试  
 
 #### **Epic 4.1: 后台服务管理**
-- 前台服务运行，使用通知栏提示数据采集进行中，采用 `START_STICKY` 保证异常退出重启。  
+- 前台服务运行，使用通知栏提示数据采集进行中，当前采用 `START_NOT_STICKY`，由用户启动状态和解锁恢复广播控制恢复。
 
 #### **Epic 4.2: 设备状态监控**
 - 屏幕状态：`ON`, `OFF`, `DIMMED`  
@@ -185,19 +187,20 @@ val maxReportLatencyUs = if (fifoMaxEventCount > 0) {
 class ScreenStateMonitor : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         when (intent.action) {
-            Intent.ACTION_SCREEN_ON -> resumeCollection()
-            Intent.ACTION_SCREEN_OFF -> pauseCollection()
+            Intent.ACTION_SCREEN_OFF -> pauseCollectionAndUpload()
+            Intent.ACTION_USER_PRESENT -> resumeCollectionAndUpload()
+            Intent.ACTION_SCREEN_ON -> if (isDeviceUnlocked()) resumeCollectionAndUpload()
         }
     }
 
-    private fun pauseCollection() {
-        // 暂停传感器监听，保留会话状态
-        sensorCollector.pause()
+    private fun pauseCollectionAndUpload() {
+        // 暂停传感器监听和上传循环，保留会话状态
+        smartTransmissionManager.pause()
     }
 
-    private fun resumeCollection() {
-        // 恢复传感器监听
-        sensorCollector.resume()
+    private fun resumeCollectionAndUpload() {
+        // 解锁后恢复传感器监听和上传循环
+        smartTransmissionManager.resume()
     }
 }
 ```

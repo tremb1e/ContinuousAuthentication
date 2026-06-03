@@ -3,7 +3,9 @@ package com.continuousauth.receiver
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.os.Build
 import android.util.Log
+import com.continuousauth.service.DataCollectionService
 
 /**
  * 设备解锁广播接收器
@@ -17,6 +19,7 @@ class DeviceUnlockReceiver : BroadcastReceiver() {
         private const val TAG = "DeviceUnlockReceiver"
         private const val PREFS_NAME = "app_prefs"
         private const val PRIVACY_AGREEMENT_KEY = "privacy_agreement_shown"
+        private const val COLLECTION_REQUESTED_KEY = "collection_requested"
     }
     
     override fun onReceive(context: Context?, intent: Intent?) {
@@ -58,20 +61,35 @@ class DeviceUnlockReceiver : BroadcastReceiver() {
      * 处理设备解锁事件
      */
     private fun handleDeviceUnlock(context: Context) {
-        // TODO: 实现设备解锁后的逻辑
-        // 例如：触发异常检测、切换到快速模式等
-        // 当前为空实现，避免编译错误
-        
-        Log.i(TAG, "设备解锁，可以触发相关操作")
+        requestCollectionResumeIfNeeded(context, "设备解锁")
     }
     
     /**
      * 处理屏幕打开事件
      */
     private fun handleScreenOn(context: Context) {
-        // TODO: 实现屏幕打开后的逻辑
-        // 当前为空实现，避免编译错误
-        
-        Log.i(TAG, "屏幕打开，准备监听解锁事件")
+        requestCollectionResumeIfNeeded(context, "屏幕打开")
+    }
+
+    private fun requestCollectionResumeIfNeeded(context: Context, eventName: String) {
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        if (!prefs.getBoolean(COLLECTION_REQUESTED_KEY, false)) {
+            Log.i(TAG, "$eventName：用户未启动采集服务，不自动恢复")
+            return
+        }
+
+        val intent = Intent(context, DataCollectionService::class.java).apply {
+            action = DataCollectionService.ACTION_RESUME_COLLECTION
+        }
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(intent)
+            } else {
+                context.startService(intent)
+            }
+            Log.i(TAG, "$eventName：已请求恢复采集服务")
+        } catch (e: Exception) {
+            Log.e(TAG, "$eventName：请求恢复采集服务失败", e)
+        }
     }
 }
