@@ -123,9 +123,9 @@ class DataPacketBuilder @Inject constructor(
             .setAccuracy(sample.accuracy)
             .setSeqNo(sample.seqNo)
             
-            // 前台应用只发送 HMAC，避免把包名明文写入服务端。
+            // 前台应用按当前协议发送明文包名，供服务端作为上下文保存。
             if (sample.foregroundApp.isNotEmpty()) {
-                builder.setForegroundAppHash(envelopeCryptoBox.getAppPackageHash(sample.foregroundApp))
+                builder.setForegroundAppName(sample.foregroundApp)
             }
             
             builder.build()

@@ -53,7 +53,7 @@
 - **流式加密**：历史规划保留；当前 App 使用单包 AES-GCM，与 server 解密链路一致。
 - **文件队列与写入原子性**：写入磁盘采用写 `.tmp` -> fsync -> rename 的原子化流程，并在 DB（Room）中保存路径与校验值（SHA256/CRC32）。
 - **抗重放与顺序保障**：加 `packet_seq_no`（全局递增）与 `creation_server_ts`（ACK 回填）用于端/服务器校验顺序和重放防护。
-- **AAD 隐私保护**：当前 server 未校验 AAD，App 不设置 AAD，避免解密不一致。网络中不放明文设备 ID 或前台应用包名。
+- **AAD 隐私保护**：当前 server 未校验 AAD，App 不设置 AAD，避免解密不一致。网络中不放明文设备 ID；前台应用包名按 `foreground_app_name` 作为样本上下文上传。
 - **Key Rotation 与兼容性**：当前 `dek_key_id` 为 `STATIC_KEY_V1`，保留字段用于后续扩展。
 - **首次密钥发布与 pinning**：历史规划保留；当前联调使用固定共享密钥和可配置 TLS/证书检查。
 - **上传标识**：不使用 IMEI，不生成用户 ID，不使用卸载后丢失的随机安装实例。当前 `device_id_hash` 由 Widevine 设备唯一材料摘要优先、`ANDROID_ID` 次之、硬件 `Build.*` 字段兜底的稳定材料 HMAC 得到。
@@ -470,7 +470,7 @@ message SensorSample {
   float z = 5;
   int32 accuracy = 6;
   int64 seq_no = 7;                      // 自增序号，保障一致性/防重放
-  string foreground_app_hash = 8;        // 前台应用包名的 HMAC
+  string foreground_app_name = 8;        // 当前前台应用的明文包名
 }
 
 // 服务端下发的指令消息
@@ -554,7 +554,7 @@ message HeartbeatAck {
 ---
 
 ## 5. 安全/隐私/合规要点
-- **标识处理**：不在网络中放明文设备 ID、前台应用包名或用户 ID；当前运行时不生成用户 ID。上传标识为稳定设备材料的 HMAC 摘要。
+- **标识处理**：不在网络中放明文设备 ID 或用户 ID；当前运行时不生成用户 ID。上传标识为稳定设备材料的 HMAC 摘要，前台应用包名按 `foreground_app_name` 作为样本上下文上传。
 - **撤回同意**：用户可撤回同意，撤回后客户端删除本地缓存并向服务器发起删除请求（服务器需支持删除 API 并记录删除结果）。
 - **法律合规**：准备并审查 GDPR / PDPA 风控文档（数据用途、最小化、访问、删除、数据传输、第三方依赖等）。
 
@@ -631,5 +631,4 @@ message HeartbeatAck {
 - AAD：Additional Authenticated Data（附加认证数据）
 
 ---
-
 

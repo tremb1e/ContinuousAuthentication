@@ -14,7 +14,7 @@
 - App proto 与 server `protos/sensor_data.proto` 对齐：
   - `SerializedSensorBatch.samples = 1`；
   - `SerializedSensorBatch.session_id = 3`；
-  - `SensorSample.foreground_app_hash = 8`。
+  - `SensorSample.foreground_app_name = 8`。
 - 加密上传数据格式与 server 接收链路一致：
   - 明文为 `SerializedSensorBatch`；
   - 默认 LZ4 压缩；

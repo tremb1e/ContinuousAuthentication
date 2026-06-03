@@ -165,7 +165,7 @@
     <!-- Privacy Agreement Dialog -->
     <string name="privacy_welcome">Welcome to Continuous Authentication. This app is designed for academic research on continuous authentication systems. Please carefully read and accept our privacy policy to continue.</string>
     <string name="privacy_data_collection_title">Data Collection:</string>
-    <string name="privacy_data_collection_content">We collect the following data for research purposes:\n• Motion sensors: Accelerometer (100Hz), Gyroscope (100Hz), Magnetometer (100Hz)\n• Device information: Model, Android version, hardware capabilities\n• App usage statistics: Foreground application names (hashed for privacy)\n• Collection occurs only when the device is unlocked and the app has your explicit consent</string>
+    <string name="privacy_data_collection_content">We collect the following data for research purposes:\n• Motion sensors: Accelerometer (100Hz), Gyroscope (100Hz), Magnetometer (100Hz)\n• Device information: Model, Android version, hardware capabilities\n• App usage statistics: Current foreground application package name\n• Collection occurs only when the device is unlocked and the app has your explicit consent</string>
     <string name="privacy_data_usage_title">Data Usage:</string>
     <string name="privacy_data_usage_content">All collected data is used exclusively for:\n• Academic research on continuous authentication systems\n• Algorithm development and accuracy improvement\n• Statistical analysis of authentication patterns\n• No commercial use or sale of data</string>
     <string name="privacy_data_storage_title">Data Storage &amp; Encryption:</string>

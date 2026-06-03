@@ -50,7 +50,6 @@ class EnvelopeCryptoBox @Inject constructor(
         private const val SHARED_SECRET = "Continuous_Authentication"
         private const val STATIC_KEY_ID = "STATIC_KEY_V1"
         private const val DEVICE_HMAC_DOMAIN = "ca-device-upload-id-v1"
-        private const val APP_HMAC_DOMAIN = "ca-foreground-app-v1"
 
         private const val AES_KEY_SIZE = 32
         private const val IV_LENGTH = 12
@@ -239,8 +238,6 @@ class EnvelopeCryptoBox @Inject constructor(
         val material = deviceInstanceId ?: buildStableDeviceMaterial().also { deviceInstanceId = it }
         return computeHmac(material, DEVICE_HMAC_DOMAIN)
     }
-
-    fun getAppPackageHash(packageName: String): String = computeHmac(packageName, APP_HMAC_DOMAIN)
 
     fun isCryptoDisabled(): Boolean = failureCount.get() >= MAX_FAILURE_COUNT
 

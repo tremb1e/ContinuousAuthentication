@@ -3,7 +3,7 @@
 
 # **Continuous Authentication - Android 持续认证数据采集器**
 > **版本**：Lite v1.0  
-> **最后更新日期**：2026-06-01
+> **最后更新日期**：2026-06-03
 > **状态**：功能规格说明书  
 
 ---
@@ -16,7 +16,7 @@
 - 上传体为 Protobuf `DataPacket`，`encrypted_sensor_payload` 内部是 LZ4 压缩后的 `SerializedSensorBatch`，再经 AES-GCM 加密为 `IV(12)|TAG(16)|ciphertext`。
 - 不再生成、保存或上传用户 ID；`SerializedSensorBatch` 只包含 `samples` 与 `session_id`。
 - “上传标识 (HMAC)”由硬件稳定材料派生，普通卸载重装后不依赖 App 私有随机值。
-- 前台应用字段为 `foreground_app_hash`，不上传明文包名。
+- 前台应用字段为 `foreground_app_name`，内容为当前前台应用的明文包名，并随加密 payload 上传。
 - 持续认证 UI 显示的模型、分数、阈值、窗口、EMA / y-of-x 文本均来自 server 响应。
 
 ## **1. 项目概述**
@@ -288,8 +288,8 @@ data class SystemStats(
 
 @Serializable
 data class ContextInfo(
-    @SerialName("foreground_package_name")
-    val foregroundPackageName: String,       // 前台应用包名
+    @SerialName("foreground_app_name")
+    val foregroundAppName: String,           // 前台应用包名
 
     @SerialName("screen_state")
     val screenState: String,                 // ON/OFF/DIMMED
@@ -323,7 +323,7 @@ X-Packet-Sequence: <packet_seq_no>
   "window_start_ms": 1643723400000,
   "window_end_ms": 1643723401000,
   "type": "sensor",
-  "foreground_package_name": "包名",
+  "foreground_app_name": "com.example.app",
   "sensor_data": [
     {
       "sensor_name": "accelerometer",
