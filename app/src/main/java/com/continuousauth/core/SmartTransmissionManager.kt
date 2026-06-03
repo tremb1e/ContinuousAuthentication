@@ -8,6 +8,7 @@ import android.os.PowerManager
 import android.util.Log
 import com.continuousauth.buffer.InMemoryBuffer
 import com.continuousauth.network.TransportState
+import com.continuousauth.network.ServerEndpointNormalizer
 import com.continuousauth.network.UploadManager
 import com.continuousauth.privacy.PrivacyManager
 import com.continuousauth.processing.SensorDataProcessor
@@ -51,9 +52,6 @@ class SmartTransmissionManager @Inject constructor(
 ) {
     companion object {
         private const val TAG = "SmartTransmissionManager"
-        private const val DEFAULT_SERVER_HOST = "ty.macrz.com"
-        private const val DEFAULT_SERVER_PORT = 10500
-        private const val DEFAULT_SERVER_SCHEME = "https"
         private const val SMART_TRANSMISSION_ENABLED_KEY = "smart_transmission_enabled"
         private const val SMART_TRANSMISSION_BATTERY_THRESHOLD = 60
     }
@@ -245,12 +243,12 @@ class SmartTransmissionManager @Inject constructor(
 
     private fun resolveServerEndpoint(): String {
         val prefs = context.getSharedPreferences("server_config", Context.MODE_PRIVATE)
-        val host = prefs.getString("server_ip", DEFAULT_SERVER_HOST).orEmpty().ifBlank { DEFAULT_SERVER_HOST }
-        val port = prefs.getInt("server_port", DEFAULT_SERVER_PORT).takeIf { it > 0 } ?: DEFAULT_SERVER_PORT
-        val scheme = prefs.getString("server_scheme", DEFAULT_SERVER_SCHEME)
-            ?.lowercase()
-            ?.takeIf { it == "http" || it == "https" } ?: DEFAULT_SERVER_SCHEME
-        return "$scheme://$host:$port"
+        val port = if (prefs.contains("server_port")) prefs.getInt("server_port", 0) else null
+        return ServerEndpointNormalizer.normalize(
+            addressInput = prefs.getString("server_ip", null),
+            portInput = port,
+            schemeInput = prefs.getString("server_scheme", null)
+        ).endpoint
     }
 
     /**

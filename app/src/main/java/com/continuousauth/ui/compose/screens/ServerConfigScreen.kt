@@ -37,6 +37,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.continuousauth.ui.MainViewModel
 import com.continuousauth.ui.theme.ExtendedColors
 import com.continuousauth.network.ConnectionStatus
+import com.continuousauth.network.ServerEndpointNormalizer
 import com.continuousauth.network.TransportMode
 import com.continuousauth.privacy.ConsentState
 import com.continuousauth.privacy.DeletionState
@@ -73,10 +74,10 @@ fun ServerConfigScreen(viewModel: MainViewModel) {
     var showClearQueueDialog by remember { mutableStateOf(false) }
     // 本地状态
     var serverIp by remember {
-        mutableStateOf(SpUtils.decodeString(Constant.SERVER_IP, "https://ty.macrz.com"))
+        mutableStateOf(SpUtils.decodeString(Constant.SERVER_IP, "https://${ServerEndpointNormalizer.DEFAULT_HOST}"))
     }
     var serverPort by remember {
-        mutableStateOf(SpUtils.decodeString(Constant.SERVER_PORT, "10500"))
+        mutableStateOf(SpUtils.decodeString(Constant.SERVER_PORT, ServerEndpointNormalizer.DEFAULT_HTTPS_PORT.toString()))
     }
     var isTestingConnection by remember { mutableStateOf(false) }
 

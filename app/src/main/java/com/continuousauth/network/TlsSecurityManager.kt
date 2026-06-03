@@ -15,7 +15,7 @@ import javax.inject.Singleton
 
 /**
  * TLS安全配置管理器
- * 强制启用TLS 1.3，确保网络传输的最高安全级别
+ * 启用TLS 1.3/1.2，确保网络传输具备安全协议版本并兼容生产反代入口
  * 支持SPKI (Public Key) Pinning证书固定
  */
 @Singleton
@@ -26,7 +26,7 @@ class TlsSecurityManager @Inject constructor() {
     }
     
     /**
-     * 配置OkHttp通道构建器以强制使用TLS 1.3并启用证书固定
+     * 配置OkHttp通道构建器以使用TLS 1.3/1.2并启用证书固定
      */
     fun configureTlsForChannelBuilder(
         builder: OkHttpChannelBuilder,
@@ -34,7 +34,7 @@ class TlsSecurityManager @Inject constructor() {
         hostname: String = ""
     ): OkHttpChannelBuilder {
         return try {
-            val tlsSocketFactory = createTls13SocketFactory()
+            val tlsSocketFactory = createTlsSocketFactory()
             var configuredBuilder = builder.sslSocketFactory(tlsSocketFactory)
             
             // 配置证书固定
@@ -45,15 +45,15 @@ class TlsSecurityManager @Inject constructor() {
                 // 会通过自定义的TrustManager来实现
                 val customTrustManager = createPinningTrustManager(pinnedCertificates, hostname)
                 configuredBuilder = configuredBuilder.sslSocketFactory(
-                    createTls13SocketFactory()
+                    createTlsSocketFactory()
                 )
                 Log.i(TAG, "SPKI证书固定已配置 - 主机: $hostname, 证书数: ${pinnedCertificates.size}")
             }
             
-            Log.i(TAG, "TLS 1.3 配置已应用到gRPC通道")
+            Log.i(TAG, "TLS 1.3/1.2 配置已应用到gRPC通道")
             configuredBuilder
         } catch (e: Exception) {
-            Log.e(TAG, "TLS 1.3 配置失败", e)
+            Log.e(TAG, "TLS 配置失败", e)
             builder
         }
     }
@@ -179,10 +179,9 @@ class TlsSecurityManager @Inject constructor() {
     }
     
     /**
-     * 创建强制TLS 1.3的SSLSocketFactory
+     * 创建TLS 1.3/1.2的SSLSocketFactory
      */
-    private fun createTls13SocketFactory(): SSLSocketFactory {
-        // 创建支持TLS 1.3的SSLContext
+    private fun createTlsSocketFactory(): SSLSocketFactory {
         val sslContext = createSecureSSLContext()
         
         return object : SSLSocketFactory() {
@@ -233,23 +232,14 @@ class TlsSecurityManager @Inject constructor() {
      * 创建安全的SSLContext
      */
     private fun createSecureSSLContext(): SSLContext {
-        return try {
-            // 优先尝试TLS 1.3
-            val context = SSLContext.getInstance("TLSv1.3")
-            context.init(null, null, null)
-            Log.i(TAG, "成功创建TLS 1.3 SSLContext")
-            context
-        } catch (e: Exception) {
-            Log.w(TAG, "TLS 1.3 不支持，降级到TLS 1.2", e)
-            // 降级到TLS 1.2
-            val context = SSLContext.getInstance("TLSv1.2")
-            context.init(null, null, null)
-            context
-        }
+        val context = SSLContext.getInstance("TLS")
+        context.init(null, null, null)
+        Log.i(TAG, "成功创建TLS SSLContext")
+        return context
     }
     
     /**
-     * 配置SSL Socket以强制使用TLS 1.3和安全密码套件
+     * 配置SSL Socket以使用TLS 1.3/1.2和安全密码套件
      */
     private fun configureSocket(socket: Socket): Socket {
         if (socket is SSLSocket) {
@@ -265,19 +255,14 @@ class TlsSecurityManager @Inject constructor() {
     private fun configureTlsProtocols(sslSocket: SSLSocket) {
         try {
             val supportedProtocols = sslSocket.supportedProtocols
-            
-            when {
-                supportedProtocols.contains("TLSv1.3") -> {
-                    sslSocket.enabledProtocols = arrayOf("TLSv1.3")
-                    Log.d(TAG, "强制启用TLS 1.3协议")
-                }
-                supportedProtocols.contains("TLSv1.2") -> {
-                    sslSocket.enabledProtocols = arrayOf("TLSv1.2")
-                    Log.w(TAG, "TLS 1.3 不可用，使用TLS 1.2")
-                }
-                else -> {
-                    Log.e(TAG, "不支持安全的TLS版本")
-                }
+            val enabledProtocols = supportedProtocols
+                .filter { it == "TLSv1.3" || it == "TLSv1.2" }
+
+            if (enabledProtocols.isNotEmpty()) {
+                sslSocket.enabledProtocols = enabledProtocols.toTypedArray()
+                Log.d(TAG, "启用TLS协议: ${enabledProtocols.joinToString()}")
+            } else {
+                Log.e(TAG, "不支持安全的TLS版本")
             }
         } catch (e: Exception) {
             Log.e(TAG, "配置TLS协议失败", e)
@@ -306,23 +291,18 @@ class TlsSecurityManager @Inject constructor() {
                  cipher.contains("AES", ignoreCase = true))
             }
             
-            val preferredCiphers = when {
-                tls13Ciphers.isNotEmpty() -> {
-                    Log.d(TAG, "使用TLS 1.3密码套件")
-                    tls13Ciphers
-                }
-                tls12SecureCiphers.isNotEmpty() -> {
-                    Log.d(TAG, "使用TLS 1.2安全密码套件")
-                    tls12SecureCiphers
-                }
-                else -> {
+            val preferredCiphers = (tls13Ciphers + tls12SecureCiphers).distinct()
+
+            val enabledCiphers = if (preferredCiphers.isNotEmpty()) {
+                    Log.d(TAG, "使用TLS 1.3/1.2安全密码套件")
+                    preferredCiphers
+                } else {
                     Log.w(TAG, "无安全密码套件可用，使用默认设置")
                     supportedCiphers.toList()
                 }
-            }
             
-            sslSocket.enabledCipherSuites = preferredCiphers.toTypedArray()
-            Log.d(TAG, "已设置${preferredCiphers.size}个安全密码套件")
+            sslSocket.enabledCipherSuites = enabledCiphers.toTypedArray()
+            Log.d(TAG, "已设置${enabledCiphers.size}个安全密码套件")
             
         } catch (e: Exception) {
             Log.e(TAG, "配置密码套件失败", e)

@@ -20,6 +20,7 @@ import com.continuousauth.monitor.SystemMonitor
 import com.continuousauth.network.ConnectionStatus
 import com.continuousauth.network.NetworkEnvironmentDetector
 import com.continuousauth.network.NetworkState
+import com.continuousauth.network.ServerEndpointNormalizer
 import com.continuousauth.network.TransportMode
 import com.continuousauth.network.UploadManager
 import com.continuousauth.network.UploadStatus
@@ -106,9 +107,6 @@ class MainViewModel @Inject constructor(
     
     companion object {
         private const val TAG = "MainViewModel"
-        private const val DEFAULT_SERVER_IP = "ty.macrz.com"
-        private const val DEFAULT_SERVER_PORT = 10500
-        private const val DEFAULT_SERVER_SCHEME = "https"
     }
     
     // 采集状态
@@ -383,14 +381,20 @@ class MainViewModel @Inject constructor(
      * 读取已保存的服务器配置，若没有则返回默认值。
      */
     fun getServerConfig(): ServerConfig {
-        val host = serverPrefs.getString("server_ip", DEFAULT_SERVER_IP)?.trim().orEmpty()
-        val port = serverPrefs.getInt("server_port", DEFAULT_SERVER_PORT)
-        val scheme = serverPrefs.getString("server_scheme", DEFAULT_SERVER_SCHEME)?.lowercase()
-            ?: DEFAULT_SERVER_SCHEME
+        val savedPort = if (serverPrefs.contains("server_port")) {
+            serverPrefs.getInt("server_port", 0)
+        } else {
+            null
+        }
+        val normalized = ServerEndpointNormalizer.normalize(
+            addressInput = serverPrefs.getString("server_ip", null),
+            portInput = savedPort,
+            schemeInput = serverPrefs.getString("server_scheme", null)
+        )
         return ServerConfig(
-            host = host.ifBlank { DEFAULT_SERVER_IP },
-            port = if (port > 0) port else DEFAULT_SERVER_PORT,
-            scheme = if (scheme in listOf("http", "https")) scheme else DEFAULT_SERVER_SCHEME
+            host = normalized.host,
+            port = normalized.port,
+            scheme = normalized.scheme
         )
     }
 
@@ -400,25 +404,12 @@ class MainViewModel @Inject constructor(
     fun saveServerConfig(ipInput: String, portInput: Int?) {
         // 允许输入 http://host:port 或 https://host:port
         val trimmed = ipInput.trim()
-        var scheme = DEFAULT_SERVER_SCHEME
-        var host = trimmed
-        var port = portInput ?: DEFAULT_SERVER_PORT
-
-        try {
-            if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
-                val uri = android.net.Uri.parse(trimmed)
-                if (!uri.host.isNullOrBlank()) host = uri.host!!
-                if (uri.port != -1) port = uri.port
-                scheme = uri.scheme?.lowercase() ?: DEFAULT_SERVER_SCHEME
-            }
-        } catch (_: Exception) {
-            // ignore, fall back to defaults above
-        }
+        val normalized = ServerEndpointNormalizer.normalize(trimmed, portInput)
 
         serverPrefs.edit()
-            .putString("server_ip", host)
-            .putInt("server_port", port)
-            .putString("server_scheme", scheme)
+            .putString("server_ip", normalized.host)
+            .putInt("server_port", normalized.port)
+            .putString("server_scheme", normalized.scheme)
             .apply()
     }
 

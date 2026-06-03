@@ -1,6 +1,6 @@
 # 当前工作说明
 
-更新日期：2026-06-01
+更新日期：2026-06-03
 
 ## 已完成
 
@@ -24,11 +24,14 @@
 
 ## 当前默认联调配置
 
-- App 默认 host：`ty.macrz.com`
+- App 默认 host：`ca.macrz.com`
 - App 默认 scheme：`https`
-- App 默认 port：`10500`
-- Server gRPC 默认端口：`10500`
+- App 默认 port：`443`
+- Server 内部 gRPC 端口：`10500`，由 OpenResty 反代到公网入口
+- 公网联调入口：`https://ca.macrz.com:443`
 - 共享加密 secret：`Continuous_Authentication`
+
+用户输入 `ca.macrz.com:80`、`http://ca.macrz.com:80` 或旧后端地址 `ty.macrz.com:10500` 时，App 会归一化为 `https://ca.macrz.com:443`；公网 443 入口连接失败时不会回退到明文 h2c 或其它端口。
 
 ## 构建产物
 

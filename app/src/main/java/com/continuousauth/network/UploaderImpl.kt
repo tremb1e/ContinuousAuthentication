@@ -49,7 +49,6 @@ class UploaderImpl @Inject constructor(
         private const val KEEPALIVE_TIMEOUT_SECONDS = 5L
         private const val MAX_RETRY_ATTEMPTS = 3
         private const val ACK_TIMEOUT_MS = 10000L // 10秒ACK超时
-        private const val DEFAULT_GRPC_PORT = 8000
     }
 
     // gRPC相关
@@ -84,51 +83,27 @@ class UploaderImpl @Inject constructor(
     // 重连逻辑
     private var reconnectJob: Job? = null
     private var currentEndpoint: String = ""
-    private var lastParsedEndpoint: ParsedEndpoint? = null
 
     private data class ParsedEndpoint(
         val host: String,
         val port: Int,
         val useTls: Boolean,
-        val scheme: String
+        val scheme: String,
+        val endpoint: String,
+        val strictTlsIngress: Boolean
     )
 
     private fun parseEndpoint(endpoint: String): ParsedEndpoint {
-        var target = endpoint.trim()
-        var useTls = true
-
-        val scheme = when {
-            target.startsWith("http://", ignoreCase = true) -> {
-                useTls = false
-                target = target.removePrefix("http://")
-                "http"
-            }
-            target.startsWith("https://", ignoreCase = true) -> {
-                useTls = true
-                target = target.removePrefix("https://")
-                "https"
-            }
-            else -> "https"
-        }
-
-        val hostPort = target.substringBefore("/")
-        val parts = hostPort.split(":")
-        val host = parts.getOrNull(0).orEmpty()
-        val port = parts.getOrNull(1)?.toIntOrNull() ?: DEFAULT_GRPC_PORT
+        val normalized = ServerEndpointNormalizer.normalize(endpoint)
 
         return ParsedEndpoint(
-            host = host.ifEmpty { "localhost" },
-            port = port,
-            useTls = useTls,
-            scheme = scheme
+            host = normalized.host,
+            port = normalized.port,
+            useTls = normalized.useTls,
+            scheme = normalized.scheme,
+            endpoint = normalized.endpoint,
+            strictTlsIngress = normalized.isPublicTlsIngress
         )
-    }
-
-    private fun buildGrpcPortEndpoint(parsed: ParsedEndpoint?): String? {
-        parsed ?: return null
-        if (parsed.port == DEFAULT_GRPC_PORT) return null
-        val scheme = if (parsed.useTls) "https" else "http"
-        return "$scheme://${parsed.host}:$DEFAULT_GRPC_PORT"
     }
 
     private fun isHttpFallbackError(t: Throwable): Boolean {
@@ -188,13 +163,12 @@ class UploaderImpl @Inject constructor(
 
         currentEndpoint = serverEndpoint
         connectionStatus.set(ConnectionStatus.CONNECTING)
-        lastParsedEndpoint = null
 
         val attemptTimestamp = System.currentTimeMillis()
 
         return try {
             val parsed = parseEndpoint(serverEndpoint)
-            lastParsedEndpoint = parsed
+            currentEndpoint = parsed.endpoint
             val policyConfig = policyManager.getCurrentPolicyConfiguration()
             val pinnedCertificates = policyConfig.securityConfig.pinnedCertificates
 
@@ -207,14 +181,18 @@ class UploaderImpl @Inject constructor(
             }
 
             val tlsSupported = tlsProbe?.supportsTls12OrHigher == true
-            var useTls = parsed.useTls && tlsSupported
+            var useTls = parsed.useTls && (tlsSupported || parsed.strictTlsIngress)
             var downgraded = parsed.useTls && !useTls
             var lastError: String? = null
             var finalTls = useTls
 
             if (parsed.useTls && !tlsSupported) {
                 val probeReason = tlsProbe?.errorMessage ?: "TLS未就绪或证书未部署"
-                Log.i(TAG, "未检测到可用的 TLS 1.2/1.3 证书，优先使用 h2c 明文模式 ($probeReason)")
+                if (parsed.strictTlsIngress) {
+                    Log.w(TAG, "公网443入口 TLS 探测失败，仍按 TLS gRPC 尝试且不回退明文 ($probeReason)")
+                } else {
+                    Log.i(TAG, "未检测到可用的 TLS 1.2/1.3 证书，优先使用 h2c 明文模式 ($probeReason)")
+                }
             }
 
             suspend fun buildAndStream(tls: Boolean, port: Int): Boolean {
@@ -249,10 +227,12 @@ class UploaderImpl @Inject constructor(
             }
 
             var connected = buildAndStream(useTls, parsed.port)
-            if (!connected && useTls) {
+            if (!connected && useTls && !parsed.strictTlsIngress) {
                 Log.w(TAG, "TLS 握手/流建立失败，回退到明文 h2c")
                 downgraded = true
                 connected = buildAndStream(false, parsed.port)
+            } else if (!connected && useTls && parsed.strictTlsIngress) {
+                Log.w(TAG, "公网443 TLS gRPC 入口连接失败，不回退明文或其它端口")
             }
 
             if (connected) {
@@ -270,13 +250,13 @@ class UploaderImpl @Inject constructor(
                         lastAttemptMs = attemptTimestamp
                     )
                 )
-                Log.i(TAG, "成功连接到服务器: $serverEndpoint (tls=${finalTls})")
+                Log.i(TAG, "成功连接到服务器: ${parsed.endpoint} (tls=${finalTls})")
                 true
             } else {
                 handleConnectionError(lastError ?: "双向流建立失败")
                 updateTransportState(
                     TransportState(
-                        mode = if (downgraded || !useTls) TransportMode.HTTP else TransportMode.HTTPS,
+                        mode = if (downgraded || (!useTls && !parsed.strictTlsIngress)) TransportMode.HTTP else TransportMode.HTTPS,
                         tlsVersion = tlsProbe?.tlsVersion,
                         negotiatedProtocol = tlsProbe?.negotiatedProtocol,
                         tlsCapable = tlsProbe?.supportsTls12OrHigher ?: false,
@@ -446,17 +426,10 @@ class UploaderImpl @Inject constructor(
                 override fun onError(t: Throwable) {
                     Log.e(TAG, "服务器响应流错误", t)
                     handleConnectionError("服务器响应流错误: ${t.message}")
-                    // 启动重连
-                    val fallback = if (isHttpFallbackError(t)) {
-                        val candidate = buildGrpcPortEndpoint(lastParsedEndpoint)
-                        candidate?.also {
-                            Log.w(TAG, "检测到可能连接到 HTTP 端口，尝试切换到 gRPC 端口: $it")
-                        }
-                        candidate
-                    } else {
-                        null
+                    if (isHttpFallbackError(t)) {
+                        Log.w(TAG, "检测到可能连接到非 gRPC 入口，按归一化后的当前端点重连")
                     }
-                    startReconnect(fallback)
+                    startReconnect()
                 }
 
                 override fun onCompleted() {

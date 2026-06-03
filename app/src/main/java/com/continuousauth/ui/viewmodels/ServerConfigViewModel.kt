@@ -7,6 +7,7 @@ import androidx.lifecycle.LiveData
 import androidx.lifecycle.MutableLiveData
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.continuousauth.network.ServerEndpointNormalizer
 import com.continuousauth.network.Uploader
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -32,8 +33,8 @@ class ServerConfigViewModel @Inject constructor(
     }
     
     data class ServerConfig(
-        val ip: String = "https://ty.macrz.com",
-        val port: Int = 10500
+        val ip: String = "https://${ServerEndpointNormalizer.DEFAULT_HOST}",
+        val port: Int = ServerEndpointNormalizer.DEFAULT_HTTPS_PORT
     )
     
     // 设备ID
@@ -82,10 +83,14 @@ class ServerConfigViewModel @Inject constructor(
         viewModelScope.launch {
             // 从SharedPreferences或DataStore加载配置
             val prefs = context.getSharedPreferences("server_config", Context.MODE_PRIVATE)
-            val ip = prefs.getString("server_ip", "https://ty.macrz.com") ?: "https://ty.macrz.com"
-            val port = prefs.getInt("server_port", 10500)
+            val portInput = if (prefs.contains("server_port")) prefs.getInt("server_port", 0) else null
+            val endpoint = ServerEndpointNormalizer.normalize(
+                addressInput = prefs.getString("server_ip", null),
+                portInput = portInput,
+                schemeInput = prefs.getString("server_scheme", null)
+            )
             
-            _serverConfig.value = ServerConfig(ip, port)
+            _serverConfig.value = ServerConfig("${endpoint.scheme}://${endpoint.host}", endpoint.port)
         }
     }
     
@@ -94,13 +99,15 @@ class ServerConfigViewModel @Inject constructor(
      */
     fun saveServerConfig(ip: String, port: Int) {
         viewModelScope.launch {
-            _serverConfig.value = ServerConfig(ip, port)
+            val endpoint = ServerEndpointNormalizer.normalize(ip, port)
+            _serverConfig.value = ServerConfig("${endpoint.scheme}://${endpoint.host}", endpoint.port)
             
             // 保存到SharedPreferences
             val prefs = context.getSharedPreferences("server_config", Context.MODE_PRIVATE)
             prefs.edit()
-                .putString("server_ip", ip)
-                .putInt("server_port", port)
+                .putString("server_ip", endpoint.host)
+                .putInt("server_port", endpoint.port)
+                .putString("server_scheme", endpoint.scheme)
                 .apply()
         }
     }
@@ -114,7 +121,7 @@ class ServerConfigViewModel @Inject constructor(
                 _connectionStatus.postValue(ConnectionStatus.CONNECTING)
                 
                 val config = _serverConfig.value ?: return@withContext
-                val endpoint = "${config.ip}:${config.port}"
+                val endpoint = ServerEndpointNormalizer.normalize(config.ip, config.port).endpoint
                 
                 // 尝试连接并立即断开以测试连接
                 val result = uploader.connect(endpoint)
@@ -144,10 +151,10 @@ class ServerConfigViewModel @Inject constructor(
         withContext(Dispatchers.IO) {
             try {
                 val config = _serverConfig.value ?: return@withContext
+                val endpoint = ServerEndpointNormalizer.normalize(config.ip, config.port).endpoint
                 
                 // 连接到服务器
                 _connectionStatus.postValue(ConnectionStatus.CONNECTING)
-                val endpoint = "${config.ip}:${config.port}"
                 val connected = uploader.connect(endpoint)
                 
                 if (connected) {
