@@ -140,6 +140,34 @@
 # Keep core business logic classes
 -keep class com.continuousauth.core.** { *; }
 
+# ================== LZ4 / XXHash reflection ==================
+# lz4-java 1.8 builds JavaSafe/JavaUnsafe/JNI implementation names at runtime
+# and reads their INSTANCE fields. Preserve only these reflective entry points.
+# Keep the reflection helpers in their original packages: the implementations
+# and the high-compression constructors have package-private access.
+-keep class net.jpountz.lz4.LZ4Factory {
+    private <init>(java.lang.String);
+    private static *** classInstance(java.lang.String);
+}
+-keepclasseswithmembers class net.jpountz.lz4.* {
+    public static final *** INSTANCE;
+}
+-keepclassmembers class net.jpountz.lz4.LZ4HC*Compressor {
+    <init>(int);
+}
+
+# Includes StreamingXXHash32/64<implementation>$Factory singletons.
+-keep class net.jpountz.xxhash.XXHashFactory {
+    private <init>(java.lang.String);
+    private static *** classInstance(java.lang.String);
+}
+-keepclasseswithmembers class net.jpountz.xxhash.* {
+    public static final *** INSTANCE;
+}
+
+# Native.resourceName() derives the bundled library path from its package.
+-keepnames class net.jpountz.util.Native
+
 # Keep UI data classes and enums
 -keepclassmembers enum * {
     public static **[] values();

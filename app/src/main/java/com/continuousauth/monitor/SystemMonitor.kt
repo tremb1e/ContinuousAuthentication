@@ -254,33 +254,33 @@ class SystemMonitor @Inject constructor(
      */
     private suspend fun monitorTransmissionStatus() {
         while (currentCoroutineContext().isActive) {
-            val uploadStatus = uploadManager.getUploadStatus()
-            val transportState = uploader.getTransportState()
-            val queueSize = uploadStatus.bufferedPackets +
-                (uploadStatus.fileQueueStats?.pendingPackets ?: 0)
-            val isConnected = uploadStatus.connectionStatus == com.continuousauth.network.ConnectionStatus.CONNECTED
-            
-            _transmissionStatus.value = TransmissionStatus(
-                compression = "LZ4",
-                isConnected = isConnected,
-                uploadQueueSize = queueSize,
-                lastUploadTime = if (uploadStatus.uploadedPackets > 0) {
-                    System.currentTimeMillis()
-                } else {
-                    transportState.lastAttemptMs
-                },
-                transportMode = transportState.mode,
-                transportTlsVersion = transportState.tlsVersion,
-                transportNegotiatedProtocol = transportState.negotiatedProtocol,
-                transportDowngraded = transportState.downgradedToCleartext,
-                transportLastAttemptMs = transportState.lastAttemptMs,
-                transportPreferredScheme = transportState.preferredScheme,
-                transportTlsCapable = transportState.tlsCapable,
-                transportError = transportState.lastError
-            )
-            
+            updateTransmissionStatus()
             delay(1000) // 每秒更新
         }
+    }
+
+    internal fun updateTransmissionStatus() {
+        val uploadStatus = uploadManager.getUploadStatus()
+        val transportState = uploader.getTransportState()
+        // Packets in memory normally mirror already-persisted disk packets.
+        val queueSize = maxOf(
+            uploadStatus.bufferedPackets,
+            uploadStatus.fileQueueStats?.pendingPackets ?: 0
+        )
+        _transmissionStatus.value = TransmissionStatus(
+            compression = "LZ4",
+            isConnected = uploadStatus.connectionStatus == com.continuousauth.network.ConnectionStatus.CONNECTED,
+            uploadQueueSize = queueSize,
+            lastUploadTime = uploadManager.getLastAckTimestamp(),
+            transportMode = transportState.mode,
+            transportTlsVersion = transportState.tlsVersion,
+            transportNegotiatedProtocol = transportState.negotiatedProtocol,
+            transportDowngraded = transportState.downgradedToCleartext,
+            transportLastAttemptMs = transportState.lastAttemptMs,
+            transportPreferredScheme = transportState.preferredScheme,
+            transportTlsCapable = transportState.tlsCapable,
+            transportError = transportState.lastError
+        )
     }
     
     /**
@@ -669,9 +669,7 @@ class SystemMonitor @Inject constructor(
     /**
      * 强制密钥轮换
      */
-    suspend fun forceKeyRotation() {
-        cryptoBox.rotateKeys()
-    }
+    suspend fun forceKeyRotation(): Boolean = cryptoBox.rotateKeys()
     
     /**
      * 导出调试日志（已脱敏）

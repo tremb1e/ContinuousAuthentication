@@ -66,9 +66,10 @@ fun SensorsScreen(
     val isCollectionRunning by viewModel.isCollectionRunning.observeAsState(false)
     val isEncryptedUploading by viewModel.isEncryptedUploading.observeAsState(false)
     
-    // 自动开始传感器数据采集（不包含加密和上传）
-    LaunchedEffect(Unit) {
+    // 页面仅订阅预览，不启动或停止服务的采集。
+    DisposableEffect(sensorViewModel) {
         sensorViewModel.startSensorCollection()
+        onDispose { sensorViewModel.stopSensorCollection() }
     }
     
     // 观察传感器实时数据
@@ -100,7 +101,7 @@ fun SensorsScreen(
             // 实时传感器数据卡片（带时间戳）
             RealTimeSensorCard(
                 sensorStatus = sensorStatus,
-                isRunning = true, // 始终显示为运行状态
+                isRunning = sensorStatus.values.any { it },
                 isEncryptedUploading = isEncryptedUploading,
                 accelerometerData = accelerometerData,
                 gyroscopeData = gyroscopeData,
@@ -235,7 +236,7 @@ fun RealTimeSensorCard(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     // 采集状态指示器
-                    StatusIndicator(isActive = true) // 始终显示为活跃状态
+                    StatusIndicator(isActive = isRunning)
                     
                     // 加密上传状态指示器
                     EncryptionStatusIndicator(isEncrypted = isEncryptedUploading)
@@ -886,4 +887,3 @@ fun EncryptionStatusIndicator(isEncrypted: Boolean) {
         )
     }
 }
-

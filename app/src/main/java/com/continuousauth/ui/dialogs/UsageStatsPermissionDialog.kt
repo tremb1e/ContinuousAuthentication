@@ -1,6 +1,7 @@
 package com.continuousauth.ui.dialogs
 
 import android.app.Dialog
+import android.content.DialogInterface
 import android.os.Bundle
 import androidx.appcompat.app.AlertDialog
 import androidx.fragment.app.DialogFragment
@@ -12,8 +13,17 @@ import com.google.android.material.dialog.MaterialAlertDialogBuilder
  * 引导用户授权PACKAGE_USAGE_STATS权限，用于采集前台应用包名
  */
 class UsageStatsPermissionDialog(
-    private val onResult: (grantPermission: Boolean) -> Unit
+    private var onResult: (grantPermission: Boolean) -> Unit = {}
 ) : DialogFragment() {
+
+    fun setOnResultListener(listener: (Boolean) -> Unit) {
+        onResult = listener
+    }
+
+    override fun onCancel(dialog: DialogInterface) {
+        super.onCancel(dialog)
+        onResult(false)
+    }
     
     companion object {
         private const val TAG = "UsageStatsPermissionDialog"

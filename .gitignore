@@ -89,3 +89,6 @@ lint/tmp/
 # lint/reports/
 /app/build/
 /build/
+
+# Kotlin compiler session cache
+.kotlin/

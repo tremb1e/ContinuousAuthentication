@@ -1,75 +1,55 @@
 package com.continuousauth.ui.compose
 
+import android.Manifest
 import android.content.Context
 import android.content.Intent
-import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.util.Log
-import android.widget.Toast
-import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
-import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.ExperimentalAnimationApi
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.scaleIn
-import androidx.compose.animation.scaleOut
-import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
-import androidx.compose.animation.with
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.CloudQueue
+import androidx.compose.material.icons.filled.Settings as SettingsIcon
 import androidx.compose.material.icons.filled.Dashboard
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Sensors
-import androidx.compose.material.icons.outlined.CloudQueue
+import androidx.compose.material.icons.outlined.Settings as SettingsOutlineIcon
 import androidx.compose.material.icons.outlined.Dashboard
 import androidx.compose.material.icons.outlined.Security
 import androidx.compose.material.icons.outlined.Sensors
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
-import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.livedata.observeAsState
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.fragment.app.FragmentActivity
-import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.Lifecycle
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
@@ -88,10 +68,9 @@ import com.continuousauth.ui.dialogs.UsageStatsPermissionDialog
 import com.continuousauth.ui.theme.ContinuousAuthTheme
 import com.continuousauth.ui.viewmodels.SensorDataViewModel
 import com.continuousauth.utils.NotificationPermissionHelper
-import com.continuousauth.utils.NotificationPermissionLauncher
-import com.continuousauth.utils.UsageStatsPermissionLauncher
+import com.continuousauth.utils.BackgroundExecutionHelper
+import com.continuousauth.utils.UsageStatsHelper
 import dagger.hilt.android.AndroidEntryPoint
-import kotlinx.coroutines.launch
 
 /**
  * 现代化的 Compose 主活动
@@ -103,46 +82,48 @@ class MainComposeActivity : FragmentActivity() {
     private val TAG = "MainComposeActivity"
     private val viewModel: MainViewModel by viewModels()
     private val sensorViewModel: SensorDataViewModel by viewModels()
-    private lateinit var notificationPermissionLauncher: NotificationPermissionLauncher
-    // 权限请求器
+    private val permissionGuidance = PermissionGuidanceCoordinator()
+    private var consentAllowsGuidance = false
+    private var openAuthenticationRequest by mutableStateOf(0)
+    private val notificationPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) {
+        completePermissionGuidance(PermissionGuidanceStep.NOTIFICATIONS)
+    }
     private val usageStatsPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
-    ) { result ->
-        // 检查USAGE_STATS权限是否已授予
+    ) {
         viewModel.checkUsageStatsPermission()
+        completePermissionGuidance(PermissionGuidanceStep.USAGE_STATS)
     }
 
     private val batteryOptimizationLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
-    ) { result ->
-        isSkipPermissionCheck=true
-        // 记录用户已处理电池优化请求
-        getSharedPreferences("app_prefs", MODE_PRIVATE)
-            .edit()
-            .putBoolean(BATTERY_OPTIMIZATION_REQUESTED, true)
-            .apply()
+    ) {
+        finishBatteryOptimizationGuidance()
     }
-
-    private val notificationLauncher = registerForActivityResult(
-        ActivityResultContracts.StartActivityForResult()
-    ) { result ->
-        isSkipPermissionCheck=true
-        checkBatteryOptimization()
-        Log.e(TAG, "notificationLauncher result: $result")
-    }
-
-    private var isSkipPermissionCheck : Boolean =false
-    // 声明启动器
-    private lateinit var usageStatsLauncher: UsageStatsPermissionLauncher
 
     companion object {
         const val PREFS_NAME = "app_prefs"
         const val PRIVACY_AGREEMENT_SHOWN = "privacy_agreement_shown"
-        private const val BATTERY_OPTIMIZATION_REQUESTED = "battery_optimization_requested"
+        private const val OFFERED_GUIDANCE = "offered_permission_guidance"
+        private const val ACTIVE_GUIDANCE = "active_permission_guidance"
+        private const val NOTIFICATION_DIALOG_TAG = "notification_permission"
+        private const val USAGE_DIALOG_TAG = "usage_stats_permission"
+        private const val BATTERY_DIALOG_TAG = "battery_optimization"
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
+
+        savedInstanceState?.let { state ->
+            val offered = state.getStringArrayList(OFFERED_GUIDANCE).orEmpty().mapNotNull { name ->
+                PermissionGuidanceStep.entries.find { it.name == name }
+            }.toSet()
+            val active = PermissionGuidanceStep.entries.find { it.name == state.getString(ACTIVE_GUIDANCE) }
+            permissionGuidance.restore(offered, active)
+        }
 
         setContent {
             ContinuousAuthTheme {
@@ -150,29 +131,26 @@ class MainComposeActivity : FragmentActivity() {
             }
         }
 
-        // 初始化启动器
-//        try {
-            usageStatsLauncher = UsageStatsPermissionLauncher.create(this)
-            notificationPermissionLauncher= NotificationPermissionLauncher.create(this)
-//            checkPermissionsAndGuidance()
-//        } catch (e: Exception) {
-//            // 处理权限启动器创建或使用过程中可能出现的异常
-//            runOnUiThread {
-//                Toast.makeText(
-//                    this@MainComposeActivity,
-//                    "权限初始化失败，请重试",
-//                    Toast.LENGTH_SHORT
-//                ).show()
-//            }
-//        }
     }
 
-
-    private fun onUsageStatsPermissionGranted() {
-        Toast.makeText(this, "当前前台应用: 权限已授予", Toast.LENGTH_SHORT).show()
-        Log.d(TAG, "当前前台应用: 权限已授予 - ${System.currentTimeMillis()}")
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        if (intent.getBooleanExtra("open_authentication", false)) openAuthenticationRequest++
     }
 
+    override fun onPostResume() {
+        super.onPostResume()
+        attachPermissionDialogListeners()
+        viewModel.checkUsageStatsPermission()
+        checkPermissionsAndGuidance()
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        outState.putStringArrayList(OFFERED_GUIDANCE, ArrayList(permissionGuidance.offeredSteps.map { it.name }))
+        outState.putString(ACTIVE_GUIDANCE, permissionGuidance.activeStep?.name)
+        super.onSaveInstanceState(outState)
+    }
 
     /**
      * 主应用组件
@@ -181,18 +159,31 @@ class MainComposeActivity : FragmentActivity() {
     fun MainApp(viewModel: MainViewModel, sensorViewModel: SensorDataViewModel) {
         val navController = rememberNavController()
         val currentRoute = navController.currentBackStackEntryAsState().value?.destination?.route
+        LaunchedEffect(openAuthenticationRequest) {
+            if (openAuthenticationRequest > 0) {
+                navController.navigate(Screen.Privacy.route) {
+                    popUpTo(navController.graph.startDestinationId) { saveState = true }
+                    launchSingleTop = true
+                    restoreState = true
+                }
+            }
+        }
         val context = LocalContext.current
 
         // 检查隐私协议状态
         val prefs =
             context.getSharedPreferences(MainComposeActivity.PREFS_NAME, Context.MODE_PRIVATE)
-        var showPrivacyDialog by remember {
+        var showPrivacyDialog by rememberSaveable {
             mutableStateOf(!prefs.getBoolean(MainComposeActivity.PRIVACY_AGREEMENT_SHOWN, false))
         }
 
         // 观察隐私同意状态
         val consentStateLiveData = viewModel.consentState.observeAsState()
         val consentState = consentStateLiveData.value ?: ConsentState.UNKNOWN
+        LaunchedEffect(consentState, showPrivacyDialog) {
+            consentAllowsGuidance = consentState == ConsentState.GRANTED && !showPrivacyDialog
+            checkPermissionsAndGuidance()
+        }
 
         // 如果需要显示隐私协议对话框
         if (showPrivacyDialog) {
@@ -208,51 +199,24 @@ class MainComposeActivity : FragmentActivity() {
                     showPrivacyDialog = false
                 },
                 onDecline = {
-                    // 用户拒绝隐私协议，退出应用
-                    (context as? ComponentActivity)?.finish()
+                    // Declining leaves settings available without enabling collection.
+                    prefs.edit().putBoolean(PRIVACY_AGREEMENT_SHOWN, true).apply()
+                    showPrivacyDialog = false
                 }
             )
-        }else{
-            if (!isSkipPermissionCheck)
-                checkPermissionsAndGuidance()
         }
 
-        // 如果用户未同意隐私协议，显示提示界面
-        if (consentState != ConsentState.GRANTED && !showPrivacyDialog) {
-            Box(
-                modifier = Modifier.fillMaxSize(),
-                contentAlignment = Alignment.Center
-            ) {
-                Card(
-                    modifier = Modifier.padding(32.dp),
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.errorContainer
-                    )
-                ) {
-                    Column(
-                        modifier = Modifier.padding(24.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        Text(
-                            text = "请先同意隐私协议",
-                            style = MaterialTheme.typography.headlineSmall,
-                            color = MaterialTheme.colorScheme.onErrorContainer
-                        )
-                        Spacer(modifier = Modifier.height(16.dp))
-                        Button(
-                            onClick = { showPrivacyDialog = true },
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = MaterialTheme.colorScheme.error
-                            )
-                        ) {
-                            Text("查看隐私协议")
-                        }
-                    }
-                }
+        val snackbarHostState = remember { SnackbarHostState() }
+        val errorMessage by viewModel.errorMessage.observeAsState()
+        LaunchedEffect(errorMessage) {
+            errorMessage?.takeIf { it.isNotBlank() }?.let { message ->
+                snackbarHostState.showSnackbar(message)
+                viewModel.clearErrorMessage()
             }
-        } else {
-            // 只有在用户同意隐私协议后才显示主界面
+        }
+        // Browsing and reviewing consent stay available before consent is granted.
             Scaffold(
+                snackbarHost = { SnackbarHost(snackbarHostState) },
                 bottomBar = {
                     AnimatedBottomBar(
                         currentRoute = currentRoute,
@@ -271,8 +235,8 @@ class MainComposeActivity : FragmentActivity() {
             ) { paddingValues ->
                 NavHost(
                     navController = navController,
-                    startDestination = Screen.Sensors.route,
-                    modifier = Modifier.padding(paddingValues),
+                    startDestination = Screen.Privacy.route,
+                    modifier = Modifier.padding(paddingValues).consumeWindowInsets(paddingValues),
                     enterTransition = {
                         fadeIn(animationSpec = tween(300)) + slideInHorizontally(
                             initialOffsetX = { it },
@@ -290,7 +254,7 @@ class MainComposeActivity : FragmentActivity() {
                         SensorsScreen(viewModel, sensorViewModel)
                     }
                     composable(Screen.Server.route) {
-                        ServerConfigScreen(viewModel)
+                        ServerConfigScreen(viewModel, onRequestConsent = { showPrivacyDialog = true })
                     }
                     composable(Screen.Details.route) {
                         DetailedInfoScreen(
@@ -302,12 +266,17 @@ class MainComposeActivity : FragmentActivity() {
                     composable(Screen.Privacy.route) {
                         PrivacySettingsScreen(
                             onNavigateBack = { navController.popBackStack() },
-                            viewModel = viewModel
+                            viewModel = viewModel,
+                            onNavigateSettings = {
+                                navController.navigate(Screen.Server.route) {
+                                    launchSingleTop = true
+                                }
+                            },
+                            onReviewConsent = { showPrivacyDialog = true }
                         )
                     }
                 }
             }
-        } // 结束 else 语句
     }
 
     /**
@@ -320,75 +289,22 @@ class MainComposeActivity : FragmentActivity() {
         onNavigate: (String) -> Unit
     ) {
         val context = LocalContext.current
-        val screens = listOf(Screen.Sensors, Screen.Server, Screen.Details, Screen.Privacy)
-
-        NavigationBar(
-            modifier = Modifier
-                .background(
-                    Brush.verticalGradient(
-                        colors = listOf(
-                            MaterialTheme.colorScheme.surface.copy(alpha = 0.95f),
-                            MaterialTheme.colorScheme.surface
-                        )
-                    )
-                ),
-            containerColor = Color.Transparent,
-            tonalElevation = 8.dp
-        ) {
+        val screens = listOf(Screen.Privacy, Screen.Server, Screen.Sensors, Screen.Details)
+        NavigationBar(containerColor = MaterialTheme.colorScheme.surface, tonalElevation = 3.dp) {
             screens.forEach { screen ->
                 val selected = currentRoute == screen.route
                 val screenTitle = getScreenTitle(context, screen)
-                val animatedWeight by animateFloatAsState(
-                    targetValue = if (selected) 1.5f else 1f,
-                    animationSpec = spring(
-                        dampingRatio = Spring.DampingRatioMediumBouncy,
-                        stiffness = Spring.StiffnessLow
-                    ),
-                    label = "weight"
-                )
-
                 NavigationBarItem(
                     selected = selected,
                     onClick = { onNavigate(screen.route) },
                     icon = {
-                        AnimatedContent(
-                            targetState = selected,
-                            transitionSpec = {
-                                scaleIn(animationSpec = tween(200)) with scaleOut(
-                                    animationSpec = tween(
-                                        200
-                                    )
-                                )
-                            },
-                            label = "icon"
-                        ) { isSelected ->
-                            Icon(
-                                imageVector = if (isSelected) screen.selectedIcon else screen.unselectedIcon,
-                                contentDescription = screenTitle,
-                                modifier = Modifier.size(if (isSelected) 28.dp else 24.dp)
-                            )
-                        }
+                        Icon(
+                            imageVector = if (selected) screen.selectedIcon else screen.unselectedIcon,
+                            contentDescription = null
+                        )
                     },
-                    label = {
-                        AnimatedVisibility(
-                            visible = selected,
-                            enter = fadeIn() + expandVertically(),
-                            exit = fadeOut() + shrinkVertically()
-                        ) {
-                            Text(
-                                text = screenTitle,
-                                style = MaterialTheme.typography.labelMedium,
-                                modifier = Modifier.padding(top = 4.dp)
-                            )
-                        }
-                    },
-                    colors = NavigationBarItemDefaults.colors(
-                        selectedIconColor = MaterialTheme.colorScheme.primary,
-                        selectedTextColor = MaterialTheme.colorScheme.primary,
-                        unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                        indicatorColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f)
-                    ),
-                    modifier = Modifier.weight(animatedWeight)
+                    label = { Text(screenTitle, style = MaterialTheme.typography.labelSmall) },
+                    alwaysShowLabel = true
                 )
             }
         }
@@ -400,64 +316,28 @@ class MainComposeActivity : FragmentActivity() {
     @Composable
     fun getScreenTitle(context: Context, screen: Screen): String {
         return when (screen) {
-            Screen.Sensors -> context.getString(R.string.nav_sensor_data)
-            Screen.Server -> context.getString(R.string.nav_server_config)
-            Screen.Details -> context.getString(R.string.nav_detailed_info)
-            Screen.Privacy -> "持续认证"
+            Screen.Sensors -> "传感器数据"
+            Screen.Server -> "设置"
+            Screen.Details -> "详细信息"
+            Screen.Privacy -> "认证与分析"
         }
     }
-//    private fun checkPermissionsAndGuidance() {
-//        lifecycleScope.launch {
-//            if (NotificationPermissionHelper.shouldRequestNotificationPermission(this@MainComposeActivity)) {
-//                showNotificationPermissionDialog()
-//            }else if (UsageStatsHelper.hasUsageStatsPermission(this@MainComposeActivity)) {
-//                onUsageStatsPermissionGranted()
-//            }else{
-//                // 使用现代化的启动器请求权限
-//                usageStatsLauncher.requestUsageStatsPermission(
-//                    context = this@MainComposeActivity,
-//                    onGranted = {
-//                        runOnUiThread {
-//                            onUsageStatsPermissionGranted()
-//                        }
-//                    },
-//                    onDenied = {
-//                        runOnUiThread {
-//                            Toast.makeText(
-//                                this@MainComposeActivity,
-//                                "您拒绝了使用情况访问权限",
-//                                Toast.LENGTH_SHORT
-//                            ).show()
-//                        }
-//                    }
-//                )
-//            }
-//        }
-//    }
-
-    // 添加显示通知权限对话框的方法
     private fun showNotificationPermissionDialog() {
-        val dialog = NotificationPermissionDialog { grantPermission ->
-            if (grantPermission) {
-                notificationPermissionLauncher.requestNotificationPermission(
-                    this,
-                    onGranted = {
-                        val mIntent= Intent()
-                        mIntent.action = Settings.ACTION_APP_NOTIFICATION_SETTINGS
-                        mIntent.putExtra(Settings.EXTRA_APP_PACKAGE, packageName)
-                        notificationLauncher.launch(mIntent)
-                    },
-                    onDenied = {
-                        isSkipPermissionCheck=true
-                        showUsageStatsPermissionDialog()
-                    }
-                )
-            } else {
-                // 继续检查其他权限
-                checkPermissionsAndGuidance()
+        NotificationPermissionDialog(::onNotificationGuidanceResult)
+            .show(supportFragmentManager, NOTIFICATION_DIALOG_TAG)
+    }
+
+    private fun onNotificationGuidanceResult(granted: Boolean) {
+        if (granted) {
+            try {
+                notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            } catch (e: RuntimeException) {
+                Log.w(TAG, "Unable to request notification permission", e)
+                completePermissionGuidance(PermissionGuidanceStep.NOTIFICATIONS)
             }
+        } else {
+            completePermissionGuidance(PermissionGuidanceStep.NOTIFICATIONS)
         }
-        dialog.show(supportFragmentManager, "notification_permission")
     }
     sealed class Screen(
         val route: String,
@@ -472,8 +352,8 @@ class MainComposeActivity : FragmentActivity() {
 
         object Server : Screen(
             route = "server",
-            selectedIcon = Icons.Filled.CloudQueue,
-            unselectedIcon = Icons.Outlined.CloudQueue
+            selectedIcon = Icons.Filled.SettingsIcon,
+            unselectedIcon = Icons.Outlined.SettingsOutlineIcon
         )
 
         object Details : Screen(
@@ -493,19 +373,17 @@ class MainComposeActivity : FragmentActivity() {
      * 检查权限和引导流程
      */
     private fun checkPermissionsAndGuidance() {
-        lifecycleScope.launch {
-//            showNotificationPermissionDialog()
-            if (NotificationPermissionHelper.shouldRequestNotificationPermission(this@MainComposeActivity)){
-                if (!viewModel.hasPostNotificationsPermission()) {
-                    showNotificationPermissionDialog()
-                }
-            }
-            // 检查Usage Stats权限
-            else if (!viewModel.hasUsageStatsPermission()) {
-                showUsageStatsPermissionDialog()
-            } else {
-                checkBatteryOptimization()
-            }
+        if (!consentAllowsGuidance || isFinishing || isDestroyed || supportFragmentManager.isStateSaved ||
+            !lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) return
+        when (permissionGuidance.nextStep(
+            needsNotifications = NotificationPermissionHelper.shouldRequestNotificationPermission(this),
+            needsUsageStats = !UsageStatsHelper.hasUsageStatsPermission(this),
+            needsBatteryOptimization = !BackgroundExecutionHelper.isBatteryOptimizationExempt(this)
+        )) {
+            PermissionGuidanceStep.NOTIFICATIONS -> showNotificationPermissionDialog()
+            PermissionGuidanceStep.USAGE_STATS -> showUsageStatsPermissionDialog()
+            PermissionGuidanceStep.BATTERY_OPTIMIZATION -> showBatteryOptimizationDialog()
+            null -> Unit
         }
     }
 
@@ -513,29 +391,21 @@ class MainComposeActivity : FragmentActivity() {
      * 显示Usage Stats权限对话框
      */
     private fun showUsageStatsPermissionDialog() {
-        val dialog = UsageStatsPermissionDialog { granted ->
-            if (granted) {
-                // 跳转到设置页面
-                val intent = Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)
-                usageStatsPermissionLauncher.launch(intent)
-            } else {
-                // 继续检查电池优化
-                isSkipPermissionCheck=true
-                checkBatteryOptimization()
-            }
-        }
-        dialog.show(supportFragmentManager, "usage_stats_permission")
+        UsageStatsPermissionDialog(::onUsageStatsGuidanceResult)
+            .show(supportFragmentManager, USAGE_DIALOG_TAG)
     }
 
-    /**
-     * 检查电池优化设置
-     */
-    private fun checkBatteryOptimization() {
-        val prefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
-
-        // 检查是否已请求过电池优化
-        if (!prefs.getBoolean(BATTERY_OPTIMIZATION_REQUESTED, false)) {
-            showBatteryOptimizationDialog()
+    private fun onUsageStatsGuidanceResult(granted: Boolean) {
+        if (granted) {
+            try {
+                usageStatsPermissionLauncher.launch(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS))
+            } catch (e: RuntimeException) {
+                Log.w(TAG, "Unable to open usage access settings", e)
+                UsageStatsHelper.showErrorToast(this)
+                completePermissionGuidance(PermissionGuidanceStep.USAGE_STATS)
+            }
+        } else {
+            completePermissionGuidance(PermissionGuidanceStep.USAGE_STATS)
         }
     }
 
@@ -543,20 +413,42 @@ class MainComposeActivity : FragmentActivity() {
      * 显示电池优化对话框
      */
     private fun showBatteryOptimizationDialog() {
-        val dialog = BatteryOptimizationDialog { disableOptimization ->
-            if (disableOptimization && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                // 跳转到电池优化设置
-                val intent = Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
-                batteryOptimizationLauncher.launch(intent)
-            } else {
-                // 用户跳过或系统不支持
-                getSharedPreferences("app_prefs", MODE_PRIVATE)
-                    .edit()
-                    .putBoolean(BATTERY_OPTIMIZATION_REQUESTED, true)
-                    .apply()
-                isSkipPermissionCheck=true
+        BatteryOptimizationDialog(::onBatteryGuidanceResult)
+            .show(supportFragmentManager, BATTERY_DIALOG_TAG)
+    }
+
+    private fun onBatteryGuidanceResult(disableOptimization: Boolean) {
+        if (disableOptimization) {
+            try {
+                val opened = BackgroundExecutionHelper.openBatterySettings(this) {
+                    batteryOptimizationLauncher.launch(it)
+                }
+                if (!opened) finishBatteryOptimizationGuidance()
+            } catch (e: RuntimeException) {
+                Log.w(TAG, "Unable to open battery optimization settings", e)
+                finishBatteryOptimizationGuidance()
             }
+        } else {
+            finishBatteryOptimizationGuidance()
         }
-        dialog.show(supportFragmentManager, "battery_optimization")
+    }
+
+    private fun finishBatteryOptimizationGuidance() {
+        completePermissionGuidance(PermissionGuidanceStep.BATTERY_OPTIMIZATION)
+    }
+
+    private fun completePermissionGuidance(step: PermissionGuidanceStep) {
+        permissionGuidance.complete(step)
+        // Let the previous DialogFragment dismiss before advancing to the next one.
+        window.decorView.post { checkPermissionsAndGuidance() }
+    }
+
+    private fun attachPermissionDialogListeners() {
+        (supportFragmentManager.findFragmentByTag(NOTIFICATION_DIALOG_TAG) as? NotificationPermissionDialog)
+            ?.setOnResultListener(::onNotificationGuidanceResult)
+        (supportFragmentManager.findFragmentByTag(USAGE_DIALOG_TAG) as? UsageStatsPermissionDialog)
+            ?.setOnResultListener(::onUsageStatsGuidanceResult)
+        (supportFragmentManager.findFragmentByTag(BATTERY_DIALOG_TAG) as? BatteryOptimizationDialog)
+            ?.setOnResultListener(::onBatteryGuidanceResult)
     }
 }

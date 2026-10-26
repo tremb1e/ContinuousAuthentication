@@ -17,11 +17,17 @@ interface SensorCollector {
      * 停止采集传感器数据
      */
     suspend fun stopCollection()
+
+    /** Stop callbacks, drain accepted samples, and complete the processing flow. */
+    suspend fun finishCollection()
     
     /**
      * 获取传感器数据流
      */
     fun getSensorDataFlow(): Flow<SensorSample>
+
+    /** Observe samples without consuming the processing pipeline's queue. */
+    fun getPreviewDataFlow(): Flow<SensorSample>
     
     /**
      * 检查是否正在采集

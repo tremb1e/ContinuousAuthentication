@@ -1,8 +1,9 @@
 package com.continuousauth.utils
-import android.app.Activity
+import android.Manifest
 import android.app.AppOpsManager
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Process
 import android.provider.Settings
@@ -17,25 +18,25 @@ object UsageStatsHelper {
      * 检查是否已授予使用情况访问权限
      */
     fun hasUsageStatsPermission(context: Context): Boolean {
-        val appOps = context.getSystemService(Context.APP_OPS_SERVICE) as AppOpsManager
-        val packageName = context.packageName
-        val uid = Process.myUid()
-
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            val mode = appOps.unsafeCheckOpNoThrow(
-                AppOpsManager.OPSTR_GET_USAGE_STATS,
-                uid,
-                packageName
-            )
-            mode == AppOpsManager.MODE_ALLOWED
-        } else {
-            @Suppress("DEPRECATION")
-            val mode = appOps.checkOpNoThrow(
-                AppOpsManager.OPSTR_GET_USAGE_STATS,
-                uid,
-                packageName
-            )
-            mode == AppOpsManager.MODE_ALLOWED
+        return try {
+            val appOps = context.getSystemService(Context.APP_OPS_SERVICE) as? AppOpsManager
+                ?: return false
+            val mode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                appOps.unsafeCheckOpNoThrow(
+                    AppOpsManager.OPSTR_GET_USAGE_STATS, Process.myUid(), context.packageName
+                )
+            } else {
+                @Suppress("DEPRECATION")
+                appOps.checkOpNoThrow(
+                    AppOpsManager.OPSTR_GET_USAGE_STATS, Process.myUid(), context.packageName
+                )
+            }
+            mode == AppOpsManager.MODE_ALLOWED ||
+                (mode == AppOpsManager.MODE_DEFAULT &&
+                    context.checkSelfPermission(Manifest.permission.PACKAGE_USAGE_STATS) ==
+                    PackageManager.PERMISSION_GRANTED)
+        } catch (_: RuntimeException) {
+            false
         }
     }
 

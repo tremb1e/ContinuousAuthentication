@@ -1,6 +1,6 @@
 package com.continuousauth.detection
 
-import android.app.usage.UsageStats
+import android.app.usage.UsageEvents
 import android.app.usage.UsageStatsManager
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -23,7 +23,10 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.RuntimeEnvironment
+import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
+import org.robolectric.shadows.ShadowUsageStatsManager
 
 /**
  * 异常检测器集成单元测试
@@ -169,7 +172,7 @@ class AnomalyDetectorIntegrationTest {
      * 测试前台应用监控功能
      */
     @Test
-    @Config(sdk = [28])
+    @Config(sdk = [30])
     fun testForegroundAppMonitoring() = testScope.runTest {
         var anomalyDetected = false
         var detectedTrigger: AnomalyTrigger? = null
@@ -187,19 +190,19 @@ class AnomalyDetectorIntegrationTest {
             appCheckIntervalMs = 50L // 快速检查间隔便于测试
         )
         
-        // 模拟UsageStats
-        val mockUsageStats = mockk<UsageStats>()
-        every { mockUsageStats.packageName } returns "com.sensitive.app"
-        every { mockUsageStats.lastTimeUsed } answers { fakeNowMs }
-        every { mockUsageStats.totalTimeInForeground } returns 1000L
-        
-        every {
-            mockUsageStatsManager.queryUsageStats(
-                any(),
-                any(),
-                any()
-            )
-        } returns listOf(mockUsageStats)
+        val platformUsageStats = RuntimeEnvironment.getApplication()
+            .getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
+        shadowOf(platformUsageStats).addEvent(
+            ShadowUsageStatsManager.EventBuilder.buildEvent()
+                .setPackage("com.sensitive.app")
+                .setClass("SensitiveActivity")
+                .setTimeStamp(fakeNowMs - 1)
+                .setEventType(UsageEvents.Event.ACTIVITY_RESUMED)
+                .build()
+        )
+        every { mockUsageStatsManager.queryEvents(any(), any()) } answers {
+            platformUsageStats.queryEvents(firstArg(), secondArg())
+        }
         
         anomalyDetector.updatePolicy(testPolicy)
         anomalyDetector.setOnAnomalyListener(listener)
@@ -216,6 +219,7 @@ class AnomalyDetectorIntegrationTest {
         
         val appTrigger = detectedTrigger as AnomalyTrigger.SensitiveAppEntered
         assertEquals("检测到的包名应该正确", "com.sensitive.app", appTrigger.packageName)
+        verify(atLeast = 1) { mockUsageStatsManager.queryEvents(any(), any()) }
         
         anomalyDetector.stopDetection()
     }
@@ -224,7 +228,7 @@ class AnomalyDetectorIntegrationTest {
      * 测试前台应用监控的异常处理
      */
     @Test
-    @Config(sdk = [28])
+    @Config(sdk = [30])
     fun testForegroundAppMonitoringErrorHandling() = testScope.runTest {
         var anomalyDetected = false
         
@@ -242,7 +246,7 @@ class AnomalyDetectorIntegrationTest {
         
         // 模拟UsageStatsManager抛出异常
         every { 
-            mockUsageStatsManager.queryUsageStats(any(), any(), any())
+            mockUsageStatsManager.queryEvents(any(), any())
         } throws SecurityException("权限不足")
         
         anomalyDetector.updatePolicy(testPolicy)
@@ -256,6 +260,7 @@ class AnomalyDetectorIntegrationTest {
         
         // 异常处理应该防止崩溃，不应该检测到异常
         assertFalse("异常情况下不应该误报异常", anomalyDetected)
+        verify(atLeast = 1) { mockUsageStatsManager.queryEvents(any(), any()) }
         
         anomalyDetector.stopDetection()
     }

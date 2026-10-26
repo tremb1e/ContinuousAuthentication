@@ -9,14 +9,19 @@ plugins {
 
 android {
     namespace = "com.continuousauth"
-    compileSdk = 35 // Support Android 16 (VanillaIceCream)
+    compileSdk = 36 // Android 16
 
     defaultConfig {
         applicationId = "com.continuousauth"
         minSdk = 30  // Compatible with Android 11+
-        targetSdk = 35 // Target Android 16 (VanillaIceCream)
-        versionCode = 1
-        versionName = "1.0"
+        targetSdk = 36
+        versionCode = 4
+        versionName = "1.1.0"
+
+        // MMKV 2.x provides 64-bit libraries; keep every advertised ABI runnable.
+        ndk {
+            abiFilters 'arm64-v8a', 'x86_64'
+        }
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -58,9 +63,33 @@ android {
         buildConfig = true
     }
 
+    testOptions {
+        unitTests.includeAndroidResources = true
+        unitTests.all {
+            maxHeapSize = "2g"
+            if (System.getProperty("os.arch") == "aarch64" &&
+                    System.getProperty("os.name").toLowerCase().contains("linux")) {
+                // Robolectric 4.13's Conscrypt artifact has no Linux ARM64 native library.
+                systemProperty "robolectric.conscryptMode", "OFF"
+            }
+        }
+    }
+
     sourceSets {
         getByName("main") {
             proto.srcDir("src/main/proto")
+        }
+        getByName("androidTest") {
+            // The legacy suite still references removed transmission-mode APIs.
+            // Select the current SQLite regression suite explicitly on a connected device.
+            if (providers.gradleProperty("uiRedesignTestsOnly").orNull == "true") {
+                java.setSrcDirs(["src/uiRedesignAndroidTest/java", "src/backgroundUploadAndroidTest/java"])
+            } else if (providers.gradleProperty("backgroundUploadTestsOnly").orNull == "true") {
+                java.setSrcDirs(["src/backgroundUploadAndroidTest/java"])
+            } else {
+                java.srcDir("src/backgroundUploadAndroidTest/java")
+                java.srcDir("src/uiRedesignAndroidTest/java")
+            }
         }
     }
 }
@@ -167,8 +196,11 @@ dependencies {
     testImplementation(libs.robolectric)
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation("io.mockk:mockk:1.13.11")
+    androidTestImplementation(platform("androidx.compose:compose-bom:2024.02.00"))
+    androidTestImplementation("androidx.compose.ui:ui-test-junit4")
     androidTestImplementation(libs.androidx.test.ext.junit)
     androidTestImplementation(libs.androidx.test.espresso.core)
+    androidTestImplementation(libs.kotlinx.coroutines.test)
     androidTestImplementation(libs.hilt.android.testing)
     kspAndroidTest(libs.hilt.compiler)
     // MMKV 静态库

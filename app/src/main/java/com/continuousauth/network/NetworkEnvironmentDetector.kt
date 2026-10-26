@@ -2,6 +2,7 @@ package com.continuousauth.network
 
 import android.content.Context
 import android.Manifest
+import android.annotation.SuppressLint
 import android.content.pm.PackageManager
 import android.net.*
 import android.net.wifi.WifiManager
@@ -222,6 +223,7 @@ class NetworkEnvironmentDetector @Inject constructor(
     /**
      * 获取网络类型字符串
      */
+    @SuppressLint("MissingPermission") // Guarded by hasPhoneStatePermission; revoked access falls back to UNKNOWN.
     private fun getNetworkType(): String {
         if (!hasPhoneStatePermission()) {
             Log.w(TAG, "缺少电话状态权限，返回UNKNOWN网络类型")
@@ -310,13 +312,9 @@ class NetworkEnvironmentDetector @Inject constructor(
      * 检查是否为WiFi网络
      */
     fun isWifiConnected(): Boolean {
-        return when (currentNetworkState) {
-            NetworkState.WIFI_EXCELLENT,
-            NetworkState.WIFI_GOOD,
-            NetworkState.WIFI_POOR,
-            NetworkState.WIFI_UNKNOWN -> true
-            else -> false
-        }
+        val network = connectivityManager.activeNetwork ?: return false
+        return connectivityManager.getNetworkCapabilities(network)
+            ?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
     }
     
     /**

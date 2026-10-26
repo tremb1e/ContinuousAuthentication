@@ -7,6 +7,8 @@
         <exclude domain="sharedpref" path="crypto_preferences.xml"/>
         <exclude domain="sharedpref" path="session_preferences.xml"/>
         <exclude domain="database" path="sensor_data.db"/>
+        <exclude domain="database" path="auth_history.db"/>
+        <exclude domain="sharedpref" path="authentication_state.xml"/>
         <exclude domain="file" path="encrypted_queue/"/>
     </cloud-backup>
     
@@ -17,6 +19,8 @@
         <exclude domain="sharedpref" path="crypto_preferences.xml"/>
         <exclude domain="sharedpref" path="session_preferences.xml"/>
         <exclude domain="database" path="sensor_data.db"/>
+        <exclude domain="database" path="auth_history.db"/>
+        <exclude domain="sharedpref" path="authentication_state.xml"/>
         <exclude domain="file" path="encrypted_queue/"/>
     </device-transfer>
 </data-extraction-rules>

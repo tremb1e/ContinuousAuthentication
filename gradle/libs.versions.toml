@@ -1,8 +1,8 @@
 # gradle/libs.versions.toml
 [versions]
 # Core Toolchain
-agp = "8.7.3"
-gradle = "9.0.0"
+agp = "8.11.1"
+gradle = "8.13"
 kotlin = "2.0.21"
 ksp = "2.0.21-1.0.28"
 protobufPlugin = "0.9.4"

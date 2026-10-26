@@ -1,979 +1,628 @@
 package com.continuousauth.ui.compose.screens
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Bolt
+import androidx.compose.material.icons.filled.Apps
+import androidx.compose.material.icons.filled.ArrowForward
 import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.ErrorOutline
+import androidx.compose.material.icons.filled.DateRange
+import androidx.compose.material.icons.filled.HelpOutline
 import androidx.compose.material.icons.filled.History
-import androidx.compose.material.icons.filled.Insights
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Security
-import androidx.compose.material.icons.filled.SignalCellularAlt
 import androidx.compose.material.icons.filled.Stop
-import androidx.compose.material.icons.outlined.Wifi
-import androidx.compose.material3.*
+import androidx.compose.material.icons.filled.WarningAmber
+import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DateRangePicker
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.SelectableDates
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberDateRangePickerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.livedata.observeAsState
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.livedata.observeAsState
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.continuousauth.ui.AuthAnalysisLogEntry
-import com.continuousauth.ui.AuthAnalysisState
-import com.continuousauth.network.ConnectionStatus
+import com.continuousauth.auth.AuthHistoryEntry
+import com.continuousauth.privacy.ConsentState
+import com.continuousauth.settings.ProtectionMode
 import com.continuousauth.ui.AuthDecision
+import com.continuousauth.ui.AuthHistoryBucket
+import com.continuousauth.ui.AuthHistoryDateRange
+import com.continuousauth.ui.AuthHistoryPeriod
+import com.continuousauth.ui.AuthHistoryReport
 import com.continuousauth.ui.ContinuousAuthUiState
 import com.continuousauth.ui.MainViewModel
-import com.continuousauth.ui.theme.ExtendedColors
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
+import com.continuousauth.ui.authHistoryAppName
+import com.continuousauth.ui.authHistoryDateRange
+import com.continuousauth.ui.buildAuthHistoryReport
+import com.continuousauth.ui.compose.components.ExpandableSection
+import com.continuousauth.ui.formatAuthHistoryTime
+import com.continuousauth.ui.summarizeAuthHistoryApps
+import kotlinx.coroutines.delay
+import java.time.Instant
+import java.time.LocalDate
+import java.time.ZoneId
+import java.time.ZoneOffset
+import java.time.format.DateTimeFormatter
 
-/**
- * 持续认证页面
- * 展示服务端推理结果与实时状态
- */
-@OptIn(ExperimentalMaterial3Api::class)
+/** Retains the original route entry while consent itself now lives in Settings. */
 @Composable
 fun PrivacySettingsScreen(
     onNavigateBack: () -> Unit,
-    viewModel: MainViewModel
+    viewModel: MainViewModel,
+    onNavigateSettings: () -> Unit = onNavigateBack,
+    onReviewConsent: () -> Unit = onNavigateSettings,
+    onEnableUsageAccess: () -> Unit = onNavigateSettings
 ) {
     val authUiState by viewModel.authUiState.collectAsStateWithLifecycle()
-    val isEncryptedUploading by viewModel.isEncryptedUploading.observeAsState(false)
-    val connectionStatus by viewModel.connectionStatus.observeAsState(ConnectionStatus.DISCONNECTED)
-    val sessionId by viewModel.sessionId.observeAsState("")
-
-    val scrollState = rememberScrollState()
-    var history by remember { mutableStateOf(listOf<AuthDecisionHistory>()) }
-    LaunchedEffect(authUiState.lastUpdateTime) {
-        if (authUiState.lastUpdateTime > 0) {
-            val updated = listOf(
-                AuthDecisionHistory(
-                    decision = authUiState.lastDecision,
-                    message = authUiState.lastDecisionMessage,
-                    timestamp = authUiState.lastUpdateTime
-                )
-            )
-            history = (updated + history).take(5)
+    val protectionMode by viewModel.protectionMode.collectAsStateWithLifecycle()
+    val history by viewModel.authHistory.collectAsStateWithLifecycle()
+    val consent by viewModel.consentState.observeAsState(ConsentState.UNKNOWN)
+    val lifecycleOwner = LocalLifecycleOwner.current
+    var hasUsageAccess by remember { mutableStateOf(viewModel.isUsageStatsPermissionGranted()) }
+    var nowMs by remember { mutableStateOf(System.currentTimeMillis()) }
+    DisposableEffect(lifecycleOwner, viewModel) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                hasUsageAccess = viewModel.isUsageStatsPermissionGranted()
+                nowMs = System.currentTimeMillis()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(60_000)
+            nowMs = System.currentTimeMillis()
         }
     }
-
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(scrollState)
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
-    ) {
-        ContinuousAuthHero(authUiState)
-
-        AuthControlCard(
-            authUiState = authUiState,
-            isEncryptedUploading = isEncryptedUploading,
-            connectionStatus = connectionStatus,
-            onStartAuth = { viewModel.startAuthentication() }
-        )
-
-        RealTimeDecisionCard(authUiState = authUiState)
-
-        PipelineStatusCard(
-            isEncryptedUploading = isEncryptedUploading,
-            connectionStatus = connectionStatus,
-            sessionId = sessionId,
-            authUiState = authUiState
-        )
-
-        AuthResultAnalysisCard(
-            analysisState = authUiState.authAnalysis,
-            onStart = { viewModel.startAuthAnalysis() },
-            onStop = { viewModel.stopAuthAnalysis() }
-        )
-
-        HistoryCard(
-            history = history,
-            analysisLogs = authUiState.authAnalysis.logs
-        )
-
-        Spacer(modifier = Modifier.height(24.dp))
-    }
-}
-
-private data class AuthDecisionHistory(
-    val decision: AuthDecision,
-    val message: String,
-    val timestamp: Long
-)
-
-@Composable
-private fun ContinuousAuthHero(
-    authUiState: ContinuousAuthUiState
-) {
-    val statusColor = when (authUiState.lastDecision) {
-        AuthDecision.NORMAL -> ExtendedColors.success
-        AuthDecision.ABNORMAL -> MaterialTheme.colorScheme.error
-        AuthDecision.UNKNOWN -> MaterialTheme.colorScheme.secondary
-    }
-    val gradient = Brush.linearGradient(
-        colors = listOf(
-            statusColor.copy(alpha = 0.18f),
-            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
-        )
+    AuthenticationContent(
+        authUiState = authUiState,
+        protectionMode = protectionMode,
+        history = history,
+        consentGranted = consent == ConsentState.GRANTED,
+        hasUsageAccess = hasUsageAccess,
+        onStart = viewModel::startAuthentication,
+        onStop = viewModel::stopAuthentication,
+        onOpenSettings = onNavigateSettings,
+        onReviewConsent = onReviewConsent,
+        onEnableUsageAccess = onEnableUsageAccess,
+        nowMs = nowMs
     )
-
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(24.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(gradient)
-                .padding(20.dp),
-            horizontalAlignment = Alignment.Start
-        ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                Icon(
-                    imageVector = Icons.Filled.Security,
-                    contentDescription = null,
-                    tint = statusColor,
-                    modifier = Modifier.size(28.dp)
-                )
-                Column {
-                    Text(
-                        text = "持续认证",
-                        style = MaterialTheme.typography.headlineSmall,
-                        fontWeight = FontWeight.Black
-                    )
-                    Text(
-                        text = "服务端推理 · 端侧实时防护",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.height(12.dp))
-            DecisionBadge(
-                decision = authUiState.lastDecision,
-                hasResult = authUiState.lastUpdateTime > 0
-            )
-
-            Spacer(modifier = Modifier.height(12.dp))
-            val modelLabel = authUiState.modelVersion.ifBlank { "待同步" }
-            val windowLabel = if (authUiState.windowSizeSec > 0f) {
-                String.format(Locale.getDefault(), "%.1fs", authUiState.windowSizeSec)
-            } else {
-                "--"
-            }
-            val decisionLabel = if (authUiState.decisionTimeSec > 0f) {
-                String.format(Locale.getDefault(), "%.1fs", authUiState.decisionTimeSec)
-            } else {
-                "--"
-            }
-            Text(
-                text = "模型版本: $modelLabel · w=$windowLabel · T=$decisionLabel",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-    }
 }
 
+/** State-driven content also used by the on-device UI regression suite. */
 @Composable
-private fun AuthControlCard(
+fun AuthenticationContent(
     authUiState: ContinuousAuthUiState,
-    isEncryptedUploading: Boolean,
-    connectionStatus: ConnectionStatus,
-    onStartAuth: () -> Unit
-) {
-    val canStart = connectionStatus == ConnectionStatus.CONNECTED && isEncryptedUploading
-    val statusLabel = if (authUiState.authActive) "认证中" else "未启动"
-    val statusColor = if (authUiState.authActive) ExtendedColors.success else MaterialTheme.colorScheme.secondary
-    val actionLabel = if (authUiState.authActive) "重新认证" else "开始认证"
-    val windowLabel = if (authUiState.windowSizeSec > 0f) {
-        String.format(Locale.getDefault(), "%.1fs", authUiState.windowSizeSec)
-    } else {
-        "--"
-    }
-    val decisionLabel = if (authUiState.decisionTimeSec > 0f) {
-        String.format(Locale.getDefault(), "%.1fs", authUiState.decisionTimeSec)
-    } else {
-        "--"
-    }
-    val helperText = when {
-        authUiState.authMessage.isNotBlank() -> authUiState.authMessage
-        !canStart -> "请先连接服务器并开启加密上传"
-        else -> "点击开始认证，服务端将开始推理"
-    }
-
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(20.dp)
-    ) {
-        Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        imageVector = Icons.Filled.Security,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = "认证控制",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-                StatusPill(text = statusLabel, color = statusColor)
-            }
-
-            Text(
-                text = "窗口 $windowLabel · 决策 $decisionLabel",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                val connectionColor = when (connectionStatus) {
-                    ConnectionStatus.CONNECTED -> ExtendedColors.success
-                    ConnectionStatus.CONNECTING, ConnectionStatus.RECONNECTING -> MaterialTheme.colorScheme.secondary
-                    else -> MaterialTheme.colorScheme.error
-                }
-                StatusChip(
-                    icon = Icons.Outlined.Wifi,
-                    label = if (connectionStatus == ConnectionStatus.CONNECTED) "已连接" else "未连接",
-                    color = connectionColor
-                )
-                StatusChip(
-                    icon = Icons.Filled.Bolt,
-                    label = if (isEncryptedUploading) "加密上传中" else "未上传",
-                    color = if (isEncryptedUploading) ExtendedColors.success else MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                StatusChip(
-                    icon = Icons.Filled.Security,
-                    label = if (authUiState.authActive) "认证中" else "未认证",
-                    color = statusColor
-                )
-            }
-
-            Button(
-                onClick = onStartAuth,
-                enabled = canStart,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Icon(Icons.Filled.PlayArrow, contentDescription = null)
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(actionLabel)
-            }
-
-            if (helperText.isNotBlank()) {
-                Surface(
-                    shape = RoundedCornerShape(12.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant
-                ) {
-                    Text(
-                        text = helperText,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(12.dp)
-                    )
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun RealTimeDecisionCard(
-    authUiState: ContinuousAuthUiState
-) {
-    val hasResult = authUiState.lastUpdateTime > 0
-    val statusColor = when (authUiState.lastDecision) {
-        AuthDecision.NORMAL -> ExtendedColors.success
-        AuthDecision.ABNORMAL -> MaterialTheme.colorScheme.error
-        AuthDecision.UNKNOWN -> MaterialTheme.colorScheme.secondary
-    }
-    val decisionLabel = when (authUiState.lastDecision) {
-        AuthDecision.NORMAL -> "认证通过"
-        AuthDecision.ABNORMAL -> "认证不通过"
-        AuthDecision.UNKNOWN -> "等待推理结果"
-    }
-    val decisionMessage = authUiState.lastDecisionMessage.ifBlank {
-        if (hasResult) "--" else "等待推理结果"
-    }
-    val messageColor = if (authUiState.lastDecision == AuthDecision.ABNORMAL) {
-        statusColor
-    } else {
-        MaterialTheme.colorScheme.onSurfaceVariant
-    }
-    val latencyLabel = authUiState.serverLatencyMs?.let { "${it}ms" } ?: "--"
-    val scoreLabel = if (authUiState.scoreValid) {
-        String.format(Locale.getDefault(), "%.3f", authUiState.lastScore)
-    } else {
-        "--"
-    }
-    val thresholdLabel = if (authUiState.scoreValid) {
-        String.format(Locale.getDefault(), "%.3f", authUiState.lastThreshold)
-    } else {
-        "--"
-    }
-    val windowLabel = if (authUiState.lastWindowId > 0L) authUiState.lastWindowId.toString() else "--"
-
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(20.dp)
-    ) {
-        Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        imageVector = Icons.Filled.Insights,
-                        contentDescription = null,
-                        tint = statusColor
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = "实时推理结果",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-                Text(
-                    text = "延迟 $latencyLabel",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column {
-                    Text(
-                        text = decisionLabel,
-                        style = MaterialTheme.typography.displaySmall.copy(fontWeight = FontWeight.ExtraBold),
-                        color = statusColor
-                    )
-                    Text(
-                        text = decisionMessage,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = messageColor
-                    )
-                }
-
-                Column(
-                    horizontalAlignment = Alignment.End
-                ) {
-                    Text(
-                        text = "上次更新: ${formatTime(authUiState.lastUpdateTime)}",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                ResultMetric(
-                    label = "分数",
-                    value = scoreLabel,
-                    modifier = Modifier.weight(1f)
-                )
-                ResultMetric(
-                    label = "阈值",
-                    value = thresholdLabel,
-                    modifier = Modifier.weight(1f)
-                )
-                ResultMetric(
-                    label = "窗口",
-                    value = windowLabel,
-                    modifier = Modifier.weight(1f)
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun ResultMetric(
-    label: String,
-    value: String,
-    modifier: Modifier = Modifier
-) {
-    Surface(
-        modifier = modifier,
-        shape = RoundedCornerShape(12.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant
-    ) {
-        Column(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-            verticalArrangement = Arrangement.spacedBy(2.dp)
-        ) {
-            Text(
-                text = label,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Text(
-                text = value,
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onSurface
-            )
-        }
-    }
-}
-
-@Composable
-private fun StatusPill(text: String, color: Color) {
-    Surface(
-        shape = RoundedCornerShape(999.dp),
-        color = color.copy(alpha = 0.12f)
-    ) {
-        Text(
-            text = text,
-            style = MaterialTheme.typography.labelMedium,
-            color = color,
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
-        )
-    }
-}
-
-@Composable
-private fun StatusChip(
-    icon: ImageVector,
-    label: String,
-    color: Color
-) {
-    Surface(
-        shape = RoundedCornerShape(999.dp),
-        color = color.copy(alpha = 0.12f)
-    ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = null,
-                tint = color,
-                modifier = Modifier.size(14.dp)
-            )
-            Text(
-                text = label,
-                style = MaterialTheme.typography.labelMedium,
-                color = color
-            )
-        }
-    }
-}
-
-@Composable
-private fun PipelineStatusCard(
-    isEncryptedUploading: Boolean,
-    connectionStatus: ConnectionStatus,
-    sessionId: String?,
-    authUiState: ContinuousAuthUiState
-) {
-    val connectionText = when (connectionStatus) {
-        ConnectionStatus.CONNECTED -> "服务端已连通"
-        ConnectionStatus.CONNECTING -> "正在连接"
-        ConnectionStatus.RECONNECTING -> "重连中"
-        else -> "未连接"
-    }
-    val connectionColor = when (connectionStatus) {
-        ConnectionStatus.CONNECTED -> ExtendedColors.success
-        ConnectionStatus.CONNECTING, ConnectionStatus.RECONNECTING -> MaterialTheme.colorScheme.secondary
-        else -> MaterialTheme.colorScheme.error
-    }
-
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(20.dp)
-    ) {
-        Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Icon(Icons.Filled.SignalCellularAlt, contentDescription = null, tint = connectionColor)
-                Text(
-                    text = "推理通路状态",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold
-                )
-            }
-
-            StatusRow(
-                icon = Icons.Outlined.Wifi,
-                label = "传输通道",
-                value = connectionText,
-                valueColor = connectionColor
-            )
-
-            StatusRow(
-                icon = Icons.Filled.Bolt,
-                label = "加密上传",
-                value = if (isEncryptedUploading) "运行中" else "未启动",
-                valueColor = if (isEncryptedUploading) ExtendedColors.success else MaterialTheme.colorScheme.onSurfaceVariant
-            )
-
-            StatusRow(
-                icon = Icons.Filled.CheckCircle,
-                label = "认证状态",
-                value = if (authUiState.authActive) "运行中" else "未启动",
-                valueColor = if (authUiState.authActive) ExtendedColors.success else MaterialTheme.colorScheme.onSurfaceVariant
-            )
-
-            StatusRow(
-                icon = Icons.Filled.Insights,
-                label = "推理延迟",
-                value = authUiState.serverLatencyMs?.let { "${it}ms" } ?: "--",
-                valueColor = MaterialTheme.colorScheme.onSurface
-            )
-
-            StatusRow(
-                icon = Icons.Filled.Insights,
-                label = "服务端时间",
-                value = authUiState.serverTimestampMs?.let { formatTime(it) } ?: "--",
-                valueColor = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-
-            StatusRow(
-                icon = Icons.Filled.CheckCircle,
-                label = "模型版本",
-                value = authUiState.modelVersion.ifBlank { "待同步" },
-                valueColor = MaterialTheme.colorScheme.onSurface
-            )
-
-            sessionId?.takeIf { it.isNotBlank() }?.let {
-                StatusRow(
-                    icon = Icons.Filled.History,
-                    label = "会话ID",
-                    value = it.take(8) + "...",
-                    valueColor = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-
-            authUiState.authMessage.takeIf { it.isNotBlank() }?.let { message ->
-                Text(
-                    text = message,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun HistoryCard(
-    history: List<AuthDecisionHistory>,
-    analysisLogs: List<AuthAnalysisLogEntry>
-) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(20.dp)
-    ) {
-        Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Icon(
-                    imageVector = Icons.Filled.History,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary
-                )
-                Text(
-                    text = "近期判定",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold
-                )
-            }
-
-            if (history.isEmpty()) {
-                Text(
-                    text = "等待推理结果，暂无历史记录。",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            } else {
-                history.forEach { item ->
-                    DecisionHistoryRow(item)
-                }
-            }
-
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-
-            Text(
-                text = "认证结果分析日志",
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.Bold
-            )
-
-            if (analysisLogs.isEmpty()) {
-                Text(
-                    text = "暂无认证结果分析记录。",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            } else {
-                analysisLogs.forEach { item ->
-                    AuthAnalysisLogRow(item)
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun AuthResultAnalysisCard(
-    analysisState: AuthAnalysisState,
+    protectionMode: ProtectionMode,
+    history: List<AuthHistoryEntry>,
+    consentGranted: Boolean,
+    hasUsageAccess: Boolean,
     onStart: () -> Unit,
-    onStop: () -> Unit
+    onStop: () -> Unit,
+    onOpenSettings: () -> Unit,
+    onReviewConsent: () -> Unit,
+    onEnableUsageAccess: () -> Unit,
+    nowMs: Long = System.currentTimeMillis()
 ) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(20.dp)
-    ) {
+    Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+        LazyColumn(
+            modifier = Modifier.widthIn(max = 800.dp).fillMaxSize().align(Alignment.TopCenter)
+                .testTag("authentication_screen"),
+            contentPadding = PaddingValues(16.dp, 20.dp, 16.dp, 32.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            item {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("认证与分析", style = MaterialTheme.typography.headlineSmall,
+                        fontWeight = FontWeight.Bold, modifier = Modifier.semantics { heading() })
+                    Text("了解当前状态，回顾最近 7 天的认证记录", style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+            item {
+                AuthenticationStatusCard(authUiState, protectionMode, consentGranted,
+                    onStart, onStop, onOpenSettings, onReviewConsent)
+            }
+            if (authUiState.lastUpdateTime > 0 && authUiState.lastDecision == AuthDecision.ABNORMAL &&
+                protectionMode != ProtectionMode.OFF) {
+                item { AuthenticationWarning(authUiState.lastUpdateTime, protectionMode) }
+            }
+            item {
+                AuthenticationHistoryCard(history, hasUsageAccess, nowMs, onEnableUsageAccess,
+                    if (protectionMode == ProtectionMode.OFF) onOpenSettings else if (!consentGranted) onReviewConsent else onStart,
+                    when {
+                        protectionMode == ProtectionMode.OFF -> "前往防护设置"
+                        !consentGranted -> "查看知情同意"
+                        else -> "开始认证"
+                    },
+                    showStartAction = !authUiState.authActive && !authUiState.isStarting)
+            }
+            item {
+                ExpandableSection("authentication_help", "如何使用持续认证", "开始后，像平常一样使用手机即可", Icons.Filled.HelpOutline) {
+                    HelpStep("1", "先了解并选择", "在设置中阅读知情同意，选择允许采集的数据和防护方式。")
+                    HelpStep("2", "轻点开始认证", "应用会自动准备连接。准备完成后，继续正常使用手机，系统会持续判断使用习惯是否相符。")
+                    HelpStep("3", "随时回来查看", "下方统计自动保存最近 7 天的结果。没有记录时，表示尚未收到结果，不能据此判断是否通过。")
+                    HorizontalDivider()
+                    Text("偶尔不通过可能与姿势、场景变化或数据不足有关，不代表一定有人冒用。仅监测模式不会弹窗或限制手机使用。",
+                        style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AuthenticationStatusCard(
+    state: ContinuousAuthUiState,
+    mode: ProtectionMode,
+    consentGranted: Boolean,
+    onStart: () -> Unit,
+    onStop: () -> Unit,
+    onOpenSettings: () -> Unit,
+    onReviewConsent: () -> Unit
+) {
+    val enabled = mode != ProtectionMode.OFF
+    val running = state.authActive && enabled && consentGranted
+    val preparing = state.isStarting && enabled && consentGranted
+    val title = when {
+        !consentGranted -> "先了解数据使用"
+        !enabled -> "持续认证已关闭"
+        preparing -> "正在准备认证"
+        running -> "正在持续认证"
+        else -> "准备好，开始认证"
+    }
+    val explanation = when {
+        !consentGranted -> "阅读知情同意后，由你决定是否开启。你也可以先浏览应用。"
+        !enabled -> "当前不会进行身份判断。选择防护方式后，就可以开始认证。"
+        preparing -> "正在连接并准备所需数据，请稍候。你可以随时取消。"
+        running -> "继续像平常一样使用手机，认证结果会自动记录在下方。"
+        else -> "根据你使用手机时的动作习惯，持续判断是否仍由你本人使用。"
+    }
+    Card(shape = RoundedCornerShape(24.dp), modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
         Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+            Modifier.fillMaxWidth().background(Brush.verticalGradient(listOf(
+                MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f),
+                MaterialTheme.colorScheme.surface))).padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        imageVector = Icons.Filled.Insights,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = "认证结果分析",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
-                    )
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Surface(shape = CircleShape, color = MaterialTheme.colorScheme.primaryContainer) {
+                    Icon(Icons.Filled.Security, null, Modifier.padding(12.dp).size(28.dp),
+                        tint = MaterialTheme.colorScheme.onPrimaryContainer)
                 }
-                StatusPill(
-                    text = if (analysisState.isRunning) "记录中" else "已停止",
-                    color = if (analysisState.isRunning) ExtendedColors.success else MaterialTheme.colorScheme.secondary
-                )
+                Text(title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold,
+                    modifier = Modifier.weight(1f).semantics { liveRegion = LiveRegionMode.Polite })
             }
-
-            Surface(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(16.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant
-            ) {
-                Column(
-                    modifier = Modifier.padding(10.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        AnalysisMetric(
-                            label = "运行时间",
-                            value = formatDuration(analysisState.elapsedMs),
-                            modifier = Modifier.weight(1f)
-                        )
-                        AnalysisMetric(
-                            label = "通过率",
-                            value = formatPassRate(analysisState.passRatePercent, analysisState.totalCount),
-                            modifier = Modifier.weight(1f)
-                        )
-                    }
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        AnalysisMetric(
-                            label = "通过",
-                            value = analysisState.passCount.toString(),
-                            valueColor = ExtendedColors.success,
-                            modifier = Modifier.weight(1f)
-                        )
-                        AnalysisMetric(
-                            label = "不通过",
-                            value = analysisState.failCount.toString(),
-                            valueColor = MaterialTheme.colorScheme.error,
-                            modifier = Modifier.weight(1f)
-                        )
+            Text(explanation, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (preparing) {
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth().testTag("authentication_preparing"))
+            }
+            if (running && state.lastUpdateTime > 0 && state.lastDecision == AuthDecision.NORMAL) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Filled.CheckCircle, null, tint = MaterialTheme.colorScheme.primary)
+                    Column {
+                        Text("最近一次认证通过", fontWeight = FontWeight.SemiBold)
+                        Text(formatAuthHistoryTime(state.lastUpdateTime), style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
+            } else if (running && (state.lastUpdateTime == 0L || state.lastDecision == AuthDecision.UNKNOWN)) {
+                Text("尚未收到认证结果，请继续正常使用手机。", style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                Button(
-                    onClick = onStart,
-                    enabled = !analysisState.isRunning,
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Icon(Icons.Filled.PlayArrow, contentDescription = null)
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("开始")
-                }
-                OutlinedButton(
-                    onClick = onStop,
-                    enabled = analysisState.isRunning,
-                    modifier = Modifier.weight(1f),
-                    colors = ButtonDefaults.outlinedButtonColors(
-                        contentColor = MaterialTheme.colorScheme.error
-                    )
-                ) {
-                    Icon(Icons.Filled.Stop, contentDescription = null)
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("停止")
+            if (state.authMessage.isNotBlank() && enabled && consentGranted) {
+                Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)) {
+                    Text(state.authMessage, Modifier.fillMaxWidth().padding(12.dp).semantics { liveRegion = LiveRegionMode.Polite },
+                        style = MaterialTheme.typography.bodyMedium)
                 }
             }
+            val action: () -> Unit = when {
+                !consentGranted -> onReviewConsent
+                !enabled -> onOpenSettings
+                preparing || running -> onStop
+                else -> onStart
+            }
+            val label = when {
+                !consentGranted -> "查看知情同意"
+                !enabled -> "前往防护设置"
+                preparing -> "取消准备"
+                running -> "停止认证"
+                else -> "开始认证"
+            }
+            Button(onClick = action, modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp).testTag("authentication_action")) {
+                Icon(if (running || preparing) Icons.Filled.Stop else Icons.Filled.PlayArrow, null)
+                Spacer(Modifier.width(8.dp))
+                Text(label, style = MaterialTheme.typography.titleMedium, textAlign = TextAlign.Center)
+            }
+            Surface(onClick = onOpenSettings, shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.surface.copy(alpha = 0.7f)) {
+                Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Column(Modifier.weight(1f)) {
+                        Text("防护方式：${protectionModeLabel(mode)}", style = MaterialTheme.typography.labelLarge)
+                        Text(when (mode) {
+                            ProtectionMode.OFF -> "关闭后，不启用持续认证"
+                            ProtectionMode.MONITOR_ONLY -> "仅记录结果，不弹窗、不限制使用"
+                            ProtectionMode.ALERT -> "认证不通过时，通过系统弹窗提醒"
+                        }, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    Icon(Icons.Filled.ArrowForward, contentDescription = "调整防护方式", modifier = Modifier.size(20.dp))
+                }
+            }
+            if (running || preparing) {
+                Text("停止认证后，数据采集仍按设置运行；可在设置中关闭采集。", style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
         }
     }
 }
 
+private fun protectionModeLabel(mode: ProtectionMode): String = when (mode) {
+    ProtectionMode.OFF -> "关闭"
+    ProtectionMode.MONITOR_ONLY -> "仅监测"
+    ProtectionMode.ALERT -> "即时警示"
+}
+
 @Composable
-private fun AnalysisMetric(
-    label: String,
-    value: String,
-    modifier: Modifier = Modifier,
-    valueColor: Color = MaterialTheme.colorScheme.onSurface
-) {
-    Surface(
-        modifier = modifier,
-        shape = RoundedCornerShape(12.dp),
-        color = MaterialTheme.colorScheme.surface
-    ) {
-        Column(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-            verticalArrangement = Arrangement.spacedBy(2.dp)
-        ) {
-            Text(
-                text = label,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Text(
-                text = value,
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold,
-                color = valueColor
-            )
+private fun AuthenticationWarning(timestampMs: Long, mode: ProtectionMode) {
+    Card(modifier = Modifier.fillMaxWidth().testTag("authentication_warning"), shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Filled.WarningAmber, null, tint = MaterialTheme.colorScheme.onErrorContainer)
+                Text("最近一次认证未通过", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold,
+                    modifier = Modifier.weight(1f))
+            }
+            Text(formatAuthHistoryTime(timestampMs), style = MaterialTheme.typography.labelMedium)
+            Text("使用动作与平时不太一致。若是你本人，继续正常使用即可；这次结果已记录。",
+                style = MaterialTheme.typography.bodyMedium)
+            Text(if (mode == ProtectionMode.MONITOR_ONLY) "当前为仅监测模式，不会弹窗或限制使用。"
+                else "当前为即时警示模式。系统弹窗需要在设置中允许显示在其他应用上层。",
+                style = MaterialTheme.typography.bodySmall)
         }
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun DecisionBadge(
-    decision: AuthDecision,
-    hasResult: Boolean
+private fun AuthenticationHistoryCard(
+    history: List<AuthHistoryEntry>,
+    hasUsageAccess: Boolean,
+    nowMs: Long,
+    onEnableUsageAccess: () -> Unit,
+    onStartAction: () -> Unit,
+    startActionLabel: String,
+    showStartAction: Boolean
 ) {
-    val (label, color, icon) = when (decision) {
-        AuthDecision.NORMAL -> Triple("认证通过", ExtendedColors.success, Icons.Filled.CheckCircle)
-        AuthDecision.ABNORMAL -> Triple("认证不通过", MaterialTheme.colorScheme.error, Icons.Filled.ErrorOutline)
-        AuthDecision.UNKNOWN -> Triple("待判定", MaterialTheme.colorScheme.secondary, Icons.Filled.Insights)
+    val zoneId = ZoneId.systemDefault()
+    val today = Instant.ofEpochMilli(nowMs).atZone(zoneId).toLocalDate()
+    var periodName by rememberSaveable { mutableStateOf(AuthHistoryPeriod.TODAY.name) }
+    var customStartDay by rememberSaveable { mutableStateOf(today.toEpochDay()) }
+    var customEndDay by rememberSaveable { mutableStateOf(today.toEpochDay()) }
+    var showDatePicker by rememberSaveable { mutableStateOf(false) }
+    var selectedBucketStart by rememberSaveable { mutableStateOf<Long?>(null) }
+    var eventLimit by rememberSaveable { mutableStateOf(20) }
+    val period = AuthHistoryPeriod.valueOf(periodName)
+    val range = authHistoryDateRange(period, today, LocalDate.ofEpochDay(customStartDay), LocalDate.ofEpochDay(customEndDay))
+    val report = remember(history, range, nowMs, zoneId) { buildAuthHistoryReport(history, range, nowMs, zoneId) }
+    val selectedBucket = report.buckets.firstOrNull { it.startMs == selectedBucketStart }
+    val selectedEntries = remember(report, selectedBucket) {
+        if (selectedBucket == null) report.entries else report.entries.filter {
+            it.timestampMs >= selectedBucket.startMs && it.timestampMs < selectedBucket.endExclusiveMs
+        }
+    }
+    val failureCount = selectedEntries.count { !it.accepted }
+    val appSummary = remember(selectedEntries) { summarizeAuthHistoryApps(selectedEntries) }
+    val stackAppCount = LocalDensity.current.fontScale > 1.3f
+    LaunchedEffect(range, selectedBucketStart) { eventLimit = 20 }
+
+    if (showDatePicker) {
+        HistoryDateRangeDialog(today, range, onDismiss = { showDatePicker = false }) { selectedRange ->
+            customStartDay = selectedRange.start.toEpochDay()
+            customEndDay = selectedRange.endInclusive.toEpochDay()
+            periodName = AuthHistoryPeriod.CUSTOM.name
+            selectedBucketStart = null
+            showDatePicker = false
+        }
     }
 
-    Surface(
-        shape = RoundedCornerShape(50),
-        color = color.copy(alpha = 0.12f)
-    ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Icon(icon, contentDescription = null, tint = color)
-            Column {
-                Text(text = label, color = color, fontWeight = FontWeight.Bold)
-                Text(
-                    text = if (hasResult) "服务端已返回结果" else "等待推理结果",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+    Card(shape = RoundedCornerShape(24.dp), modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
+        Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            Text("认证结果分析", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold,
+                modifier = Modifier.semantics { heading() })
+            Text("结果自动保存在本机，保留最近 7 天。", style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                AuthHistoryPeriod.entries.forEach { option ->
+                    FilterChip(selected = period == option, onClick = {
+                        if (option == AuthHistoryPeriod.CUSTOM) showDatePicker = true else {
+                            periodName = option.name
+                            selectedBucketStart = null
+                        }
+                    }, label = { Text(option.label) },
+                        leadingIcon = if (option == AuthHistoryPeriod.CUSTOM) {
+                            { Icon(Icons.Filled.DateRange, null, Modifier.size(18.dp)) }
+                        } else null,
+                        modifier = Modifier.heightIn(min = 48.dp).testTag("history_period_${option.name}"))
+                }
+            }
+            Text(formatDateRange(range), style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.testTag("history_date_range"))
+            Column(Modifier.semantics(mergeDescendants = true) {}) {
+                Text(if (report.entries.isEmpty()) "暂无认证记录" else "${report.failureCount} 次不通过",
+                    style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold,
+                    modifier = Modifier.testTag("history_total"))
+                Text(if (report.entries.isEmpty()) "这个时段没有收到认证结果，不代表全部通过。"
+                    else "共收到 ${report.entries.size} 次结果 · ${report.entries.size - report.failureCount} 次通过",
+                    style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            AuthHistoryBarChart(report, selectedBucket?.startMs, nowMs) { start ->
+                selectedBucketStart = if (selectedBucketStart == start) null else start
+            }
+            if (report.entries.isEmpty()) {
+                Surface(shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)) {
+                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(if (showStartAction) "开始认证后，结果会自动出现在这里。也可以切换日期，查看已有记录。"
+                            else "认证结果到达后会自动更新。你也可以切换日期，查看已有记录。",
+                            style = MaterialTheme.typography.bodyMedium)
+                        if (showStartAction) {
+                            OutlinedButton(onClick = onStartAction, modifier = Modifier.fillMaxWidth()) { Text(startActionLabel) }
+                        }
+                    }
+                }
+            }
+            HorizontalDivider()
+            if (selectedBucket != null) {
+                Text("已选：${selectedBucket.description}", style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold, modifier = Modifier.testTag("history_selected_bucket"))
+                TextButton(onClick = { selectedBucketStart = null }, contentPadding = PaddingValues(horizontal = 0.dp)) {
+                    Text("查看整个时段")
+                }
+            }
+            Text("不通过时正在使用的应用", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Text("应用名称仅帮助你回顾当时的使用场景，不代表该应用存在问题。", style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+            when {
+                selectedEntries.isEmpty() -> Text("所选时段暂无记录。", style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                failureCount == 0 -> Text("已记录 ${selectedEntries.size} 次结果，未出现不通过。", style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                else -> appSummary.forEach { app ->
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(vertical = 4.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.secondaryContainer) {
+                                Icon(Icons.Filled.Apps, null, Modifier.padding(10.dp).size(20.dp), tint = MaterialTheme.colorScheme.onSecondaryContainer)
+                            }
+                            Column(Modifier.weight(1f)) {
+                                Text(app.displayName, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium)
+                                if (stackAppCount) Text("${app.failureCount} 次不通过", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                                Text("最近：${formatAuthHistoryTime(app.latestTimestampMs)}", style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            if (!stackAppCount) Text("${app.failureCount} 次", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                        }
+                        LinearProgressIndicator(progress = app.failureCount.toFloat() / failureCount.coerceAtLeast(1),
+                            modifier = Modifier.fillMaxWidth().height(5.dp).clip(RoundedCornerShape(10.dp)),
+                            color = MaterialTheme.colorScheme.primary, trackColor = MaterialTheme.colorScheme.surfaceVariant)
+                    }
+                }
+            }
+            if (!hasUsageAccess || appSummary.any { it.packageName.isEmpty() }) {
+                Surface(shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.4f)) {
+                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(if (!hasUsageAccess) "允许查看使用情况后，后续结果可显示当时使用的应用。未授权不影响查看认证次数。"
+                            else "部分记录未能获取应用信息，因此显示为“未识别的应用”。历史缺失信息无法补回。",
+                            style = MaterialTheme.typography.bodyMedium)
+                        if (!hasUsageAccess) {
+                            TextButton(onClick = onEnableUsageAccess) { Text("了解并开启应用识别") }
+                        }
+                    }
+                }
+            }
+            val failures = selectedEntries.filter { !it.accepted }
+            if (failures.isNotEmpty()) {
+                ExpandableSection("failure_events", "查看发生时间", "${failures.size} 条不通过记录，按时间从近到远", Icons.Filled.History) {
+                    failures.take(eventLimit).forEach { entry ->
+                        Column(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text(formatAuthHistoryTime(entry.timestampMs), style = MaterialTheme.typography.labelLarge)
+                            Text(authHistoryAppName(entry), style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                    if (failures.size > eventLimit) {
+                        TextButton(onClick = { eventLimit += 20 }, modifier = Modifier.fillMaxWidth()) {
+                            Text("再显示 ${minOf(20, failures.size - eventLimit)} 条记录")
+                        }
+                    }
+                }
             }
         }
     }
 }
 
 @Composable
-private fun StatusRow(
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    label: String,
-    value: String,
-    valueColor: Color
-) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
-            Spacer(modifier = Modifier.width(8.dp))
-            Text(text = label, style = MaterialTheme.typography.bodyMedium)
+private fun AuthHistoryBarChart(report: AuthHistoryReport, selectedStartMs: Long?, nowMs: Long, onSelect: (Long) -> Unit) {
+    val scrollState = rememberScrollState()
+    val maxFailures = report.buckets.maxOfOrNull { it.failureCount }?.coerceAtLeast(1) ?: 1
+    val density = LocalDensity.current
+    val minBarWidth = (if (report.isHourly) 52.dp else 48.dp) * density.fontScale.coerceAtLeast(1f)
+    val lastRelevantIndex = report.buckets.indexOfLast { it.totalCount > 0 }.takeIf { it >= 0 }
+        ?: report.buckets.indexOfLast { it.startMs <= nowMs }.coerceAtLeast(0)
+    LaunchedEffect(report.buckets.firstOrNull()?.startMs, report.isHourly) {
+        // Put recent hours into view on first opening; later results never move a user's scroll.
+        if (report.isHourly) scrollState.scrollTo(with(density) { ((minBarWidth + 8.dp) * (lastRelevantIndex - 3).coerceAtLeast(0)).roundToPx() })
+        else scrollState.scrollTo(0)
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text(if (report.isHourly) "每小时的不通过次数 · 左右滑动查看" else "每天的不通过次数 · 左右滑动查看",
+            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text("轻点柱条查看应用；“—”表示没有记录。", style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant)
+        BoxWithConstraints(Modifier.fillMaxWidth()) {
+            val barWidth = maxOf(minBarWidth, (maxWidth - 8.dp * (report.buckets.size - 1)) / report.buckets.size.coerceAtLeast(1))
+            Row(Modifier.fillMaxWidth().horizontalScroll(scrollState).testTag("history_chart"),
+                horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
+                report.buckets.forEach { bucket ->
+                    AuthHistoryBar(bucket, maxFailures, barWidth, bucket.startMs == selectedStartMs) { onSelect(bucket.startMs) }
+                }
+            }
         }
-        Text(
-            text = value,
-            style = MaterialTheme.typography.bodyMedium,
-            color = valueColor,
-            textAlign = TextAlign.End
-        )
     }
 }
 
 @Composable
-private fun DecisionHistoryRow(item: AuthDecisionHistory) {
-    val color = when (item.decision) {
-        AuthDecision.NORMAL -> ExtendedColors.success
-        AuthDecision.ABNORMAL -> MaterialTheme.colorScheme.error
-        AuthDecision.UNKNOWN -> MaterialTheme.colorScheme.secondary
-    }
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Column {
-            Text(
-                text = when (item.decision) {
-                    AuthDecision.NORMAL -> "认证通过"
-                    AuthDecision.ABNORMAL -> "认证不通过"
-                    AuthDecision.UNKNOWN -> "待判定"
-                },
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = FontWeight.Bold,
-                color = color
-            )
-            Text(
-                text = formatTime(item.timestamp),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-        Text(
-            text = item.message.ifBlank { "--" },
-            style = MaterialTheme.typography.titleSmall,
-            fontWeight = FontWeight.SemiBold,
-            color = color
-        )
-    }
-}
-
-@Composable
-private fun AuthAnalysisLogRow(item: AuthAnalysisLogEntry) {
+private fun AuthHistoryBar(bucket: AuthHistoryBucket, maxFailures: Int, barWidth: androidx.compose.ui.unit.Dp, selected: Boolean, onClick: () -> Unit) {
+    val failureHeight = (100f * bucket.failureCount / maxFailures).dp
+    val description = if (bucket.totalCount == 0) "${bucket.description}，没有认证记录"
+        else "${bucket.description}，不通过 ${bucket.failureCount} 次，共 ${bucket.totalCount} 次结果"
     Column(
-        modifier = Modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(2.dp)
+        modifier = Modifier.width(barWidth).clip(RoundedCornerShape(10.dp))
+            .background(if (selected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f) else MaterialTheme.colorScheme.surface)
+            .clickable(role = Role.Button, onClickLabel = "查看此时段的应用", onClick = onClick)
+            .semantics(mergeDescendants = true) { contentDescription = description; this.selected = selected }
+            .testTag("history_bar_${bucket.startMs}").padding(horizontal = 4.dp, vertical = 8.dp),
+        horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                text = formatTime(item.startTimeMs),
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onSurface
-            )
-            Text(
-                text = formatDuration(item.durationMs),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                textAlign = TextAlign.End
-            )
+        Text(if (bucket.totalCount == 0) "—" else bucket.failureCount.toString(),
+            style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+        Box(Modifier.height(104.dp).fillMaxWidth(), contentAlignment = Alignment.BottomCenter) {
+            Box(Modifier.fillMaxWidth().height(1.dp).background(MaterialTheme.colorScheme.outlineVariant))
+            if (bucket.failureCount > 0) {
+                Box(Modifier.width(24.dp).height(failureHeight.coerceAtLeast(4.dp)).clip(RoundedCornerShape(topStart = 6.dp, topEnd = 6.dp))
+                    .background(if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.primary.copy(alpha = 0.7f)))
+            }
         }
-        Text(
-            text = "通过 ${item.passCount} · 不通过 ${item.failCount} · 通过率 ${String.format(Locale.getDefault(), "%.1f%%", item.passRatePercent)}",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
+        Text(bucket.label, style = MaterialTheme.typography.labelSmall, textAlign = TextAlign.Center,
+            color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
-private fun formatTime(timestamp: Long): String {
-    if (timestamp == 0L) return "--"
-    val formatter = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
-    return formatter.format(Date(timestamp))
-}
-
-private fun formatDuration(durationMs: Long): String {
-    val totalSeconds = (durationMs / 1000L).coerceAtLeast(0L)
-    val hours = totalSeconds / 3600L
-    val minutes = (totalSeconds % 3600L) / 60L
-    val seconds = totalSeconds % 60L
-    return if (hours > 0L) {
-        String.format(Locale.getDefault(), "%02d:%02d:%02d", hours, minutes, seconds)
-    } else {
-        String.format(Locale.getDefault(), "%02d:%02d", minutes, seconds)
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun HistoryDateRangeDialog(today: LocalDate, initial: AuthHistoryDateRange, onDismiss: () -> Unit, onConfirm: (AuthHistoryDateRange) -> Unit) {
+    val firstDay = today.minusDays(6)
+    val selectableDates = remember(firstDay, today) {
+        object : SelectableDates {
+            override fun isSelectableDate(utcTimeMillis: Long): Boolean {
+                val date = Instant.ofEpochMilli(utcTimeMillis).atZone(ZoneOffset.UTC).toLocalDate()
+                return date >= firstDay && date <= today
+            }
+            override fun isSelectableYear(year: Int): Boolean = year in firstDay.year..today.year
+        }
+    }
+    val picker = rememberDateRangePickerState(
+        initialSelectedStartDateMillis = initial.start.atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli(),
+        initialSelectedEndDateMillis = initial.endInclusive.atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli(),
+        yearRange = firstDay.year..today.year,
+        selectableDates = selectableDates
+    )
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
+            Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing).widthIn(max = 800.dp)) {
+                Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+                    TextButton(onClick = onDismiss) { Text("取消") }
+                    TextButton(onClick = {
+                        val start = picker.selectedStartDateMillis ?: return@TextButton
+                        val end = picker.selectedEndDateMillis ?: return@TextButton
+                        onConfirm(AuthHistoryDateRange(Instant.ofEpochMilli(start).atZone(ZoneOffset.UTC).toLocalDate(),
+                            Instant.ofEpochMilli(end).atZone(ZoneOffset.UTC).toLocalDate()))
+                    }, enabled = picker.selectedStartDateMillis != null && picker.selectedEndDateMillis != null) {
+                        Text("完成")
+                    }
+                }
+                Text("选择最近 7 天内的日期", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp))
+                Text("按手机本地时间统计，包含开始和结束当天。", style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp))
+                DateRangePicker(state = picker, modifier = Modifier.weight(1f), title = null, showModeToggle = true)
+            }
+        }
     }
 }
 
-private fun formatPassRate(passRatePercent: Float, totalCount: Int): String {
-    return if (totalCount <= 0) {
-        "--"
-    } else {
-        String.format(Locale.getDefault(), "%.1f%%", passRatePercent)
+private fun formatDateRange(range: AuthHistoryDateRange): String {
+    val format = DateTimeFormatter.ofPattern("yyyy年M月d日")
+    return if (range.start == range.endInclusive) format.format(range.start)
+    else "${format.format(range.start)} — ${format.format(range.endInclusive)}"
+}
+
+@Composable
+private fun HelpStep(number: String, title: String, message: String) {
+    Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.padding(vertical = 4.dp)) {
+        Surface(shape = CircleShape, color = MaterialTheme.colorScheme.primaryContainer) {
+            Text(number, Modifier.padding(horizontal = 10.dp, vertical = 4.dp), textAlign = TextAlign.Center,
+                color = MaterialTheme.colorScheme.onPrimaryContainer, style = MaterialTheme.typography.labelLarge)
+        }
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+            Text(message, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
     }
 }

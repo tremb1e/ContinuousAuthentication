@@ -1,6 +1,7 @@
 package com.continuousauth.ui.dialogs
 
 import android.app.Dialog
+import android.content.DialogInterface
 import android.os.Bundle
 import androidx.fragment.app.DialogFragment
 import com.continuousauth.R
@@ -11,8 +12,17 @@ import com.google.android.material.dialog.MaterialAlertDialogBuilder
  * 引导用户授予通知权限，用于显示前台服务通知
  */
 class NotificationPermissionDialog(
-    private val onResult: (grantPermission: Boolean) -> Unit
+    private var onResult: (grantPermission: Boolean) -> Unit = {}
 ) : DialogFragment() {
+
+    fun setOnResultListener(listener: (Boolean) -> Unit) {
+        onResult = listener
+    }
+
+    override fun onCancel(dialog: DialogInterface) {
+        super.onCancel(dialog)
+        onResult(false)
+    }
 
     companion object {
         private const val TAG = "NotificationPermissionDialog"

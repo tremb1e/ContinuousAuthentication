@@ -45,7 +45,7 @@
     <string name="transmission_mode">Transmission Mode</string>
     <string name="slow_mode">Slow Mode</string>
     <string name="fast_mode">Fast Mode</string>
-    <string name="packets_sent">Packets Sent</string>
+    <string name="packets_sent">Packets Acknowledged</string>
     <string name="packets_pending">Packets Pending</string>
     <string name="last_ack_latency">Last ACK Latency</string>
     <string name="upload_errors">Upload Errors</string>

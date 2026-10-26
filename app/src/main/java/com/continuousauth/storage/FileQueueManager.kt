@@ -5,11 +5,14 @@ import android.util.Log
 import com.continuousauth.database.BatchMetadata
 import com.continuousauth.database.BatchMetadataDao
 import com.continuousauth.database.BatchStatus
+import com.continuousauth.database.UploadProgress
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.io.File
 import java.io.FileOutputStream
 import java.security.MessageDigest
@@ -44,16 +47,24 @@ class FileQueueManager @Inject constructor(
     
     // 队列目录
     private val queueDir: File by lazy {
-        File(context.cacheDir, QUEUE_DIR).apply {
+        File(context.noBackupFilesDir, QUEUE_DIR).apply {
             if (!exists()) {
                 mkdirs()
             }
         }
     }
+
+    // Existing installations may still have pending files referenced in the old cache directory.
+    private fun queueFiles(): List<File> =
+        queueDir.listFiles().orEmpty().toList() +
+            File(context.cacheDir, QUEUE_DIR).listFiles().orEmpty().toList()
     
     // 队列状态
     private val _queueStats = MutableStateFlow(QueueStats())
     val queueStats: StateFlow<QueueStats> = _queueStats.asStateFlow()
+    private val _uploadProgress = MutableStateFlow(UploadProgress())
+    val uploadProgress: StateFlow<UploadProgress> = _uploadProgress.asStateFlow()
+    private val uploadProgressMutex = Mutex()
     
     // 是否正在清理
     private var isCleaningUp = false
@@ -63,6 +74,14 @@ class FileQueueManager @Inject constructor(
     init {
         // 启动时更新统计信息
         scope.launch {
+            try {
+                refreshUploadProgress()
+                deleteAcknowledgedPackets()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "恢复上传进度失败", e)
+            }
             updateQueueStats()
         }
     }
@@ -198,8 +217,9 @@ class FileQueueManager @Inject constructor(
             
             // 删除文件
             val file = File(metadata.filePath)
-            if (file.exists()) {
-                file.delete()
+            if (file.exists() && !file.delete()) {
+                Log.w(TAG, "数据包文件尚未删除，保留元数据以便重试: $packetId")
+                return@withContext false
             }
             
             // 删除数据库记录
@@ -224,18 +244,27 @@ class FileQueueManager @Inject constructor(
     suspend fun updateAckStatus(
         packetId: String, 
         serverTimestamp: Long
-    ) = withContext(Dispatchers.IO) {
-        try {
-            // 更新数据库状态为ACKNOWLEDGED，并记录服务器时间戳
-            batchMetadataDao.updateAckStatus(
-                packetId = packetId,
-                status = BatchStatus.ACKNOWLEDGED,
-                ackTime = serverTimestamp
+    ): Boolean = withContext(Dispatchers.IO) {
+        uploadProgressMutex.withLock {
+            val newlyAcknowledged = batchMetadataDao.acknowledgePacket(
+                packetId, serverTimestamp, System.currentTimeMillis()
             )
-            Log.d(TAG, "数据包ACK状态已更新: $packetId, 服务器时间戳: $serverTimestamp")
-            
-        } catch (e: Exception) {
-            Log.e(TAG, "更新ACK状态失败: $packetId", e)
+            _uploadProgress.value = batchMetadataDao.getUploadProgress() ?: UploadProgress()
+            Log.d(TAG, "数据包ACK已持久化: $packetId, 首次确认: $newlyAcknowledged")
+            newlyAcknowledged
+        }
+    }
+
+    suspend fun refreshUploadProgress() = withContext(Dispatchers.IO) {
+        uploadProgressMutex.withLock {
+            _uploadProgress.value = batchMetadataDao.getUploadProgress() ?: UploadProgress()
+        }
+    }
+
+    suspend fun resetUploadProgress() = withContext(Dispatchers.IO) {
+        uploadProgressMutex.withLock {
+            batchMetadataDao.clearUploadProgress()
+            _uploadProgress.value = UploadProgress()
         }
     }
     
@@ -304,15 +333,10 @@ class FileQueueManager @Inject constructor(
             
             var deletedCount = 0
             acknowledgedBatches.forEach { batch ->
-                val file = File(batch.filePath)
-                if (file.exists()) {
-                    file.delete()
+                if (deleteDataPacket(batch.packetId)) {
                     deletedCount++
                 }
             }
-            
-            // 批量删除数据库记录
-            batchMetadataDao.deleteByStatus(BatchStatus.ACKNOWLEDGED)
             
             // 更新统计
             updateQueueStats()
@@ -341,7 +365,7 @@ class FileQueueManager @Inject constructor(
                 pending.addAll(awaitingAck)
             }
 
-            pending
+            pending.sortedBy { it.createdTime }
         } catch (e: Exception) {
             Log.e(TAG, "获取待上传数据包失败", e)
             emptyList()
@@ -450,7 +474,7 @@ class FileQueueManager @Inject constructor(
      * 获取队列大小（字节）
      */
     private fun getQueueSizeBytes(): Long {
-        return queueDir.listFiles()?.sumOf { it.length() } ?: 0L
+        return queueFiles().sumOf { it.length() }
     }
     
     /**
@@ -475,7 +499,7 @@ class FileQueueManager @Inject constructor(
     private suspend fun updateQueueStats() = withContext(Dispatchers.IO) {
         try {
             val totalSize = getQueueSizeBytes()
-            val fileCount = queueDir.listFiles()?.size ?: 0
+            val fileCount = queueFiles().size
             val statusCounts = batchMetadataDao.getStatusCounts()
             
             val pending = statusCounts.find { it.status == BatchStatus.PENDING }?.count ?: 0
@@ -514,7 +538,7 @@ class FileQueueManager @Inject constructor(
     suspend fun clearQueue() = withContext(Dispatchers.IO) {
         try {
             // 删除所有文件
-            queueDir.listFiles()?.forEach { it.delete() }
+            queueFiles().forEach { it.delete() }
             
             // 清空数据库
             batchMetadataDao.clearAll()
@@ -535,7 +559,7 @@ class FileQueueManager @Inject constructor(
     suspend fun getQueueStatistics(): QueueStatisticsDetail = withContext(Dispatchers.IO) {
         try {
             val totalSize = getQueueSizeBytes()
-            val fileCount = queueDir.listFiles()?.size ?: 0
+            val fileCount = queueFiles().size
             val statusCounts = batchMetadataDao.getStatusCounts()
             
             val pending = statusCounts.find { it.status == BatchStatus.PENDING }?.count ?: 0

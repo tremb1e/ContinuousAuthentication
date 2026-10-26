@@ -10,6 +10,7 @@ import com.continuousauth.database.ContinuousAuthDatabase
 // import com.continuousauth.proto.DataDeletionRequest
 // import com.continuousauth.proto.DataDeletionResponse
 import com.continuousauth.storage.FileQueueManager
+import com.continuousauth.auth.AuthHistoryRepository
 import com.continuousauth.utils.SessionManager
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
@@ -31,7 +32,8 @@ class PrivacyManager @Inject constructor(
     @ApplicationContext private val context: Context,
     private val database: ContinuousAuthDatabase,
     private val fileQueueManager: FileQueueManager,
-    private val sessionManager: SessionManager
+    private val sessionManager: SessionManager,
+    private val authHistoryRepository: AuthHistoryRepository
 ) {
     
     companion object {
@@ -81,9 +83,15 @@ class PrivacyManager @Inject constructor(
         val hasConsent = encryptedPrefs.getBoolean(KEY_CONSENT_GIVEN, false)
         _consentState.value = if (hasConsent) {
             ConsentState.GRANTED
+        } else if (encryptedPrefs.getBoolean("consent_withdrawn", false)) {
+            ConsentState.WITHDRAWN
         } else {
             ConsentState.NOT_GRANTED
         }
+        context.getSharedPreferences("app_prefs", Context.MODE_PRIVATE).edit()
+            .putBoolean("privacy_consent_granted", hasConsent)
+            .apply { if (hasConsent) putBoolean("privacy_agreement_shown", true) }
+            .apply()
         
         if (hasConsent) {
             val consentTime = encryptedPrefs.getLong(KEY_CONSENT_TIMESTAMP, 0)
@@ -98,7 +106,11 @@ class PrivacyManager @Inject constructor(
         encryptedPrefs.edit()
             .putBoolean(KEY_CONSENT_GIVEN, true)
             .putLong(KEY_CONSENT_TIMESTAMP, System.currentTimeMillis())
+            .putBoolean("consent_withdrawn", false)
             .apply()
+        context.getSharedPreferences("app_prefs", Context.MODE_PRIVATE).edit()
+            .putBoolean("privacy_agreement_shown", true)
+            .putBoolean("privacy_consent_granted", true).apply()
         
         _consentState.value = ConsentState.GRANTED
         Log.i(TAG, "用户已同意隐私协议")
@@ -118,8 +130,13 @@ class PrivacyManager @Inject constructor(
                 _consentState.value = ConsentState.WITHDRAWN
                 encryptedPrefs.edit()
                     .putBoolean(KEY_CONSENT_GIVEN, false)
+                    .putBoolean("consent_withdrawn", true)
                     .putLong(KEY_CONSENT_TIMESTAMP, System.currentTimeMillis())
                     .apply()
+                context.getSharedPreferences("app_prefs", Context.MODE_PRIVATE).edit()
+                    .putBoolean("privacy_agreement_shown", true)
+                    .putBoolean("privacy_consent_granted", false)
+                    .putBoolean("collection_requested", false).apply()
                 
                 // 2. 删除本地缓存数据
                 val localDeletionResult = deleteAllLocalData()
@@ -186,6 +203,8 @@ class PrivacyManager @Inject constructor(
                 
                 // 2. 清空文件队列
                 fileQueueManager.clearQueue()
+                fileQueueManager.resetUploadProgress()
+                authHistoryRepository.clear()
                 
                 // 3. 清空缓存目录
                 clearCacheDirectory()
@@ -219,9 +238,8 @@ class PrivacyManager @Inject constructor(
                 // 这里是示例代码，需要服务器端实现对应的RPC方法，
                 // 可通过 UploaderImpl 新增的通道能力完成
                 
-                // 暂时返回成功（等待服务器端实现）
-                Log.w(TAG, "服务器删除请求端点尚未实现，跳过")
-                Result.success(Unit)
+                Log.w(TAG, "服务器删除请求端点尚未实现，保留待处理状态")
+                Result.failure(UnsupportedOperationException("服务端尚未提供数据删除接口"))
                 
             } catch (e: Exception) {
                 Log.e(TAG, "发送服务器删除请求失败", e)
@@ -271,6 +289,10 @@ class PrivacyManager @Inject constructor(
                 queueDir.deleteRecursively()
                 Log.d(TAG, "已清空缓存目录")
             }
+            File(cacheDir, "maintenance_exports").deleteRecursively()
+            cacheDir.listFiles()?.filter { it.name.startsWith("export_") }?.forEach {
+                it.deleteRecursively()
+            }
         } catch (e: Exception) {
             Log.e(TAG, "清空缓存目录失败", e)
         }
@@ -287,15 +309,31 @@ class PrivacyManager @Inject constructor(
         // 清除其他所有preferences
         val prefsDir = File(context.applicationInfo.dataDir, "shared_prefs")
         prefsDir.listFiles()?.forEach { file ->
-            if (!file.name.contains(PREFS_FILE)) {
+            // Keep encryption metadata and the reserved packet sequence. Resetting that
+            // sequence while the stable device identity remains would make future packets
+            // look like replays. It contains no sensor samples or authentication history.
+            if (!file.name.contains(PREFS_FILE) && file.nameWithoutExtension != "crypto_secure_prefs") {
                 // 不清除隐私设置文件本身
-                file.delete()
+                // Clear through the cached instance so stale values cannot reappear on a later write.
+                if (file.extension == "xml") {
+                    val preferences = context.getSharedPreferences(file.nameWithoutExtension, Context.MODE_PRIVATE)
+                    val editor = preferences.edit()
+                    preferences.all.keys.filterNot {
+                        it == "__androidx_security_crypto_encrypted_prefs_key_keyset__" ||
+                            it == "__androidx_security_crypto_encrypted_prefs_value_keyset__"
+                    }.forEach(editor::remove)
+                    check(editor.commit()) { "无法清除本地设置" }
+                }
                 Log.d(TAG, "删除preferences文件: ${file.name}")
             }
         }
         
         // 如果是撤回同意，记录撤回时间
         if (consentWithdrawn) {
+            context.getSharedPreferences("app_prefs", Context.MODE_PRIVATE).edit()
+                .putBoolean("privacy_agreement_shown", true)
+                .putBoolean("privacy_consent_granted", false)
+                .putBoolean("collection_requested", false).commit()
             encryptedPrefs.edit()
                 .putBoolean("consent_withdrawn", true)
                 .putLong("withdrawal_timestamp", withdrawalTime)
@@ -395,9 +433,10 @@ class PrivacyManager @Inject constructor(
             - 学术研究与分析
             
             3. 数据存储
-            - 所有数据均采用AES-256加密
-            - 本地缓存最多保留${getDataRetentionDays()}天
-            - 服务器端安全存储
+            - 传感器数据加密后上传至您配置的服务器
+            - 本地传感器缓存保留${getDataRetentionDays()}天
+            - 认证结果和当时使用的应用名称仅在本机保留近7天
+            - 仅监测模式不会弹窗；即时警示需要允许显示在其他应用上层
             
             4. 数据共享
             - 不与第三方共享原始数据
@@ -405,12 +444,8 @@ class PrivacyManager @Inject constructor(
             
             5. 用户权利
             - 您可以随时撤回同意
-            - 撤回后将删除所有相关数据
-            - 支持数据导出请求
-            
-            6. 联系方式
-            - 邮箱：privacy@continuousauth.com
-            - 电话：+86-xxx-xxxx
+            - 撤回后停止采集和认证，并删除本地数据
+            - 服务端暂未提供自动删除接口；已上传的数据需联系服务器管理者处理
         """.trimIndent()
     }
 }

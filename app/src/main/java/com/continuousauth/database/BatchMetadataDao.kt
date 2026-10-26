@@ -31,13 +31,13 @@ interface BatchMetadataDao {
     /**
      * 更新批次状态
      */
-    @Query("UPDATE batch_metadata SET status = :status WHERE packetId = :packetId")
+    @Query("UPDATE batch_metadata SET status = :status WHERE packetId = :packetId AND status != 'ACKNOWLEDGED'")
     suspend fun updateStatus(packetId: String, status: BatchStatus)
     
     /**
      * 更新批次状态和上传时间
      */
-    @Query("UPDATE batch_metadata SET status = :status, uploadTime = :uploadTime WHERE packetId = :packetId")
+    @Query("UPDATE batch_metadata SET status = :status, uploadTime = :uploadTime WHERE packetId = :packetId AND status != 'ACKNOWLEDGED'")
     suspend fun updateUploadStatus(packetId: String, status: BatchStatus, uploadTime: Long)
     
     /**
@@ -45,6 +45,30 @@ interface BatchMetadataDao {
      */
     @Query("UPDATE batch_metadata SET status = :status, ackTime = :ackTime WHERE packetId = :packetId")
     suspend fun updateAckStatus(packetId: String, status: BatchStatus = BatchStatus.ACKNOWLEDGED, ackTime: Long)
+
+    @Query("SELECT * FROM upload_progress WHERE id = 1")
+    suspend fun getUploadProgress(): UploadProgress?
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun initializeUploadProgress(progress: UploadProgress)
+
+    @Query("UPDATE upload_progress SET acknowledgedPackets = acknowledgedPackets + 1, lastAckTimestamp = MAX(lastAckTimestamp, :receivedAt), lastPacketSeqNo = MAX(lastPacketSeqNo, :sequenceNumber) WHERE id = 1")
+    suspend fun incrementAcknowledgedPackets(receivedAt: Long, sequenceNumber: Long)
+
+    @Query("DELETE FROM upload_progress")
+    suspend fun clearUploadProgress()
+
+    @Transaction
+    suspend fun acknowledgePacket(packetId: String, serverTimestamp: Long, receivedAt: Long): Boolean {
+        val packet = getById(packetId) ?: return false
+        if (packet.status == BatchStatus.ACKNOWLEDGED) return false
+
+        // Persist the counter and receipt together before the encrypted file is deleted.
+        initializeUploadProgress(UploadProgress())
+        updateAckStatus(packetId, BatchStatus.ACKNOWLEDGED, serverTimestamp)
+        incrementAcknowledgedPackets(receivedAt, packet.sequenceNumber ?: 0L)
+        return true
+    }
     
     /**
      * 更新重试信息

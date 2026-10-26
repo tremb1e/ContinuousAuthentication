@@ -18,7 +18,6 @@ import java.security.SecureRandom
 import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicInteger
-import java.util.concurrent.atomic.AtomicLong
 import javax.crypto.Cipher
 import javax.crypto.Mac
 import javax.crypto.spec.GCMParameterSpec
@@ -43,6 +42,7 @@ class EnvelopeCryptoBox @Inject constructor(
         private const val KEY_DEVICE_ID = "device_instance_id"
         private const val KEY_HMAC_KEY = "hmac_key"
         private const val KEY_PACKET_SEQ_NO = "packet_seq_no"
+        private const val KEY_PACKET_SEQ_RESERVED_THROUGH = "packet_seq_reserved_through"
         private const val KEY_ROTATION_COUNT = "key_rotation_count"
         private const val KEY_CREATION_TIME = "key_creation_time"
         private const val KEY_FAILED_COUNT = "crypto_failed_count"
@@ -73,18 +73,37 @@ class EnvelopeCryptoBox @Inject constructor(
     }
 
     private val mutex = Mutex()
-    private val packetSeqNo = AtomicLong(0)
+    private val packetSequence = PacketSequenceAllocator(
+        loadReservedThrough = {
+            when {
+                encryptedPrefs.contains(KEY_PACKET_SEQ_RESERVED_THROUGH) ->
+                    encryptedPrefs.getLong(KEY_PACKET_SEQ_RESERVED_THROUGH, 0L)
+                encryptedPrefs.contains(KEY_PACKET_SEQ_NO) || encryptedPrefs.contains(KEY_DEVICE_ID) ->
+                    PacketSequenceAllocator.migrateLegacyCheckpoint(
+                        encryptedPrefs.getLong(KEY_PACKET_SEQ_NO, 0L)
+                    )
+                else -> 0L
+            }
+        },
+        persistReservedThrough = { reservedThrough ->
+            encryptedPrefs.edit()
+                .putLong(KEY_PACKET_SEQ_RESERVED_THROUGH, reservedThrough)
+                .commit()
+        }
+    )
     private val rotationCount = AtomicInteger(0)
     private val failureCount = AtomicInteger(0)
 
     private var deviceInstanceId: String? = null
     private var hmacKey: ByteArray? = null
-    private var aesKey: ByteArray? = null
+    @Volatile private var aesKey: ByteArray? = null
     private var keyCreationTime: Long = 0L
 
     override suspend fun initialize(): Boolean = withContext(Dispatchers.IO) {
         try {
             mutex.withLock {
+                if (aesKey != null) return@withLock true
+                packetSequence.initialize()
                 deviceInstanceId = buildStableDeviceMaterial()
                 encryptedPrefs.edit().putString(KEY_DEVICE_ID, deviceInstanceId).apply()
 
@@ -94,7 +113,6 @@ class EnvelopeCryptoBox @Inject constructor(
                     .apply()
 
                 // 序列号与轮换计数
-                packetSeqNo.set(encryptedPrefs.getLong(KEY_PACKET_SEQ_NO, 0))
                 rotationCount.set(encryptedPrefs.getInt(KEY_ROTATION_COUNT, 0))
                 keyCreationTime = encryptedPrefs.getLong(KEY_CREATION_TIME, System.currentTimeMillis())
 
@@ -210,7 +228,6 @@ class EnvelopeCryptoBox @Inject constructor(
 
     override fun destroy() {
         encryptedPrefs.edit()
-            .putLong(KEY_PACKET_SEQ_NO, packetSeqNo.get())
             .putInt(KEY_ROTATION_COUNT, rotationCount.get())
             .putLong(KEY_CREATION_TIME, keyCreationTime)
             .apply()
@@ -220,15 +237,9 @@ class EnvelopeCryptoBox @Inject constructor(
         Log.i(TAG, "EnvelopeCryptoBox 已销毁")
     }
 
-    fun getNextPacketSeqNo(): Long {
-        val seqNo = packetSeqNo.incrementAndGet()
-        if (seqNo % 100 == 0L) {
-            encryptedPrefs.edit().putLong(KEY_PACKET_SEQ_NO, seqNo).apply()
-        }
-        return seqNo
-    }
+    fun getNextPacketSeqNo(): Long = packetSequence.next()
 
-    fun getCurrentPacketSeqNo(): Long = packetSeqNo.get()
+    fun getCurrentPacketSeqNo(): Long = packetSequence.current()
 
     fun getDekKeyId(): String = STATIC_KEY_ID
 

@@ -45,7 +45,7 @@
     <string name="transmission_mode">传输模式</string>
     <string name="slow_mode">慢速模式</string>
     <string name="fast_mode">快速模式</string>
-    <string name="packets_sent">已发送包数</string>
+    <string name="packets_sent">服务器已确认包数</string>
     <string name="packets_pending">待发送包数</string>
     <string name="last_ack_latency">最近ACK延迟</string>
     <string name="upload_errors">上传错误</string>

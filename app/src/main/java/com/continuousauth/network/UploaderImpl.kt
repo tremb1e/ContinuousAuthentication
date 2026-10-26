@@ -10,6 +10,8 @@ import io.grpc.*
 import io.grpc.okhttp.OkHttpChannelBuilder
 import io.grpc.stub.StreamObserver
 import kotlinx.coroutines.*
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.*
 import java.util.concurrent.ConcurrentHashMap
@@ -55,6 +57,10 @@ class UploaderImpl @Inject constructor(
     private var channel: ManagedChannel? = null
     private var stub: SensorDataServiceGrpc.SensorDataServiceStub? = null
     private var requestObserver: StreamObserver<DataPacket>? = null
+    private val connectionMutex = Mutex()
+    private val streamLock = Any()
+    private val connectionGeneration = AtomicLong(0L)
+    @Volatile private var reconnectAllowed = false
 
     // 状态管理
     private val connectionStatus = AtomicReference(ConnectionStatus.DISCONNECTED)
@@ -155,13 +161,15 @@ class UploaderImpl @Inject constructor(
         }
     }
 
-    override suspend fun connect(serverEndpoint: String): Boolean {
+    override suspend fun connect(serverEndpoint: String): Boolean = connectionMutex.withLock {
         if (connectionStatus.get() == ConnectionStatus.CONNECTED) {
             Log.w(TAG, "已经连接到服务器")
             return true
         }
 
         currentEndpoint = serverEndpoint
+        reconnectAllowed = true
+        connectionGeneration.incrementAndGet()
         connectionStatus.set(ConnectionStatus.CONNECTING)
 
         val attemptTimestamp = System.currentTimeMillis()
@@ -197,6 +205,8 @@ class UploaderImpl @Inject constructor(
 
             suspend fun buildAndStream(tls: Boolean, port: Int): Boolean {
                 return try {
+                    val generation = connectionGeneration.incrementAndGet()
+                    connectionStatus.set(ConnectionStatus.CONNECTING)
                     channel?.shutdownNow()
                     val builtChannel = buildChannel(
                         host = parsed.host,
@@ -214,11 +224,14 @@ class UploaderImpl @Inject constructor(
                     }
 
                     stub = SensorDataServiceGrpc.newStub(builtChannel)
-                    val ok = establishBidirectionalStream()
+                    val ok = establishBidirectionalStream(generation) &&
+                        connectionStatus.compareAndSet(ConnectionStatus.CONNECTING, ConnectionStatus.CONNECTED)
                     if (ok) {
                         finalTls = tls
                     }
                     ok
+                } catch (e: CancellationException) {
+                    throw e
                 } catch (e: Exception) {
                     lastError = e.message
                     Log.e(TAG, "建立${if (tls) "TLS" else "明文"}通道失败", e)
@@ -236,7 +249,6 @@ class UploaderImpl @Inject constructor(
             }
 
             if (connected) {
-                connectionStatus.set(ConnectionStatus.CONNECTED)
                 connectedSince = System.currentTimeMillis()
                 updateTransportState(
                     TransportState(
@@ -273,6 +285,12 @@ class UploaderImpl @Inject constructor(
                 }
                 false
             }
+        } catch (e: CancellationException) {
+            connectionGeneration.incrementAndGet()
+            channel?.shutdownNow()
+            requestObserver = null
+            connectionStatus.set(ConnectionStatus.DISCONNECTED)
+            throw e
         } catch (e: Exception) {
             Log.e(TAG, "连接服务器失败: $serverEndpoint", e)
             handleConnectionError("连接异常: ${e.message}")
@@ -304,7 +322,7 @@ class UploaderImpl @Inject constructor(
             pendingAcks[dataPacket.packetId] = pendingAck
 
             // 发送数据包
-            observer.onNext(dataPacket)
+            synchronized(streamLock) { observer.onNext(dataPacket) }
             totalPacketsSent.incrementAndGet()
 
             Log.d(TAG, "数据包已发送: ${dataPacket.packetId}")
@@ -343,7 +361,9 @@ class UploaderImpl @Inject constructor(
         return serverDirectiveChannel.receiveAsFlow()
     }
 
-    override suspend fun disconnect() {
+    override suspend fun disconnect(): Unit = connectionMutex.withLock {
+        reconnectAllowed = false
+        connectionGeneration.incrementAndGet()
         connectionStatus.set(ConnectionStatus.DISCONNECTED)
         connectedSince = null
 
@@ -352,7 +372,7 @@ class UploaderImpl @Inject constructor(
 
         // 关闭请求流
         try {
-            requestObserver?.onCompleted()
+            synchronized(streamLock) { requestObserver?.onCompleted() }
         } catch (e: Exception) {
             Log.w(TAG, "关闭请求流异常", e)
         }
@@ -416,7 +436,7 @@ class UploaderImpl @Inject constructor(
     /**
      * 建立双向流连接
      */
-    private fun establishBidirectionalStream(): Boolean {
+    private fun establishBidirectionalStream(generation: Long): Boolean {
         return try {
             val responseObserver = object : StreamObserver<ServerDirective> {
                 override fun onNext(directive: ServerDirective) {
@@ -424,6 +444,7 @@ class UploaderImpl @Inject constructor(
                 }
 
                 override fun onError(t: Throwable) {
+                    if (generation != connectionGeneration.get()) return
                     Log.e(TAG, "服务器响应流错误", t)
                     handleConnectionError("服务器响应流错误: ${t.message}")
                     if (isHttpFallbackError(t)) {
@@ -433,6 +454,7 @@ class UploaderImpl @Inject constructor(
                 }
 
                 override fun onCompleted() {
+                    if (generation != connectionGeneration.get()) return
                     Log.i(TAG, "服务器响应流已完成")
                     connectionStatus.set(ConnectionStatus.DISCONNECTED)
                     startReconnect()
@@ -558,6 +580,7 @@ class UploaderImpl @Inject constructor(
      * 启动重连
      */
     private fun startReconnect(overrideEndpoint: String? = null) {
+        if (!reconnectAllowed) return
         if (currentEndpoint.isEmpty() && overrideEndpoint.isNullOrEmpty()) return
         
         reconnectJob?.cancel()
@@ -566,7 +589,8 @@ class UploaderImpl @Inject constructor(
             var retryCount = 0
             val targetEndpoint = overrideEndpoint ?: currentEndpoint
             
-            while (retryCount < MAX_RETRY_ATTEMPTS && connectionStatus.get() != ConnectionStatus.CONNECTED) {
+            while (isActive && reconnectAllowed && retryCount < MAX_RETRY_ATTEMPTS &&
+                connectionStatus.get() != ConnectionStatus.CONNECTED) {
                 delay(kotlin.math.min(1000 * (1 shl retryCount), 30000).toLong()) // 指数退避
                 
                 Log.i(TAG, "尝试重连 (${retryCount + 1}/$MAX_RETRY_ATTEMPTS): $targetEndpoint")
@@ -705,7 +729,9 @@ class UploaderImpl @Inject constructor(
             }
             .build()
         return@withContext try {
-            SensorDataServiceGrpc.newBlockingStub(ch).startAuthentication(request)
+            SensorDataServiceGrpc.newBlockingStub(ch)
+                .withDeadlineAfter(20, java.util.concurrent.TimeUnit.SECONDS)
+                .startAuthentication(request)
         } catch (e: Exception) {
             Log.e(TAG, "开始认证会话失败", e)
             null

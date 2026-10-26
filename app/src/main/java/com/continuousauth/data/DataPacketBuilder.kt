@@ -46,16 +46,14 @@ class DataPacketBuilder @Inject constructor(
         sha256: ByteArray? = null,
         compressionType: String = "LZ4",
         uncompressedSizeBytes: Int = 0,
-        clientProcessingTimeMs: Long = 0L
+        clientProcessingTimeMs: Long = 0L,
+        packetId: String = UUID.randomUUID().toString()
     ): DataPacket {
         
         // 记录批次创建时的关键时间戳
         val baseElapsedNs = SystemClock.elapsedRealtimeNanos()
         val baseWallMs = enhancedTimeSync.getCorrectedWallTime()
         val ntpOffsetMs = enhancedTimeSync.getNtpOffset()
-        
-        // 生成唯一的包ID
-        val packetId = UUID.randomUUID().toString()
         
         // 构建元数据
         val metadata = buildMetadata(

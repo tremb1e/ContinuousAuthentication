@@ -7,20 +7,24 @@ import android.hardware.SensorEventListener
 import android.hardware.SensorManager
 import android.os.Handler
 import android.os.HandlerThread
+import android.os.SystemClock
 import android.util.Log
 import com.continuousauth.buffer.RingBuffer
 import com.continuousauth.model.SensorSample
 import com.continuousauth.model.SensorType
 import com.continuousauth.pool.SensorEventPool
 import com.continuousauth.utils.ForegroundAppDetector
+import com.continuousauth.settings.AppSettingsRepository
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.receiveAsFlow
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -39,7 +43,8 @@ class SensorCollectorImpl @Inject constructor(
     @ApplicationContext private val context: Context,
     private val foregroundAppDetector: ForegroundAppDetector,
     private val ringBuffer: RingBuffer,
-    private val sensorEventPool: SensorEventPool
+    private val sensorEventPool: SensorEventPool,
+    private val settingsRepository: AppSettingsRepository
 ) : SensorCollector, SensorEventListener {
 
     private val sensorManager = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
@@ -56,7 +61,13 @@ class SensorCollectorImpl @Inject constructor(
     private val magnetometer = sensorManager.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD)
     
     // 数据流通道
-    private val sensorDataChannel = Channel<SensorSample>(Channel.UNLIMITED)
+    private val sampleStreams = SensorSampleStreams()
+    private sealed interface PendingSample {
+        data class Captured(val sample: SensorSample) : PendingSample
+        data class Drain(val completed: CompletableDeferred<Unit>) : PendingSample
+    }
+    private val pendingSamples = Channel<PendingSample>(Channel.UNLIMITED)
+    private val callbackLock = Any()
     
     // 状态管理
     private val isCollecting = AtomicBoolean(false)
@@ -71,12 +82,14 @@ class SensorCollectorImpl @Inject constructor(
     private var accelerometerSamplingPeriodUs = TARGET_SAMPLING_PERIOD_US
     private var gyroscopeSamplingPeriodUs = TARGET_SAMPLING_PERIOD_US
     private var magnetometerSamplingPeriodUs = TARGET_SAMPLING_PERIOD_US
-    private var maxReportLatencyUs: Int = 0
+    private val maxReportLatencyUs = 0
+    private val sampleFreshnessNs = 3_000_000_000L
 
     private data class RateTracker(
         var windowStartNs: Long = 0L,
         var windowCount: Int = 0,
-        @Volatile var lastRateHz: Float = 0f
+        var lastRateHz: Float = 0f,
+        var lastCallbackElapsedNs: Long? = null
     )
 
     private val rateTrackers = mapOf(
@@ -84,6 +97,39 @@ class SensorCollectorImpl @Inject constructor(
         SensorType.GYROSCOPE to RateTracker(),
         SensorType.MAGNETOMETER to RateTracker()
     )
+
+    init {
+        var appliedSettings = settingsRepository.sensorSettings.value
+        sensorScope.launch {
+            settingsRepository.sensorSettings.collect { current ->
+                val changed = current != appliedSettings
+                appliedSettings = current
+                if (changed && isCollecting.get()) {
+                    runCatching { reRegisterSensors() }
+                        .onFailure { Log.e("SensorCollector", "应用传感器开关失败", it) }
+                }
+            }
+        }
+        sensorScope.launch {
+            for (pending in pendingSamples) {
+                when (pending) {
+                    is PendingSample.Captured -> {
+                        val captured = pending.sample
+                        val foregroundApp = try {
+                            foregroundAppDetector.getForegroundAppAt(captured.eventTimestampNs)
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            Log.e("SensorCollector", "获取前台应用失败", e)
+                            ""
+                        }
+                        sampleStreams.publish(captured.copy(foregroundApp = foregroundApp))
+                    }
+                    is PendingSample.Drain -> pending.completed.complete(Unit)
+                }
+            }
+        }
+    }
     
     override suspend fun startCollection() {
         collectionMutex.withLock {
@@ -93,6 +139,8 @@ class SensorCollectorImpl @Inject constructor(
             
             // 检测并应用硬件最大采样率
             detectOptimalSamplingRate()
+            resetRateTrackers()
+            isCollecting.set(true)
             
             // 注册传感器监听器（使用固定采样率）
             val registrationResults = listOf(
@@ -102,9 +150,9 @@ class SensorCollectorImpl @Inject constructor(
             )
             
             if (registrationResults.any { it }) {
-                isCollecting.set(true)
                 Log.i("SensorCollector", "传感器采集已启动（目标100Hz）")
             } else {
+                isCollecting.set(false)
                 throw IllegalStateException("没有可用的传感器")
             }
         }
@@ -112,12 +160,18 @@ class SensorCollectorImpl @Inject constructor(
     
     override suspend fun stopCollection() {
         collectionMutex.withLock {
-            if (!isCollecting.get()) {
-                return@withLock
+            val wasCollecting = synchronized(callbackLock) {
+                isCollecting.getAndSet(false)
             }
-            
-            sensorManager.unregisterListener(this)
-            isCollecting.set(false)
+            if (wasCollecting) {
+                sensorManager.unregisterListener(this)
+            }
+            // A cancelled pause may already have cleared the flag while accepted events
+            // are still awaiting attribution. Always drain before completing the stream.
+            val drained = CompletableDeferred<Unit>()
+            pendingSamples.send(PendingSample.Drain(drained))
+            drained.await()
+            resetRateTrackers()
             
             // 清空环形缓冲区
             ringBuffer.clear()
@@ -125,10 +179,17 @@ class SensorCollectorImpl @Inject constructor(
             Log.i("SensorCollector", "传感器采集已停止")
         }
     }
+
+    override suspend fun finishCollection() {
+        stopCollection()
+        sampleStreams.finishProcessing()
+    }
     
     override fun getSensorDataFlow(): Flow<SensorSample> {
-        return sensorDataChannel.receiveAsFlow()
+        return sampleStreams.processingFlow
     }
+
+    override fun getPreviewDataFlow(): Flow<SensorSample> = sampleStreams.previewFlow
     
     override fun isCollecting(): Boolean {
         return isCollecting.get()
@@ -147,12 +208,12 @@ class SensorCollectorImpl @Inject constructor(
         }
         
         // 返回传感器信息，包含固定的采样率
-        val accCurrent = calculateCurrentRate(accelerometerSamplingPeriodUs)
-        val gyrCurrent = calculateCurrentRate(gyroscopeSamplingPeriodUs)
-        val magCurrent = calculateCurrentRate(magnetometerSamplingPeriodUs)
-        val accActual = getActualRate(SensorType.ACCELEROMETER, accCurrent)
-        val gyrActual = getActualRate(SensorType.GYROSCOPE, gyrCurrent)
-        val magActual = getActualRate(SensorType.MAGNETOMETER, magCurrent)
+        val accCurrent = if (accelerometer != null) calculateCurrentRate(accelerometerSamplingPeriodUs) else 0f
+        val gyrCurrent = if (gyroscope != null) calculateCurrentRate(gyroscopeSamplingPeriodUs) else 0f
+        val magCurrent = if (magnetometer != null) calculateCurrentRate(magnetometerSamplingPeriodUs) else 0f
+        val accActual = getActualRate(SensorType.ACCELEROMETER)
+        val gyrActual = getActualRate(SensorType.GYROSCOPE)
+        val magActual = getActualRate(SensorType.MAGNETOMETER)
 
         return SensorInfo(
             accelerometerMaxDelay = accelerometer?.maxDelay ?: 0,
@@ -177,7 +238,7 @@ class SensorCollectorImpl @Inject constructor(
         )
     }
     
-    override fun onSensorChanged(event: SensorEvent) {
+    override fun onSensorChanged(event: SensorEvent) = synchronized(callbackLock) {
         if (!isCollecting.get()) return
 
         val sensorType = when (event.sensor.type) {
@@ -186,21 +247,13 @@ class SensorCollectorImpl @Inject constructor(
             Sensor.TYPE_MAGNETIC_FIELD -> SensorType.MAGNETOMETER
             else -> return
         }
+        if (!isSensorEnabled(sensorType)) return
 
         updateRate(sensorType, event.timestamp)
-        
-        // 使用协程在专用线程上处理传感器数据
-        sensorScope.launch {
-            // 获取当前前台应用
-            val currentForegroundApp = try {
-                foregroundAppDetector.getCurrentForegroundApp()
-            } catch (e: Exception) {
-                Log.e("SensorCollector", "获取前台应用失败", e)
-                ""
-            }
-            
-            // 使用对象池获取包装对象，减少GC压力
-            val pooledSample = sensorEventPool.acquire()
+
+        // Android reuses SensorEvent and its values array immediately after this callback.
+        val pooledSample = sensorEventPool.acquire()
+        val capturedSample = try {
             pooledSample.setSensorData(
                 type = sensorType,
                 eventTimestampNs = event.timestamp,
@@ -209,16 +262,14 @@ class SensorCollectorImpl @Inject constructor(
                 z = event.values[2],
                 accuracy = event.accuracy,
                 seqNo = sequenceNumber.incrementAndGet(),
-                foregroundApp = currentForegroundApp
+                foregroundApp = ""
             )
-            
-            val sample = pooledSample.toSensorSample()
-            
-            sensorDataChannel.trySend(sample)
-            
-            // 释放对象回池中
+            pooledSample.toSensorSample()
+        } finally {
             pooledSample.release()
         }
+
+        check(pendingSamples.trySend(PendingSample.Captured(capturedSample)).isSuccess)
     }
     
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {
@@ -233,39 +284,17 @@ class SensorCollectorImpl @Inject constructor(
      * 三类传感器目标 100Hz，硬件达标时强制 100Hz，不因省电或锁屏降级
      */
     private fun detectOptimalSamplingRate() {
-        accelerometerSamplingPeriodUs = TARGET_SAMPLING_PERIOD_US
-        gyroscopeSamplingPeriodUs = TARGET_SAMPLING_PERIOD_US
-        magnetometerSamplingPeriodUs = TARGET_SAMPLING_PERIOD_US
+        accelerometerSamplingPeriodUs = samplingPeriodFor(accelerometer, TARGET_SAMPLING_PERIOD_US)
+        gyroscopeSamplingPeriodUs = samplingPeriodFor(gyroscope, TARGET_SAMPLING_PERIOD_US)
+        magnetometerSamplingPeriodUs = samplingPeriodFor(magnetometer, TARGET_SAMPLING_PERIOD_US)
 
-        // 根据FIFO大小动态设置maxReportLatencyUs以充分利用硬件FIFO队列
-        val fifoSizes = listOfNotNull(
-            accelerometer?.fifoMaxEventCount,
-            gyroscope?.fifoMaxEventCount,
-            magnetometer?.fifoMaxEventCount
-        ).filter { it > 0 }
-        val minFifoSize = fifoSizes.minOrNull() ?: 0
-        val minSamplingPeriodUs = TARGET_SAMPLING_PERIOD_US
-        
-        if (minFifoSize > 0) {
-            // 根据FIFO大小和采样周期计算合适的延迟，最长不超过1秒
-            maxReportLatencyUs = (minFifoSize * minSamplingPeriodUs)
-                .coerceAtMost(1_000_000)
-            
-            Log.i(
-                "SensorCollector", 
-                "检测到最小FIFO大小: $minFifoSize, 设置maxReportLatencyUs: ${maxReportLatencyUs}us"
-            )
-            
-            Log.i(
-                "SensorCollector", 
-                "采样率配置: 加速度计${calculateCurrentRate(accelerometerSamplingPeriodUs)}Hz, " +
+        // The processor owns the one-second batching deadline; hardware delivery stays immediate.
+        Log.i(
+            "SensorCollector",
+            "采样率配置: 加速度计${calculateCurrentRate(accelerometerSamplingPeriodUs)}Hz, " +
                 "陀螺仪${calculateCurrentRate(gyroscopeSamplingPeriodUs)}Hz, " +
-                "磁力计${calculateCurrentRate(magnetometerSamplingPeriodUs)}Hz"
-            )
-        } else {
-            maxReportLatencyUs = 0 // 实时报告
-            Log.i("SensorCollector", "传感器不支持批处理，使用实时模式")
-        }
+                "磁力计${calculateCurrentRate(magnetometerSamplingPeriodUs)}Hz; 实时报告"
+        )
     }
     
     /**
@@ -276,6 +305,13 @@ class SensorCollectorImpl @Inject constructor(
      */
     private fun registerSensorIfAvailable(sensor: Sensor?, sensorName: String, samplingPeriodUs: Int): Boolean {
         return sensor?.let {
+            val enabled = when (it.type) {
+                Sensor.TYPE_ACCELEROMETER -> settingsRepository.sensorSettings.value.accelerometerEnabled
+                Sensor.TYPE_GYROSCOPE -> settingsRepository.sensorSettings.value.gyroscopeEnabled
+                Sensor.TYPE_MAGNETIC_FIELD -> settingsRepository.sensorSettings.value.magnetometerEnabled
+                else -> false
+            }
+            if (!enabled) return false
             val success = sensorManager.registerListener(
                 this,
                 it,
@@ -303,11 +339,31 @@ class SensorCollectorImpl @Inject constructor(
         return if (periodUs > 0) 1_000_000f / periodUs else 0f
     }
 
+    private fun samplingPeriodFor(sensor: Sensor?, requestedUs: Int): Int =
+        maxOf(requestedUs, sensor?.minDelay ?: 0)
+
+    private fun resetRateTrackers() {
+        rateTrackers.values.forEach { tracker ->
+            synchronized(tracker) {
+                tracker.windowStartNs = 0L
+                tracker.windowCount = 0
+                tracker.lastRateHz = 0f
+                tracker.lastCallbackElapsedNs = null
+            }
+        }
+    }
+
     private fun updateRate(sensorType: SensorType, timestampNs: Long) {
         val tracker = rateTrackers[sensorType] ?: return
         synchronized(tracker) {
-            if (tracker.windowStartNs == 0L) {
+            val nowNs = SystemClock.elapsedRealtimeNanos()
+            val previousCallbackNs = tracker.lastCallbackElapsedNs
+            tracker.lastCallbackElapsedNs = nowNs
+            if (previousCallbackNs == null || nowNs - previousCallbackNs >= sampleFreshnessNs) {
                 tracker.windowStartNs = timestampNs
+                tracker.windowCount = 0
+                tracker.lastRateHz = 0f
+                return
             }
             tracker.windowCount += 1
             val elapsedNs = timestampNs - tracker.windowStartNs
@@ -319,10 +375,17 @@ class SensorCollectorImpl @Inject constructor(
         }
     }
 
-    private fun getActualRate(sensorType: SensorType, fallback: Float): Float {
-        val tracker = rateTrackers[sensorType] ?: return fallback
-        val rate = tracker.lastRateHz
-        return if (rate > 0f) rate else fallback
+    private fun getActualRate(sensorType: SensorType): Float {
+        if (!isCollecting.get() || !isSensorEnabled(sensorType)) return 0f
+        val tracker = rateTrackers[sensorType] ?: return 0f
+        return synchronized(tracker) {
+            val lastCallbackNs = tracker.lastCallbackElapsedNs ?: return@synchronized 0f
+            if (SystemClock.elapsedRealtimeNanos() - lastCallbackNs !in 0 until sampleFreshnessNs) {
+                0f
+            } else {
+                tracker.lastRateHz
+            }
+        }
     }
     
     /**
@@ -407,6 +470,8 @@ class SensorCollectorImpl @Inject constructor(
 
         // 先取消注册所有传感器
         sensorManager.unregisterListener(this)
+        resetRateTrackers()
+        if (!settingsRepository.sensorSettings.value.anyEnabled) return@withLock
 
         // 重新检测最优采样率配置
         detectOptimalSamplingRate()
@@ -428,5 +493,11 @@ class SensorCollectorImpl @Inject constructor(
             Log.e("SensorCollector", "传感器重新注册失败，恢复之前的采样率")
             throw IllegalStateException("传感器重新注册失败")
         }
+    }
+
+    private fun isSensorEnabled(type: SensorType): Boolean = when (type) {
+        SensorType.ACCELEROMETER -> settingsRepository.sensorSettings.value.accelerometerEnabled
+        SensorType.GYROSCOPE -> settingsRepository.sensorSettings.value.gyroscopeEnabled
+        SensorType.MAGNETOMETER -> settingsRepository.sensorSettings.value.magnetometerEnabled
     }
 }

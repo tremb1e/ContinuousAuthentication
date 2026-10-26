@@ -18,7 +18,7 @@ class DeviceUnlockReceiver : BroadcastReceiver() {
     companion object {
         private const val TAG = "DeviceUnlockReceiver"
         private const val PREFS_NAME = "app_prefs"
-        private const val PRIVACY_AGREEMENT_KEY = "privacy_agreement_shown"
+        private const val PRIVACY_AGREEMENT_KEY = "privacy_consent_granted"
         private const val COLLECTION_REQUESTED_KEY = "collection_requested"
     }
     
@@ -79,7 +79,7 @@ class DeviceUnlockReceiver : BroadcastReceiver() {
         }
 
         val intent = Intent(context, DataCollectionService::class.java).apply {
-            action = DataCollectionService.ACTION_RESUME_COLLECTION
+            action = DataCollectionService.ACTION_REFRESH_STATE
         }
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {

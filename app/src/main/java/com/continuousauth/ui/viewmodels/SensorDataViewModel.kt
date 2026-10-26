@@ -13,8 +13,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
-import java.util.Locale
+import android.os.SystemClock
 import javax.inject.Inject
 import com.continuousauth.model.SensorType
 
@@ -75,25 +74,20 @@ class SensorDataViewModel @Inject constructor(
     private var isChartActive = false
     
     /**
-     * 开始收集传感器数据
+     * 订阅服务提供的预览；采集生命周期只由前台服务管理。
      */
     fun startSensorCollection() {
-        // 取消之前的任务
-        stopSensorCollection()
-        
-        viewModelScope.launch {
-            // 开始传感器数据收集
-            sensorCollector.startCollection()
-            _sensorsActive.value = true
-            
-            // 订阅传感器数据流（使用update确保线程安全）
-            sensorCollectionJob = launch {
-                sensorCollector.getSensorDataFlow().collect { sample ->
+        if (sensorCollectionJob?.isActive == true) return
+
+        sensorCollectionJob = viewModelScope.launch {
+                sensorCollector.getPreviewDataFlow().collect { sample ->
+                    _sensorsActive.value = true
                     val sensorData = SensorData(
                         x = sample.x,
                         y = sample.y,
                         z = sample.z,
-                        timestamp = System.currentTimeMillis() // 使用当前系统时间作为显示时间戳
+                        timestamp = System.currentTimeMillis() +
+                            (sample.eventTimestampNs - SystemClock.elapsedRealtimeNanos()) / 1_000_000
                     )
                     
                     when (sample.type) {
@@ -117,51 +111,14 @@ class SensorDataViewModel @Inject constructor(
                         }
                     }
                 }
-            }
-
-            // 定期获取前台应用（优化性能）
-            appDetectionJob = launch {
-                while (_sensorsActive.value == true) {
-                    try {
-                        val currentApp = foregroundAppDetector.getCurrentForegroundApp()
-                        if (currentApp.isNotEmpty()) {
-                            // 获取应用名称（从包名中提取）
-                            val appName = getAppNameFromPackage(currentApp)
-
-                            // 检查是否与最后一个应用不同
-                            val currentList = _recentApps.value
-                            if (currentList.isEmpty() || currentList.last().packageName != currentApp) {
-                                addRecentApp(currentApp, appName)
-                            }
-                        }
-                    } catch (e: Exception) {
-                        // 忽略错误，继续监测
-                    }
-                    delay(1000) // 每秒检查一次
+        }
+        appDetectionJob = viewModelScope.launch {
+            foregroundAppDetector.recentApps.collect { apps ->
+                _recentApps.value = apps.map { app ->
+                    RecentApp(app.packageName, foregroundAppDetector.getAppName(app.packageName), app.timestamp)
                 }
             }
-
         }
-    }
-    /**
-     * 更新最近应用列表，确保唯一性和正确排序
-     */
-    private fun updateRecentAppsList(newApp: RecentApp) {
-        val currentList = _recentApps.value.toMutableList()
-
-        // 移除相同包名的旧记录
-        currentList.removeAll { it.packageName == newApp.packageName }
-
-        // 添加新记录到列表末尾
-        currentList.add(newApp)
-
-        // 只保留最近10个应用
-        while (currentList.size > 10) {
-            currentList.removeAt(0)
-        }
-
-        // 更新状态流
-        _recentApps.value = currentList
     }
 
 
@@ -175,37 +132,7 @@ class SensorDataViewModel @Inject constructor(
         sensorCollectionJob = null
         appDetectionJob = null
         
-        viewModelScope.launch {
-            sensorCollector.stopCollection()
-            _sensorsActive.value = false
-        }
-    }
-    
-    /**
-     * 从包名获取应用名称
-     */
-    private fun getAppNameFromPackage(packageName: String): String {
-        return when {
-            packageName.contains("chrome") -> "Chrome"
-            packageName.contains("whatsapp") -> "WhatsApp"
-            packageName.contains("spotify") -> "Spotify"
-            packageName.contains("instagram") -> "Instagram"
-            packageName.contains("youtube") -> "YouTube"
-            packageName.contains("facebook") -> "Facebook"
-            packageName.contains("twitter") -> "Twitter"
-            packageName.contains("telegram") -> "Telegram"
-            packageName.contains("gmail") -> "Gmail"
-            packageName.contains("maps") -> "Maps"
-            packageName.contains("camera") -> "Camera"
-            packageName.contains("gallery") -> "Gallery"
-            packageName.contains("settings") -> "Settings"
-            packageName.contains("phone") -> "Phone"
-            packageName.contains("messages") -> "Messages"
-            packageName.contains("calculator") -> "Calculator"
-            packageName.contains("calendar") -> "Calendar"
-            packageName.contains("clock") -> "Clock"
-            else -> packageName.split(".").lastOrNull()?.replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.getDefault()) else it.toString() } ?: packageName
-        }
+        _sensorsActive.value = false
     }
     
     /**
@@ -229,19 +156,4 @@ class SensorDataViewModel @Inject constructor(
         super.onCleared()
         stopSensorCollection()
     }
-    /**
-     * 添加最近使用的应用到列表中，确保唯一性和正确排序
-     */
-    private fun addRecentApp(packageName: String, appName: String) {
-        val currentTime = System.currentTimeMillis()
-        val newApp = RecentApp(
-            packageName = packageName,
-            appName = appName,
-            timestamp = currentTime
-        )
-
-        // 更新最近应用列表
-        updateRecentAppsList(newApp)
-    }
-
 }

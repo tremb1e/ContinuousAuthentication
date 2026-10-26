@@ -1,1522 +1,445 @@
 package com.continuousauth.ui.compose.screens
 
-import androidx.compose.animation.*
-import androidx.compose.animation.core.*
-import androidx.compose.foundation.*
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
+import android.provider.Settings
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.*
-import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.runtime.getValue
-import androidx.compose.ui.res.stringResource
 import androidx.compose.runtime.livedata.observeAsState
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.rotate
-import androidx.compose.ui.draw.scale
-import androidx.compose.ui.graphics.*
-import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
-import com.continuousauth.R
-import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
+import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.continuousauth.ui.MainViewModel
-import com.continuousauth.ui.theme.ExtendedColors
-import com.continuousauth.network.ConnectionStatus
 import com.continuousauth.network.ServerEndpointNormalizer
-import com.continuousauth.network.TransportMode
 import com.continuousauth.privacy.ConsentState
 import com.continuousauth.privacy.DeletionState
-import com.continuousauth.storage.QueueStats
-import com.continuousauth.utils.Constant
-import com.continuousauth.utils.SpUtils
-import com.continuousauth.monitor.SystemMonitor
-import kotlinx.coroutines.delay
+import com.continuousauth.settings.ProtectionMode
+import com.continuousauth.ui.MainViewModel
+import com.continuousauth.ui.compose.components.ExpandableSection
+import com.continuousauth.ui.compose.components.PrivacyNoticeContent
+import com.continuousauth.ui.viewmodels.DetailedInfoViewModel
+import com.continuousauth.utils.BackgroundExecutionHelper
 import kotlinx.coroutines.launch
+import java.net.URI
 
-/**
- * 服务器配置页面
- * 美观的服务器设置和连接管理界面
- */
-@OptIn(ExperimentalMaterial3Api::class)
+/** All preferences live here; each section starts collapsed. */
 @Composable
-fun ServerConfigScreen(viewModel: MainViewModel) {
-    val scrollState = rememberScrollState()
-    val scope = rememberCoroutineScope()
-    val clipboardManager = LocalClipboardManager.current
-    
-    // 观察 ViewModel 状态
-    val connectionStatus by viewModel.connectionStatus.observeAsState(ConnectionStatus.DISCONNECTED)
-    val isCollectionRunning by viewModel.isCollectionRunning.observeAsState(false)
-    val isEncryptedUploading by viewModel.isEncryptedUploading.observeAsState(false)
-    val uploadIdentity by viewModel.uploadIdentity.observeAsState("")
-    val sessionId by viewModel.sessionId.observeAsState(null)
-    val sessionStartTime by viewModel.sessionStartTime.observeAsState(0L)
-    val sessionDuration by viewModel.sessionDuration.observeAsState("00:00")
-    val serverTestResult by viewModel.serverTestResult.observeAsState(null)
-    val transmissionStats by viewModel.transmissionStats.observeAsState(null)
-    val fileQueueStats by viewModel.fileQueueStats.observeAsState(null)
-    // 添加清空队列确认对话框状态变量
-    var showClearQueueDialog by remember { mutableStateOf(false) }
-    // 本地状态
-    var serverIp by remember {
-        mutableStateOf(SpUtils.decodeString(Constant.SERVER_IP, "https://${ServerEndpointNormalizer.DEFAULT_HOST}"))
-    }
-    var serverPort by remember {
-        mutableStateOf(SpUtils.decodeString(Constant.SERVER_PORT, ServerEndpointNormalizer.DEFAULT_HTTPS_PORT.toString()))
-    }
-    var isTestingConnection by remember { mutableStateOf(false) }
-
-    LaunchedEffect(Unit) {
-        val saved = viewModel.getServerConfig()
-        val displayHost = if (saved.scheme == "https") "https://${saved.host}" else saved.host
-        serverIp = displayHost
-        serverPort = saved.port.toString()
-    }
-
-    // 观察隐私相关状态
-    val consentState by viewModel.consentState.observeAsState(initial = ConsentState.UNKNOWN)
-    val deletionState by viewModel.deletionState.observeAsState(initial = DeletionState.IDLE)
-    // 本地状态
-    var showWithdrawDialog by remember { mutableStateOf(false) }
-    var showPrivacyPolicy by remember { mutableStateOf(false) }
-    var dataRetentionDays by remember { mutableIntStateOf(30) }
-
-    val transmissionStatus by viewModel.transmissionStatus.collectAsStateWithLifecycle()
-    val timeSyncStatus by viewModel.timeSyncStatus.collectAsStateWithLifecycle()
-    // 添加控制NTP时间同步卡片显示的变量
-    var showNtpSyncCard by remember { mutableStateOf(true) }
-    // 添加控制传输状态卡片显示的变量
-    var showTransmissionStatusCard by remember { mutableStateOf(true) }
-    // 撤回同意确认对话框
-    if (showWithdrawDialog) {
-        WithdrawConsentDialog(
-            onConfirm = {
-                scope.launch {
-                    viewModel.withdrawConsentAndDeleteData()
-                }
-                showWithdrawDialog = false
-            },
-            onDismiss = { showWithdrawDialog = false }
-        )
-    }
-    // 清空队列确认对话框
-    if (showClearQueueDialog) {
-        ClearQueueDialog(
-            onConfirm = {
-                scope.launch {
-                    viewModel.clearFileQueue()
-                }
-                showClearQueueDialog = false
-            },
-            onDismiss = { showClearQueueDialog = false }
-        )
-    }
-
-    // 隐私政策对话框
-    if (showPrivacyPolicy) {
-        PrivacyPolicyDialog(
-            onDismiss = { showPrivacyPolicy = false }
-        )
-    }
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .verticalScroll(scrollState)
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
-        ) {
-            // 连接状态卡片
-            ConnectionStatusCard(connectionStatus, serverIp, serverPort)
-            
-            // 上传标识信息卡片
-            IdentificationCard(
-                uploadId = uploadIdentity,
-                onCopyUploadId = {
-                    clipboardManager.setText(AnnotatedString(uploadIdentity))
-                }
-            )
-            
-            // 服务器配置卡片
-            ServerSettingsCard(
-                serverIp = serverIp,
-                serverPort = serverPort,
-                onIpChange = { serverIp = it },
-                onPortChange = { serverPort = it },
-                isTestingConnection = isTestingConnection,
-                serverTestResult = serverTestResult,
-                onTestConnection = {
-                    isTestingConnection = true
-                    val parsedPort = serverPort.toIntOrNull()
-                    viewModel.saveServerConfig(serverIp, parsedPort)
-                    viewModel.testServerConnection(serverIp, serverPort)
-                    scope.launch {
-                        delay(3500) // 等待测试完成
-                        isTestingConnection = false
-                    }
-                }
-            )
-            
-            // 加密数据上传控制卡片
-            EncryptedUploadControlCard(
-                isEncryptedUploading = isEncryptedUploading,
-                connectionStatus = connectionStatus,
-                sessionId = sessionId,
-                sessionStartTime = sessionStartTime,
-                sessionDuration = sessionDuration,
-                transmissionStats = transmissionStats,
-                fileQueueStats = fileQueueStats,
-                onToggleUpload = {
-                    if (isEncryptedUploading) {
-                        viewModel.stopEncryptedUpload()
-                    } else {
-                        val parsedPort = serverPort.toIntOrNull()
-                        viewModel.saveServerConfig(serverIp, parsedPort)
-                        viewModel.startEncryptedUpload()
-                    }
-                }
-            )
-            
-            // 文件队列统计卡片
-            fileQueueStats?.let { stats ->
-                FileQueueCard(
-                    queueStats = stats,
-                    onClearQueue = { showClearQueueDialog = true  }
-                )
-            }
-            // 数据管理卡片
-            DataManagementCard(
-                onWithdrawConsent = { showWithdrawDialog = true },
-                onViewPrivacyPolicy = { showPrivacyPolicy = true },
-                isDeleting = deletionState == DeletionState.IN_PROGRESS
-            )
-            // 加密状态卡片
-            EncryptionStatusCard(transmissionStatus)
-            if(showTransmissionStatusCard){
-                // 传输状态卡片
-                InfoCard(
-                    title = "传输状态",
-                    icon = Icons.AutoMirrored.Filled.Send
-                ) {
-                    InfoRow("压缩算法", transmissionStatus.compression)
-                    InfoRow("连接状态",
-                        if (transmissionStatus.isConnected) "已连接" else "未连接",
-                        textColor = if (transmissionStatus.isConnected)
-                            MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
-                    )
-                    InfoRow("上传队列", "${transmissionStatus.uploadQueueSize} 个数据包")
-                    val transportDisplay = transportDisplay(transmissionStatus)
-                    InfoRow(
-                        "传输通道",
-                        transportDisplay.first,
-                        textColor = transportDisplay.second
-                    )
-                    if (!transmissionStatus.transportError.isNullOrBlank()) {
-                        Text(
-                            text = transmissionStatus.transportError ?: "",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.error,
-                            modifier = Modifier.padding(top = 4.dp)
-                        )
-                    }
-                }
-            }
-
-            // 条件显示NTP时间同步卡片
-            if (showNtpSyncCard) {
-                // NTP时间同步卡片
-                InfoCard(
-                    title = "NTP时间同步",
-                    icon = Icons.Default.Schedule
-                ) {
-                    InfoRow("同步状态",
-                        timeSyncStatus.syncStatus,
-                        textColor = when (timeSyncStatus.syncStatus) {
-                            "SUCCESS" -> Color(0xFF4CAF50)
-                            "SYNCING" -> Color(0xFFFF9800)
-                            "ERROR" -> MaterialTheme.colorScheme.error
-                            else -> MaterialTheme.colorScheme.onSurface
-                        }
-                    )
-                    InfoRow("同步有效",
-                        if (timeSyncStatus.isNtpSyncValid) "是" else "否",
-                        textColor = if (timeSyncStatus.isNtpSyncValid)
-                            Color(0xFF4CAF50) else MaterialTheme.colorScheme.error
-                    )
-                    InfoRow("NTP偏移量", "${timeSyncStatus.ntpOffsetMs} ms")
-                    InfoRow("同步精度", "${timeSyncStatus.syncAccuracyMs} ms")
-                    if (timeSyncStatus.lastSyncTime > 0) {
-                        val timeSinceSync = (System.currentTimeMillis() - timeSyncStatus.lastSyncTime) / 1000
-                        InfoRow("上次同步", "${timeSinceSync} 秒前")
-                    }
-                }
-            }
-
-        }
-    }
-}
-
-/**
- * 加密状态卡片
- */
-@Composable
-private fun EncryptionStatusCard(transmissionStatus: SystemMonitor.TransmissionStatus) {
-    val (transportLabel, transportColor) = transportDisplay(transmissionStatus)
-    Card(
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        Column(
-            modifier = Modifier.padding(16.dp)
-        ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Lock,
-                    contentDescription = null,
-                    tint = Color(0xFF4CAF50),
-                    modifier = Modifier.size(24.dp)
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(
-                    text = "加密状态",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold
-                )
-            }
-
-            Spacer(modifier = Modifier.height(12.dp))
-
-            PrivacyInfoRow("加密算法", "AES-256-GCM (固定派生密钥)")
-            PrivacyInfoRow("密钥管理", "SHA-256(\"Continuous_Authentication\") 派生对称密钥")
-            PrivacyInfoRow("传输安全", transportLabel, textColor = transportColor)
-            PrivacyInfoRow("数据压缩", "LZ4 帧压缩（先压缩后加密）")
-            if (transmissionStatus.transportMode == TransportMode.HTTP &&
-                transmissionStatus.transportLastAttemptMs > 0
-            ) {
-                val note = when {
-                    transmissionStatus.transportPreferredScheme.lowercase() == "http" ->
-                        "当前按服务器配置使用HTTP，链路为明文"
-                    transmissionStatus.transportDowngraded ->
-                        "TLS不可用或握手失败，已降级为HTTP明文"
-                    else -> "当前通道为HTTP明文"
-                }
-                Text(
-                    text = note,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.error,
-                    modifier = Modifier.padding(top = 4.dp)
-                )
-            }
-        }
-    }
-}
-/**
- * 信息行
- */
-@Composable
-private fun PrivacyInfoRow(
-    label: String,
-    value: String,
-    textColor: Color = MaterialTheme.colorScheme.onSurface
+fun ServerConfigScreen(
+    viewModel: MainViewModel,
+    onRequestConsent: () -> Unit,
+    detailViewModel: DetailedInfoViewModel = hiltViewModel()
 ) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 4.dp),
-        horizontalArrangement = Arrangement.SpaceBetween
-    ) {
-        Text(
-            text = label,
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Spacer(modifier = Modifier.width(20.dp))
-        Text(
-            text = value,
-            style = MaterialTheme.typography.bodyMedium,
-            fontWeight = FontWeight.Medium,
-            color = textColor,
-            textAlign = TextAlign.End
-        )
-    }
-}
-
-@Composable
-private fun transportDisplay(
-    transmissionStatus: SystemMonitor.TransmissionStatus
-): Pair<String, Color> {
-    val defaultColor = MaterialTheme.colorScheme.onSurface
-    if (transmissionStatus.transportLastAttemptMs == 0L) {
-        return "未检测到上传" to defaultColor
-    }
-
-    return when (transmissionStatus.transportMode) {
-        TransportMode.HTTP -> {
-            val reason = when {
-                transmissionStatus.transportPreferredScheme.lowercase() == "http" -> "（按配置使用HTTP）"
-                transmissionStatus.transportDowngraded -> "（TLS不可用/失败）"
-                else -> ""
-            }
-            "HTTP 明文$reason" to MaterialTheme.colorScheme.error
-        }
-
-        TransportMode.HTTPS -> {
-            val version = transmissionStatus.transportTlsVersion
-                ?: if (transmissionStatus.transportTlsCapable) "TLS 1.2+" else "TLS"
-            val protocol = transmissionStatus.transportNegotiatedProtocol
-            val detail = listOfNotNull(version, protocol)
-                .filter { it.isNotBlank() }
-                .joinToString(" / ")
-            val label = if (detail.isBlank()) "TLS" else "TLS $detail"
-            label to MaterialTheme.colorScheme.primary
-        }
-    }
-}
-/**
- * 连接状态卡片
- */
-@Composable
-fun ConnectionStatusCard(
-    connectionStatus: ConnectionStatus,
-    serverIp: String,
-    serverPort: String
-) {
-    val statusColor = when (connectionStatus) {
-        ConnectionStatus.CONNECTED -> ExtendedColors.success
-        ConnectionStatus.CONNECTING, ConnectionStatus.RECONNECTING -> ExtendedColors.warning
-        ConnectionStatus.DISCONNECTED -> ExtendedColors.error
-        else -> Color.Gray
-    }
-    
     val context = LocalContext.current
-    val statusText = when (connectionStatus) {
-        ConnectionStatus.CONNECTED -> context.getString(R.string.connected)
-        ConnectionStatus.CONNECTING -> context.getString(R.string.connecting)
-        ConnectionStatus.RECONNECTING -> context.getString(R.string.reconnecting)
-        ConnectionStatus.DISCONNECTED -> context.getString(R.string.disconnected)
-        else -> context.getString(R.string.not_available)
+    val focusManager = LocalFocusManager.current
+    val scope = rememberCoroutineScope()
+    val consent by viewModel.consentState.observeAsState(ConsentState.UNKNOWN)
+    val deletion by viewModel.deletionState.observeAsState(DeletionState.IDLE)
+    val protectionMode by viewModel.protectionMode.collectAsStateWithLifecycle()
+    val sensors by viewModel.sensorCollectionSettings.collectAsStateWithLifecycle()
+    val wifiOnly by viewModel.uploadPolicyWiFiOnly.observeAsState(false)
+    val smartTransmission by viewModel.smartTransmissionEnabled.observeAsState(viewModel.getSmartTransmissionEnabled())
+    val isUploading by viewModel.isEncryptedUploading.observeAsState(false)
+    val collectionStatus by viewModel.collectionStatus.observeAsState("")
+    val queueStats by viewModel.fileQueueStats.observeAsState(null)
+    val debugEnabled by viewModel.debugModeEnabled.observeAsState(false)
+    val visualizationEnabled by viewModel.visualizationEnabled.observeAsState(false)
+    val serverTestResult by viewModel.serverTestResult.observeAsState(null)
+    val maintenanceMessage by detailViewModel.maintenanceMessage.collectAsStateWithLifecycle()
+    val lifecycleOwner = LocalLifecycleOwner.current
+    var systemAccess by remember { mutableStateOf(readSystemAccess(context, viewModel)) }
+    var confirmation by rememberSaveable { mutableStateOf<String?>(null) }
+    var maintenanceBusy by remember { mutableStateOf(false) }
+    var preparedExportPath by rememberSaveable { mutableStateOf<String?>(null) }
+    val deleting = deletion == DeletionState.IN_PROGRESS
+    val collectionChanging = collectionStatus == "STARTING" || collectionStatus == "STOPPING"
+    val canEditServer = !isUploading && !collectionChanging
+    val savedServer = remember(viewModel) { viewModel.getServerConfig() }
+    var serverAddress by rememberSaveable { mutableStateOf("${savedServer.scheme}://${savedServer.host}") }
+    var serverPort by rememberSaveable { mutableStateOf(savedServer.port.toString()) }
+    var serverValidation by rememberSaveable { mutableStateOf<String?>(null) }
+    var serverFeedback by rememberSaveable { mutableStateOf<String?>(null) }
+    var retentionInput by rememberSaveable { mutableStateOf(viewModel.getDataRetentionDays().toString()) }
+    var retentionError by rememberSaveable { mutableStateOf<String?>(null) }
+    var retentionSaved by rememberSaveable { mutableStateOf(false) }
+    val testing = serverTestResult?.startsWith("正在测试") == true
+    val sensorCount = listOf(sensors.accelerometerEnabled, sensors.gyroscopeEnabled, sensors.magnetometerEnabled).count { it }
+    val saveExport: (Uri?) -> Unit = { destination ->
+        val path = preparedExportPath
+        preparedExportPath = null
+        scope.launch {
+            maintenanceBusy = true
+            try {
+                if (destination != null && path != null) detailViewModel.savePreparedExport(path, destination)
+                else detailViewModel.cancelPreparedExport(path)
+            } finally { maintenanceBusy = false }
+        }
     }
-    
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(24.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = statusColor.copy(alpha = 0.1f)
-        )
+    val dataExportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/zip"), saveExport)
+    val logExportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/plain"), saveExport)
+
+    DisposableEffect(context, lifecycleOwner, viewModel) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) systemAccess = readSystemAccess(context, viewModel)
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+    LaunchedEffect(serverTestResult) {
+        serverTestResult?.let { serverFeedback = it }
+    }
+
+    fun saveServer(test: Boolean) {
+        serverValidation = validateServerSettings(serverAddress, serverPort)
+        if (serverValidation != null) return
+        focusManager.clearFocus()
+        viewModel.saveServerConfig(serverAddress.trim(), serverPort.toInt())
+        val normalized = viewModel.getServerConfig()
+        serverAddress = "${normalized.scheme}://${normalized.host}"
+        serverPort = normalized.port.toString()
+        serverFeedback = "服务器设置已保存"
+        if (test) viewModel.testServerConnection(serverAddress, serverPort)
+    }
+
+    Column(
+        modifier = Modifier.fillMaxSize().imePadding().verticalScroll(rememberScrollState()).padding(16.dp).testTag("settings_screen"),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(
-                    Brush.linearGradient(
-                        colors = listOf(
-                            statusColor.copy(alpha = 0.05f),
-                            statusColor.copy(alpha = 0.15f)
-                        )
-                    )
-                )
-                .padding(24.dp)
-        ) {
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                // 动画连接图标
-                AnimatedConnectionIcon(
-                    isConnected = connectionStatus == ConnectionStatus.CONNECTED,
-                    color = statusColor
-                )
-                
-                Spacer(modifier = Modifier.height(16.dp))
-                
-                Text(
-                    text = statusText,
-                    style = MaterialTheme.typography.headlineSmall,
-                    fontWeight = FontWeight.Bold,
-                    color = statusColor
-                )
-                
-                if (connectionStatus == ConnectionStatus.CONNECTED) {
-                    Text(
-                        text = "$serverIp:$serverPort",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
-                        modifier = Modifier.padding(top = 4.dp)
-                    )
+        Text("按需调整，安心使用", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+        Text("点击栏目展开设置。你的选择会自动保留；服务器和保存天数需点击保存。", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Spacer(Modifier.height(4.dp))
+
+        ExpandableSection("consent", "知情同意", consentLabel(consent), Icons.Default.PrivacyTip) {
+            Text(consentLabel(consent), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+            PrivacyNoticeContent()
+            if (consent == ConsentState.GRANTED) {
+                OutlinedButton(onClick = { confirmation = "withdraw" }, enabled = !deleting, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag("withdraw_consent")) {
+                    Text(if (deleting) "正在停止采集并删除…" else "撤回同意并删除数据")
+                }
+            } else {
+                Button(onClick = onRequestConsent, enabled = !deleting, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag("review_consent")) {
+                    Text("查看并决定是否同意")
                 }
             }
-        }
-    }
-}
-
-/**
- * 动画连接图标
- */
-@Composable
-fun AnimatedConnectionIcon(
-    isConnected: Boolean,
-    color: Color
-) {
-    val infiniteTransition = rememberInfiniteTransition(label = "connection")
-    
-    if (isConnected) {
-        val scale by infiniteTransition.animateFloat(
-            initialValue = 0.8f,
-            targetValue = 1.2f,
-            animationSpec = infiniteRepeatable(
-                animation = tween(1500),
-                repeatMode = RepeatMode.Reverse
-            ),
-            label = "scale"
-        )
-        
-        Box(contentAlignment = Alignment.Center) {
-            repeat(3) { index ->
-                Box(
-                    modifier = Modifier
-                        .size(60.dp + (index * 20).dp)
-                        .scale(scale)
-                        .clip(CircleShape)
-                        .background(color.copy(alpha = 0.1f - index * 0.03f))
-                )
+            DeletionFeedback(deletion)
+            if (deletion == DeletionState.PARTIAL_SUCCESS) {
+                OutlinedButton(onClick = { viewModel.retryPendingDeletionRequests() }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("重试服务器删除请求") }
             }
-            
-            Icon(
-                imageVector = Icons.Filled.CloudDone,
-                contentDescription = null,
-                modifier = Modifier.size(48.dp),
-                tint = color
-            )
-        }
-    } else {
-        Icon(
-            imageVector = Icons.Filled.CloudOff,
-            contentDescription = null,
-            modifier = Modifier.size(48.dp),
-            tint = color
-        )
-    }
-}
-
-/**
- * 上传标识信息卡片
- */
-@Composable
-fun IdentificationCard(
-    uploadId: String,
-    onCopyUploadId: () -> Unit
-) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(20.dp),
-        elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
-    ) {
-        Column(
-            modifier = Modifier.padding(20.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            Text(
-                text = stringResource(R.string.identity_label),
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.Bold
-            )
-            
-            IdRow(
-                icon = Icons.Filled.VpnKey,
-                label = "上传标识 (HMAC)",
-                value = if (uploadId.isNotBlank()) uploadId else "生成中...",
-                onCopy = onCopyUploadId
-            )
-        }
-    }
-}
-
-/**
- * ID 行组件
- */
-@OptIn(ExperimentalAnimationApi::class)
-@Composable
-fun IdRow(
-    icon: ImageVector,
-    label: String,
-    value: String,
-    onCopy: () -> Unit
-) {
-    var copied by remember { mutableStateOf(false) }
-    
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Icon(
-            imageVector = icon,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.size(20.dp)
-        )
-        
-        Spacer(modifier = Modifier.width(12.dp))
-        
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = label,
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Text(
-                text = value,
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = FontWeight.Medium
-            )
-        }
-        
-        IconButton(
-            onClick = {
-                onCopy()
-                copied = true
-            }
-        ) {
-            AnimatedContent(
-                targetState = copied,
-                transitionSpec = {
-                    scaleIn() + fadeIn() with scaleOut() + fadeOut()
-                },
-                label = "copy"
-            ) { isCopied ->
-                Icon(
-                    imageVector = if (isCopied) Icons.Filled.Check else Icons.Outlined.ContentCopy,
-                    contentDescription = stringResource(R.string.copy),
-                    tint = if (isCopied) ExtendedColors.success else MaterialTheme.colorScheme.onSurfaceVariant
-                )
+            if (deletion == DeletionState.FAILED) {
+                OutlinedButton(onClick = { confirmation = "withdraw" }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("重试撤回和删除") }
             }
         }
-        
-        LaunchedEffect(copied) {
-            if (copied) {
-                delay(2000)
-                copied = false
+
+        ExpandableSection("sensors", "数据采集设置", "已允许 $sensorCount 种传感器", Icons.Default.Sensors) {
+            HelpText("通过手机的动作了解使用习惯。关闭部分传感器可能影响认证结果；关闭全部会停止采集。")
+            PreferenceSwitch("加速度计", "感知手机移动、拿起和放下", sensors.accelerometerEnabled, "sensor_accelerometer", !deleting) { viewModel.setSensorCollectionEnabled("accelerometer", it) }
+            PreferenceSwitch("陀螺仪", "感知手机转动和握持方向的变化", sensors.gyroscopeEnabled, "sensor_gyroscope", !deleting) { viewModel.setSensorCollectionEnabled("gyroscope", it) }
+            PreferenceSwitch("磁力计", "感知手机周围磁场的变化", sensors.magnetometerEnabled, "sensor_magnetometer", !deleting) { viewModel.setSensorCollectionEnabled("magnetometer", it) }
+            if (sensorCount == 0) Text("当前未允许采集传感器数据。开始认证前，请至少打开一项。", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium)
+        }
+
+        ExpandableSection("protection", "防护设置", protectionSummary(protectionMode, systemAccess.overlayAllowed), Icons.Default.Shield) {
+            HelpText("先选择提醒方式，再到“认证与分析”点击开始认证。这里的设置不会自动开始认证。")
+            Column(Modifier.selectableGroup()) {
+                ProtectionChoice(ProtectionMode.OFF, protectionMode, "关闭", "不启用持续认证；正在进行的认证会停止。", !deleting, viewModel::setProtectionMode)
+                ProtectionChoice(ProtectionMode.MONITOR_ONLY, protectionMode, "仅监测（默认）", "开始认证后，仅记录结果，不弹窗提醒。", !deleting, viewModel::setProtectionMode)
+                ProtectionChoice(ProtectionMode.ALERT, protectionMode, "即时警示", "开始认证后，认证不通过时通过系统弹窗提醒。", !deleting, viewModel::setProtectionMode)
+            }
+            if (protectionMode == ProtectionMode.ALERT) {
+                Text(if (systemAccess.overlayAllowed) "已允许系统弹窗" else "尚未允许系统弹窗，目前无法在其他应用上方提醒你。", style = MaterialTheme.typography.bodyMedium, color = if (systemAccess.overlayAllowed) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error)
+                OutlinedButton(
+                    onClick = { openSystemSettings(context, Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:${context.packageName}"))) },
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag("overlay_permission")
+                ) { Text(if (systemAccess.overlayAllowed) "管理系统弹窗权限" else "允许在其他应用上方显示") }
             }
         }
-    }
-}
 
-/**
- * 服务器设置卡片
- */
-@Composable
-fun ServerSettingsCard(
-    serverIp: String,
-    serverPort: String,
-    onIpChange: (String) -> Unit,
-    onPortChange: (String) -> Unit,
-    isTestingConnection: Boolean,
-    serverTestResult: String?,
-    onTestConnection: () -> Unit
-) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(20.dp)
-    ) {
-        Column(
-            modifier = Modifier.padding(20.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
-        ) {
-            Text(
-                text = stringResource(R.string.server_settings),
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.Bold
-            )
-            
-            // IP 地址输入
+        ExpandableSection("background", "后台运行与权限", if (systemAccess.backgroundRestricted) "后台受限制，可能影响持续使用" else "查看电池优化与系统权限", Icons.Default.BatterySaver) {
+            HelpText("想在切换应用后继续使用，可检查以下系统设置。不同手机的选项名称可能略有不同。")
+            InfoRow("电池优化", if (systemAccess.batteryExempt) "已允许不受电池优化限制" else "正在接受系统电池优化")
+            OutlinedButton(onClick = {
+                if (!BackgroundExecutionHelper.openBatterySettings(context) { context.startActivity(it) }) showSettingsError(context)
+            }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("打开电池优化设置") }
+            InfoRow("后台使用", if (systemAccess.backgroundRestricted) "受到系统限制" else "未检测到系统限制")
+            OutlinedButton(onClick = {
+                if (!BackgroundExecutionHelper.openAppSettings(context) { context.startActivity(it) }) showSettingsError(context)
+            }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("查看应用后台设置") }
+            HorizontalDivider()
+            InfoRow("应用使用情况权限", if (systemAccess.usageAllowed) "已允许" else "未允许")
+            HelpText("用于记录认证发生时你正在使用哪个应用。")
+            OutlinedButton(onClick = { openSystemSettings(context, Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS, Uri.parse("package:${context.packageName}"))) }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("管理应用使用情况权限") }
+            InfoRow("通知权限", if (systemAccess.notificationsAllowed) "已允许" else "未允许")
+            OutlinedButton(onClick = { openSystemSettings(context, Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)) }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("管理运行状态通知") }
+        }
+
+        ExpandableSection("transmission", "传输策略", if (wifiOnly) "仅通过 Wi-Fi 上传" else "Wi-Fi 和移动网络均可上传（默认）", Icons.Default.Wifi) {
+            PreferenceSwitch("仅通过 Wi-Fi 上传", "默认关闭。打开后，在没有 Wi-Fi 时暂停上传，认证结果可能延后。", wifiOnly, "wifi_only", !deleting, viewModel::setUploadPolicyWiFiOnly)
+            PreferenceSwitch("智能传输", "仅在凌晨、锁屏且电量高于 60% 时上传，其余时间先保存在本机（最多 3 GB）。开启后可能无法及时得到认证结果。", smartTransmission, "smart_transmission", !deleting, viewModel::setSmartTransmissionEnabled)
+            HorizontalDivider()
+            Text("单独采集与上传", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+            HelpText("保留单独采集传感器数据并上传的功能。日常使用请在“认证与分析”开始认证。")
+            InfoRow("采集与上传", when { collectionChanging -> "正在处理，请稍候"; isUploading -> "正在运行"; else -> "已停止" })
+            OutlinedButton(
+                onClick = { if (isUploading) viewModel.stopEncryptedUpload() else viewModel.startEncryptedUpload() },
+                enabled = !deleting && !collectionChanging && (isUploading || (consent == ConsentState.GRANTED && sensorCount > 0)),
+                modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag("collection_upload_toggle")
+            ) { Text(if (isUploading) "停止采集与上传" else "开始采集与上传") }
+            if (consent != ConsentState.GRANTED) HelpText("请先在“知情同意”中阅读并同意数据使用说明。")
+        }
+
+        ExpandableSection("server", "服务器设置", "设置认证服务的连接地址", Icons.Default.Cloud) {
+            HelpText("使用提供给你的服务器地址。一般无需更改；更换前请先停止采集和认证。")
             OutlinedTextField(
-                value = serverIp,
-                onValueChange = onIpChange,
-                label = { Text(stringResource(R.string.server_ip_label)) },
-                leadingIcon = {
-                    Icon(Icons.Outlined.Computer, contentDescription = null)
-                },
-                keyboardOptions = KeyboardOptions(
-                    keyboardType = KeyboardType.Uri,
-                    imeAction = ImeAction.Next
-                ),
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(12.dp),
-                singleLine = true
+                value = serverAddress,
+                onValueChange = { serverAddress = it; serverValidation = null; serverFeedback = null },
+                label = { Text("服务器地址") },
+                placeholder = { Text("https://${ServerEndpointNormalizer.DEFAULT_HOST}") },
+                modifier = Modifier.fillMaxWidth().testTag("server_address"),
+                singleLine = true,
+                enabled = canEditServer && !testing,
+                isError = serverValidation != null,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Next)
             )
-            
-            // 端口输入
             OutlinedTextField(
                 value = serverPort,
-                onValueChange = onPortChange,
-                label = { Text(stringResource(R.string.port_label)) },
-                leadingIcon = {
-                    Icon(Icons.Outlined.Router, contentDescription = null)
-                },
-                keyboardOptions = KeyboardOptions(
-                    keyboardType = KeyboardType.Number,
-                    imeAction = ImeAction.Done
-                ),
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(12.dp),
-                singleLine = true
+                onValueChange = { serverPort = it; serverValidation = null; serverFeedback = null },
+                label = { Text("端口") },
+                supportingText = { Text("通常为 443；以服务提供方给出的值为准") },
+                modifier = Modifier.fillMaxWidth().testTag("server_port"),
+                singleLine = true,
+                enabled = canEditServer && !testing,
+                isError = serverValidation != null,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Done)
             )
-            
-            // 测试连接按钮
-            Button(
-                onClick = onTestConnection,
-                modifier = Modifier.fillMaxWidth(),
-                enabled = !isTestingConnection,
-                shape = RoundedCornerShape(12.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = MaterialTheme.colorScheme.secondary
-                )
-            ) {
-                if (isTestingConnection) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(16.dp),
-                        strokeWidth = 2.dp,
-                        color = MaterialTheme.colorScheme.onSecondary
-                    )
-                } else {
-                    Icon(
-                        imageVector = Icons.Outlined.NetworkCheck,
-                        contentDescription = null,
-                        modifier = Modifier.size(20.dp)
-                    )
-                }
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(
-                    text = if (isTestingConnection) stringResource(R.string.testing_server) else stringResource(R.string.detect_server),
-                    style = MaterialTheme.typography.labelLarge
-                )
-            }
-            
-            // 显示测试结果
-            serverTestResult?.let { result ->
-                Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 8.dp),
-                    colors = CardDefaults.cardColors(
-                        containerColor = if (result.startsWith("✓")) 
-                            ExtendedColors.success.copy(alpha = 0.1f)
-                        else 
-                            ExtendedColors.error.copy(alpha = 0.1f)
-                    ),
-                    shape = RoundedCornerShape(8.dp)
-                ) {
-                    Text(
-                        text = result,
-                        style = MaterialTheme.typography.bodyMedium,
-                        modifier = Modifier.padding(12.dp),
-                        color = if (result.startsWith("✓")) 
-                            ExtendedColors.success
-                        else 
-                            ExtendedColors.error
-                    )
-                }
-            }
+            serverValidation?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium) }
+            if (serverAddress.startsWith("http://", ignoreCase = true)) HelpText("当前填写的是 HTTP 地址，连接本身不加密。若服务器支持，请使用 HTTPS。")
+            Button(onClick = { saveServer(false) }, enabled = canEditServer && !testing, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("保存服务器设置") }
+            OutlinedButton(onClick = { saveServer(true) }, enabled = canEditServer && !testing && !deleting, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag("test_server")) { Text(if (testing) "正在测试连接…" else "保存并测试连接") }
+            TextButton(onClick = {
+                serverAddress = "https://${ServerEndpointNormalizer.DEFAULT_HOST}"
+                serverPort = ServerEndpointNormalizer.DEFAULT_HTTPS_PORT.toString()
+                serverValidation = null
+                serverFeedback = "已填入默认地址，请点击保存"
+            }, enabled = canEditServer && !testing, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("恢复默认地址") }
+            serverFeedback?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
+            if (!canEditServer) HelpText("停止采集与认证后，可以修改或测试服务器。")
         }
-    }
-}
 
-/**
- * 加密数据上传控制卡片
- */
-@Composable
-fun EncryptedUploadControlCard(
-    isEncryptedUploading: Boolean,
-    connectionStatus: ConnectionStatus,
-    sessionId: String?,
-    sessionStartTime: Long,
-    sessionDuration: String,
-    transmissionStats: com.continuousauth.ui.TransmissionStats?,
-    fileQueueStats: QueueStats?,
-    onToggleUpload: () -> Unit
-) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(20.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = if (isEncryptedUploading) 
-                ExtendedColors.success.copy(alpha = 0.1f)
-            else 
-                MaterialTheme.colorScheme.surface
+        ExpandableSection("storage", "数据与存储", "本机认证记录保留最近 7 天", Icons.Default.Storage) {
+            InfoRow("认证记录", "自动保留最近 7 天")
+            HelpText("下面的保存期限只影响传感器缓存，不改变认证记录的保存时间。")
+            OutlinedTextField(
+                value = retentionInput,
+                onValueChange = { retentionInput = it; retentionError = null; retentionSaved = false },
+                label = { Text("传感器缓存保存天数") },
+                supportingText = { Text(retentionError ?: "可设置 1 至 365 天") },
+                isError = retentionError != null,
+                singleLine = true,
+                enabled = !deleting,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Done),
+                modifier = Modifier.fillMaxWidth().testTag("retention_days")
+            )
+            Button(onClick = {
+                val days = retentionInput.toIntOrNull()
+                if (days == null || days !in 1..365) retentionError = "请输入 1 至 365 之间的整数"
+                else {
+                    viewModel.setDataRetentionDays(days)
+                    retentionInput = days.toString()
+                    retentionSaved = true
+                    focusManager.clearFocus()
+                }
+            }, enabled = !deleting, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("保存天数") }
+            if (retentionSaved) Text("保存期限已更新", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary)
+            HorizontalDivider()
+            InfoRow("待上传数据", "${queueStats?.pendingPackets ?: 0} 个数据包")
+            InfoRow("本机缓存占用", formatStorageBytes(queueStats?.totalSizeBytes ?: 0L))
+            HelpText("清理缓存会删除本机等待上传的传感器数据，无法恢复。")
+            OutlinedButton(onClick = { confirmation = "clear_queue" }, enabled = !isUploading && !collectionChanging && !deleting, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag("clear_queue")) { Text("清理本机传感器缓存") }
+            if (isUploading || collectionChanging) HelpText("请先停止采集与上传，再清理缓存。")
+        }
+
+        ExpandableSection("maintenance", "维护工具", "排查问题时使用", Icons.Default.Build) {
+            HelpText("这些功能用于排查问题。导出时可通过系统选择保存位置；导出的文件可能包含使用记录，请自行保管和删除。")
+            PreferenceSwitch("调试信息", "显示更详细的运行信息，供排查问题使用", debugEnabled, "debug_mode", !deleting) { if (it != debugEnabled) viewModel.toggleDebugMode() }
+            PreferenceSwitch("数据可视化", "保留原有传感器图表开关", visualizationEnabled, "visualization", !deleting) { if (it != visualizationEnabled) viewModel.toggleVisualization() }
+            OutlinedButton(onClick = {
+                scope.launch {
+                    maintenanceBusy = true
+                    try {
+                        detailViewModel.preparePendingDataExport()?.let { file ->
+                            preparedExportPath = file.absolutePath
+                            try { dataExportLauncher.launch(file.name) }
+                            catch (_: Exception) {
+                                detailViewModel.cancelPreparedExport(preparedExportPath)
+                                preparedExportPath = null
+                                Toast.makeText(context, "无法打开系统文件保存界面", Toast.LENGTH_LONG).show()
+                            }
+                        }
+                    } finally { maintenanceBusy = false }
+                }
+            }, enabled = !maintenanceBusy && !deleting, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("导出待上传数据") }
+            OutlinedButton(onClick = {
+                scope.launch {
+                    maintenanceBusy = true
+                    try {
+                        detailViewModel.prepareDebugLogExport()?.let { file ->
+                            preparedExportPath = file.absolutePath
+                            try { logExportLauncher.launch(file.name) }
+                            catch (_: Exception) {
+                                detailViewModel.cancelPreparedExport(preparedExportPath)
+                                preparedExportPath = null
+                                Toast.makeText(context, "无法打开系统文件保存界面", Toast.LENGTH_LONG).show()
+                            }
+                        }
+                    } finally { maintenanceBusy = false }
+                }
+            }, enabled = !maintenanceBusy && !deleting, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("导出运行日志") }
+            OutlinedButton(onClick = { confirmation = "rotate_key" }, enabled = !maintenanceBusy && !deleting && !isUploading && !collectionChanging, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("更新密钥维护标记") }
+            if (maintenanceBusy) Text("正在处理，请稍候…", style = MaterialTheme.typography.bodyMedium)
+            maintenanceMessage?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
+        }
+        Spacer(Modifier.height(12.dp))
+    }
+
+    confirmation?.let { action ->
+        val title = when (action) { "withdraw" -> "撤回同意并删除数据？"; "clear_queue" -> "清理本机传感器缓存？"; else -> "更新密钥维护标记？" }
+        val message = when (action) {
+            "withdraw" -> "采集、上传和认证会停止，本应用内的传感器数据和认证记录将被删除，本机删除无法恢复。当前服务器尚未提供自动删除接口，已上传的数据需联系服务器管理方删除，这里会显示为待处理。你手动导出的副本需自行删除。"
+            "clear_queue" -> "这会删除本机待上传的传感器数据，删除后无法恢复。最近 7 天的认证结果仍可查看。"
+            else -> "当前版本使用固定密钥。此操作只更新时间和维护计数，不会更换实际加密密钥。仅在维护人员建议时使用。"
+        }
+        AlertDialog(
+            onDismissRequest = { confirmation = null },
+            title = { Text(title) },
+            text = { Text(message) },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmation = null
+                    when (action) {
+                        "withdraw" -> viewModel.withdrawConsentAndDeleteData()
+                        "clear_queue" -> viewModel.clearFileQueue()
+                        else -> scope.launch { maintenanceBusy = true; try { detailViewModel.forceKeyRotation() } finally { maintenanceBusy = false } }
+                    }
+                }) { Text(if (action == "rotate_key") "确认更新" else "确认删除") }
+            },
+            dismissButton = { TextButton(onClick = { confirmation = null }) { Text("取消") } }
         )
+    }
+}
+
+@Composable
+internal fun PreferenceSwitch(title: String, description: String, checked: Boolean, tag: String, enabled: Boolean = true, onChange: (Boolean) -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp).testTag(tag).toggleable(value = checked, enabled = enabled, role = Role.Switch, onValueChange = onChange).padding(vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        Column(
-            modifier = Modifier.padding(20.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Icon(
-                    imageVector = Icons.Filled.Lock,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(24.dp)
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                //加密数据上传
-                Text(
-                    text = stringResource(R.string.encrypted_data_upload),
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold
-                )
-            }
-            
-            // 会话信息和上传状态
-            if (isEncryptedUploading && sessionId != null) {
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-                    ),
-                    shape = RoundedCornerShape(12.dp)
-                ) {
-                    Column(
-                        modifier = Modifier.padding(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Text(
-                            text = stringResource(R.string.current_session_info),
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Medium
-                        )
-                        
-                        // Session ID
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text(
-                                text = "Session ID:",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            Text(
-                                text = sessionId.take(8) + "...",
-                                style = MaterialTheme.typography.bodyMedium,
-                                fontWeight = FontWeight.Medium
-                            )
-                        }
-                        
-                        // 开始时间
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text(
-                                text = stringResource(R.string.start_time_label),
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            Text(
-                                text = if (sessionStartTime > 0) {
-                                    val dateFormat = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault())
-                                    dateFormat.format(java.util.Date(sessionStartTime))
-                                } else "--:--:--",
-                                style = MaterialTheme.typography.bodyMedium,
-                                fontWeight = FontWeight.Medium
-                            )
-                        }
-                        
-                        // 已采集时长
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text(
-                                text = stringResource(R.string.collection_duration_label),
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            Text(
-                                text = sessionDuration,
-                                style = MaterialTheme.typography.bodyMedium,
-                                fontWeight = FontWeight.Medium,
-                                color = ExtendedColors.success
-                            )
-                        }
-                        
-                        // 分隔线
-                        Divider(
-                            modifier = Modifier.padding(vertical = 4.dp),
-                            color = MaterialTheme.colorScheme.outlineVariant
-                        )
-                        
-                        // 传输状态信息
-                        Text(
-                            text = "加密上传状态",
-                            style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.Medium,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                        
-                        // 实时上传统计
-                        transmissionStats?.let { stats ->
-                            // 已发送数据包
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Text(
-                                    text = "已发送:",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                                Text(
-                                    text = "${stats.packetsSent} 个数据包",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    fontWeight = FontWeight.Medium,
-                                    color = ExtendedColors.success
-                                )
-                            }
-                            
-                            // 待发送数据包
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Text(
-                                    text = "待发送:",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                                Text(
-                                    text = "${stats.packetsPending} 个数据包",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    fontWeight = FontWeight.Medium,
-                                    color = if (stats.packetsPending > 0) ExtendedColors.warning else MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                            
-                            // 最近ACK延迟
-                            stats.lastAckLatency?.let { latency ->
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween
-                                ) {
-                                    Text(
-                                        text = "响应延迟:",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                    Text(
-                                        text = "$latency ms",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        fontWeight = FontWeight.Medium,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-                            }
-                            
-                            // 快速模式状态
-                            if (stats.isFastMode) {
-                                Spacer(modifier = Modifier.height(4.dp))
-                                Card(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    colors = CardDefaults.cardColors(
-                                        containerColor = ExtendedColors.warning.copy(alpha = 0.2f)
-                                    ),
-                                    shape = RoundedCornerShape(8.dp)
-                                ) {
-                                    Row(
-                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Filled.Speed,
-                                            contentDescription = null,
-                                            tint = ExtendedColors.warning,
-                                            modifier = Modifier.size(16.dp)
-                                        )
-                                        Text(
-                                            text = "快速模式已启用",
-                                            style = MaterialTheme.typography.bodySmall,
-                                            fontWeight = FontWeight.Bold,
-                                            color = ExtendedColors.warning
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                        
-                        // 文件队列状态
-                        fileQueueStats?.let { queueStats ->
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Text(
-                                    text = "待上传队列:",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                                Text(
-                                    text = "${queueStats.pendingPackets}/${queueStats.totalPackets} (${formatBytes(queueStats.totalSizeBytes)})",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    fontWeight = FontWeight.Medium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                            
-                            // 上传进度条
-                            if (queueStats.totalPackets > 0) {
-                                val progress = queueStats.uploadedPackets.toFloat() / queueStats.totalPackets
-                                LinearProgressIndicator(
-                                    progress = { progress },
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .height(4.dp)
-                                        .clip(RoundedCornerShape(2.dp)),
-                                    color = ExtendedColors.success,
-                                    trackColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-                                )
-                            }
-                        }
-                        
-                        // 加密状态提示
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.Center,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(
-                                imageVector = Icons.Filled.Lock,
-                                contentDescription = null,
-                                tint = ExtendedColors.success,
-                                modifier = Modifier.size(14.dp)
-                            )
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text(
-                                text = "数据已加密传输",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = ExtendedColors.success,
-                                fontWeight = FontWeight.Medium
-                            )
-                        }
-                    }
-                }
-            }
-            
-            // 开始/停止按钮组
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                // 开始按钮
-                Button(
-                    onClick = {
-                        if (!isEncryptedUploading) {
-                            onToggleUpload()
-                        }
-                    },
-                    modifier = Modifier
-                        .weight(1f)
-                        .height(56.dp),
-                    enabled = !isEncryptedUploading,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = ExtendedColors.success
-                    ),
-                    shape = RoundedCornerShape(16.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Filled.PlayArrow,
-                        contentDescription = null,
-                        modifier = Modifier.size(24.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = stringResource(R.string.start_button),
-                        style = MaterialTheme.typography.labelLarge,
-                        fontSize = 16.sp
-                    )
-                }
-                
-                // 停止按钮
-                Button(
-                    onClick = {
-                        if (isEncryptedUploading) {
-                            onToggleUpload()
-                        }
-                    },
-                    modifier = Modifier
-                        .weight(1f)
-                        .height(56.dp),
-                    enabled = isEncryptedUploading,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = ExtendedColors.error
-                    ),
-                    shape = RoundedCornerShape(16.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Filled.Stop,
-                        contentDescription = null,
-                        modifier = Modifier.size(24.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = stringResource(R.string.stop_button),
-                        style = MaterialTheme.typography.labelLarge,
-                        fontSize = 16.sp
-                    )
-                }
-            }
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(title, style = MaterialTheme.typography.bodyLarge)
+            Text(description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
+        Switch(checked = checked, onCheckedChange = null, enabled = enabled)
     }
 }
 
-/**
- * 状态芯片
- */
 @Composable
-fun StatusChip(
-    icon: ImageVector,
-    label: String,
-    value: String,
-    color: Color
-) {
-    Surface(
-        shape = RoundedCornerShape(12.dp),
-        color = color.copy(alpha = 0.1f)
+internal fun ProtectionChoice(mode: ProtectionMode, selected: ProtectionMode, title: String, description: String, enabled: Boolean = true, onSelect: (ProtectionMode) -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth().heightIn(min = 64.dp).testTag("protection_${mode.name.lowercase()}").selectable(selected = mode == selected, enabled = enabled, role = Role.RadioButton, onClick = { onSelect(mode) }).padding(vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        Column(
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = null,
-                tint = color,
-                modifier = Modifier.size(20.dp)
-            )
-            Spacer(modifier = Modifier.height(4.dp))
-            Text(
-                text = label,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Text(
-                text = value,
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = FontWeight.Bold,
-                color = color
-            )
+        RadioButton(selected = mode == selected, onClick = null, enabled = enabled)
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(title, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium)
+            Text(description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }
 
-/**
- * 文件队列统计卡片
- */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun FileQueueCard(
-    queueStats: QueueStats,
-    onClearQueue: () -> Unit
-) {
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 8.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surface
-        ),
-        shape = RoundedCornerShape(20.dp),
-        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
-    ) {
-        Column(
-            modifier = Modifier
-                .padding(20.dp)
-                .fillMaxWidth()
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.FolderOpen,
-                        contentDescription = stringResource(R.string. file_queue),
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(24.dp)
-                    )
-                    Text(
-                        text = stringResource(R.string.file_queue),
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                }
-                
-                // 清空按钮
-                if (queueStats.totalPackets > 0) {
-                    TextButton(
-                        onClick = onClearQueue,
-                        colors = ButtonDefaults.textButtonColors(
-                            contentColor = MaterialTheme.colorScheme.error
-                        )
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Delete,
-                            contentDescription = stringResource(R.string.clear_queue),
-                            modifier = Modifier.size(18.dp)
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(stringResource(R.string.clear_queue))
-                    }
-                }
-            }
-            
-            Spacer(modifier = Modifier.height(16.dp))
-            
-            // 统计信息网格
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceEvenly
-            ) {
-                //总数据包
-                StatusChip(
-                    icon = Icons.Default.Inventory,
-                    label = stringResource(R.string.total_packets),
-                    value = queueStats.totalPackets.toString(),
-                    color = MaterialTheme.colorScheme.primary
-                )
-                //待上传
-                StatusChip(
-                    icon = Icons.Default.Schedule,
-                    label = stringResource(R.string.pending_upload),
-                    value = queueStats.pendingPackets.toString(),
-                    color = if (queueStats.pendingPackets > 0) ExtendedColors.warning else Color.Gray
-                )
-                //已上传
-                StatusChip(
-                    icon = Icons.Default.CloudDone,
-                    label = stringResource(R.string.uploaded),
-                    value = queueStats.uploadedPackets.toString(),
-                    color = ExtendedColors.success
-                )
-            }
-            
-            Spacer(modifier = Modifier.height(12.dp))
-            
-            // 存储空间信息
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceEvenly
-            ) {
-                StatusChip(
-                    icon = Icons.Default.Storage,
-                    label = stringResource(R.string.queue_size_label),
-                    value = formatBytes(queueStats.totalSizeBytes),
-                    color = MaterialTheme.colorScheme.secondary
-                )
-                StatusChip(
-                    icon = Icons.Default.BrokenImage,
-                    label = stringResource(R.string.corrupted_packets),
-                    value = queueStats.corruptedPackets.toString(),
-                    color = if (queueStats.corruptedPackets > 0) ExtendedColors.error else Color.Gray
-                )
-            }
-            
-            // 进度条
-            if (queueStats.totalPackets > 0) {
-                Spacer(modifier = Modifier.height(12.dp))
-                
-                val progress = if (queueStats.totalPackets > 0) {
-                    queueStats.uploadedPackets.toFloat() / queueStats.totalPackets
-                } else 0f
-                
-                LinearProgressIndicator(
-                    progress = { progress },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(6.dp)
-                        .clip(RoundedCornerShape(3.dp)),
-                    color = ExtendedColors.success,
-                    trackColor = MaterialTheme.colorScheme.surfaceVariant
-                )
-                
-                Text(
-                    text = stringResource(R.string.upload_progress_format, (progress * 100).toInt()),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(top = 4.dp)
-                )
-            }
-        }
+private fun HelpText(message: String) { Text(message, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+
+@Composable
+private fun DeletionFeedback(state: DeletionState) {
+    val message = when (state) {
+        DeletionState.IN_PROGRESS -> "正在停止采集并删除数据，请稍候…"
+        DeletionState.SUCCESS -> "数据删除已完成"
+        DeletionState.PARTIAL_SUCCESS -> "本应用内的数据已删除。服务器删除仍待处理：当前服务端尚未提供自动删除接口，请联系服务器管理方处理。"
+        DeletionState.FAILED -> "数据删除未完成，请重试。"
+        DeletionState.IDLE -> return
     }
-}
-/**
- * 数据管理卡片
- */
-@Composable
-private fun DataManagementCard(
-    onWithdrawConsent: () -> Unit,
-    onViewPrivacyPolicy: () -> Unit,
-    isDeleting: Boolean
-) {
-    Card(
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        Column(
-            modifier = Modifier.padding(16.dp)
-        ) {
-            Text(
-                text = "数据管理",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold
-            )
-
-            Spacer(modifier = Modifier.height(16.dp))
-
-            // 撤回同意按钮
-            OutlinedButton(
-                onClick = onWithdrawConsent,
-                modifier = Modifier.fillMaxWidth(),
-                enabled = !isDeleting,
-                colors = ButtonDefaults.outlinedButtonColors(
-                    contentColor = Color(0xFFFF5252)
-                )
-            ) {
-                Icon(Icons.Default.Delete, contentDescription = null)
-                Spacer(modifier = Modifier.width(8.dp))
-                Text("撤回同意并删除所有数据")
-            }
-
-            Spacer(modifier = Modifier.height(8.dp))
-
-            // 查看隐私政策按钮
-            OutlinedButton(
-                onClick = onViewPrivacyPolicy,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Icon(Icons.Default.Policy, contentDescription = null)
-                Spacer(modifier = Modifier.width(8.dp))
-                Text("查看隐私政策")
-            }
-        }
-    }
+    Text(message, style = MaterialTheme.typography.bodyMedium, color = if (state == DeletionState.FAILED || state == DeletionState.PARTIAL_SUCCESS) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface)
 }
 
-/**
- * 隐私政策对话框
- */
-@Composable
-private fun PrivacyPolicyDialog(
-    onDismiss: () -> Unit
-) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = {
-            Text("隐私政策")
-        },
-        text = {
-            Column(
-                modifier = Modifier.verticalScroll(rememberScrollState())
-            ) {
-                Text(
-                    text = """
-                        数据收集与使用说明
-                        
-                        1. 数据收集类型
-                        • 传感器数据：加速度计、陀螺仪、磁力计
-                        • 设备信息：设备型号、系统版本
-                        • 应用使用情况：当前前台应用包名
-                        
-                        2. 数据用途
-                        • 用于持续身份认证研究
-                        • 改进认证算法准确性
-                        • 学术研究与分析
-                        
-                        3. 数据保护
-                        • 所有数据均采用 AES-256-GCM 加密
-                        • 使用 HMAC 保护敏感标识符
-                        • 本地缓存自动清理
-                        • 服务器端安全存储
-                        
-                        4. 数据共享
-                        • 不与第三方共享原始数据
-                        • 仅分享聚合统计信息
-                        • 严格遵守数据最小化原则
-                        
-                        5. 用户权利
-                        • 您可以随时撤回同意
-                        • 撤回后将删除所有相关数据
-                        • 支持数据导出请求
-                        • 支持数据修正请求
-                        
-                        6. 数据保留
-                        • 本地缓存：用户可设置1-365天
-                        • 服务器端：遵循研究协议要求
-                        • 自动清理过期数据
-                        
-                        7. 联系方式
-                        邮箱：privacy@continuousauth.com
-                        
-                        最后更新：2024年1月
-                    """.trimIndent(),
-                    style = MaterialTheme.typography.bodySmall
-                )
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = onDismiss) {
-                Text("关闭")
-            }
-        }
-    )
+private fun consentLabel(state: ConsentState): String = when (state) {
+    ConsentState.GRANTED -> "已同意数据采集与使用"
+    ConsentState.WITHDRAWN -> "已撤回同意，采集已停止"
+    ConsentState.NOT_GRANTED -> "尚未同意，采集不会开始"
+    ConsentState.UNKNOWN -> "正在确认同意状态"
 }
-/**
- * 撤回同意确认对话框
- */
-@Composable
-private fun WithdrawConsentDialog(
-    onConfirm: () -> Unit,
-    onDismiss: () -> Unit
-) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        icon = {
-            Icon(
-                imageVector = Icons.Default.Warning,
-                contentDescription = null,
-                tint = Color(0xFFFF5252)
-            )
-        },
-        title = {
-            Text("确认撤回同意")
-        },
-        text = {
-            Column {
-                Text(
-                    text = "撤回同意将会：",
-                    style = MaterialTheme.typography.bodyLarge,
-                    fontWeight = FontWeight.Bold
-                )
-                Spacer(modifier = Modifier.height(8.dp))
-                Text("• 立即停止所有数据采集")
-                Text("• 删除所有本地缓存数据")
-                Text("• 向服务器发送删除请求")
-                Text("• 清除所有个人信息")
-                Spacer(modifier = Modifier.height(12.dp))
-                Text(
-                    text = "此操作无法撤销！",
-                    color = Color(0xFFFF5252),
-                    fontWeight = FontWeight.Bold
-                )
-            }
-        },
-        confirmButton = {
-            TextButton(
-                onClick = onConfirm,
-                colors = ButtonDefaults.textButtonColors(
-                    contentColor = Color(0xFFFF5252)
-                )
-            ) {
-                Text("确认删除")
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("取消")
-            }
-        }
-    )
+
+private fun protectionSummary(mode: ProtectionMode, overlayAllowed: Boolean): String = when (mode) {
+    ProtectionMode.OFF -> "已关闭持续认证"
+    ProtectionMode.MONITOR_ONLY -> "仅监测：记录结果，不弹窗"
+    ProtectionMode.ALERT -> if (overlayAllowed) "即时警示：不通过时弹窗提醒" else "即时警示：尚需允许系统弹窗"
 }
-/**
- * 清空队列确认对话框
- */
-@Composable
-private fun ClearQueueDialog(
-    onConfirm: () -> Unit,
-    onDismiss: () -> Unit
-) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        icon = {
-            Icon(
-                imageVector = Icons.Default.Delete,
-                contentDescription = null,
-                tint = Color(0xFFFF5252)
-            )
-        },
-        title = {
-            Text("确认清空文件队列")
-        },
-        text = {
-            Column {
-                Text(
-                    text = "清空文件队列将会：",
-                    style = MaterialTheme.typography.bodyLarge,
-                    fontWeight = FontWeight.Bold
-                )
-                Spacer(modifier = Modifier.height(8.dp))
-                Text("• 删除所有待上传的数据包")
-                Text("• 清空本地缓存文件")
-                Text("• 重置队列统计信息")
-                Spacer(modifier = Modifier.height(12.dp))
-                Text(
-                    text = "此操作无法撤销！",
-                    color = Color(0xFFFF5252),
-                    fontWeight = FontWeight.Bold
-                )
-            }
-        },
-        confirmButton = {
-            TextButton(
-                onClick = onConfirm,
-                colors = ButtonDefaults.textButtonColors(
-                    contentColor = Color(0xFFFF5252)
-                )
-            ) {
-                Text("确认清空")
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("取消")
-            }
-        }
-    )
+
+private data class SystemAccess(val overlayAllowed: Boolean, val batteryExempt: Boolean, val backgroundRestricted: Boolean, val usageAllowed: Boolean, val notificationsAllowed: Boolean)
+private fun readSystemAccess(context: Context, viewModel: MainViewModel) = SystemAccess(
+    overlayAllowed = Settings.canDrawOverlays(context),
+    batteryExempt = BackgroundExecutionHelper.isBatteryOptimizationExempt(context),
+    backgroundRestricted = BackgroundExecutionHelper.isBackgroundRestricted(context),
+    usageAllowed = viewModel.isUsageStatsPermissionGranted(),
+    notificationsAllowed = viewModel.isPostNotificationsPermissionGranted()
+)
+
+private fun openSystemSettings(context: Context, intent: Intent) {
+    val opened = runCatching { context.startActivity(intent); true }.getOrDefault(false)
+    if (!opened && !BackgroundExecutionHelper.openAppSettings(context) { context.startActivity(it) }) showSettingsError(context)
 }
-/**
- * 格式化字节数为可读字符串
- */
-private fun formatBytes(bytes: Long): String {
-    return when {
-        bytes < 1024 -> "$bytes B"
-        bytes < 1024 * 1024 -> String.format("%.1f KB", bytes / 1024.0)
-        bytes < 1024 * 1024 * 1024 -> String.format("%.1f MB", bytes / (1024.0 * 1024.0))
-        else -> String.format("%.1f GB", bytes / (1024.0 * 1024.0 * 1024.0))
-    }
+private fun showSettingsError(context: Context) { Toast.makeText(context, "暂时无法打开系统设置，请在手机设置中找到本应用", Toast.LENGTH_LONG).show() }
+
+internal fun validateServerSettings(address: String, port: String): String? {
+    val raw = address.trim()
+    if (raw.isBlank()) return "请输入服务器地址"
+    if (raw.any { it.isWhitespace() }) return "服务器地址不能包含空格"
+    val parseTarget = if (raw.contains("://")) raw else "https://$raw"
+    val uri = runCatching { URI(parseTarget) }.getOrNull() ?: return "服务器地址格式不正确"
+    if (uri.scheme.lowercase() !in setOf("http", "https") || uri.host.isNullOrBlank() || uri.userInfo != null || uri.query != null || uri.fragment != null || (!uri.path.isNullOrEmpty() && uri.path != "/")) return "请输入主机地址，例如 https://ca.macrz.com，不要包含页面路径"
+    if (uri.port != -1) return "请把端口填写在下方“端口”中"
+    val parsedPort = port.toIntOrNull()
+    if (parsedPort == null || parsedPort !in 1..65535) return "端口应为 1 至 65535 之间的整数"
+    return null
+}
+
+private fun formatStorageBytes(bytes: Long): String = when {
+    bytes < 1024 -> "$bytes B"
+    bytes < 1024 * 1024 -> String.format("%.1f KB", bytes / 1024.0)
+    bytes < 1024 * 1024 * 1024 -> String.format("%.1f MB", bytes / (1024.0 * 1024.0))
+    else -> String.format("%.1f GB", bytes / (1024.0 * 1024.0 * 1024.0))
 }

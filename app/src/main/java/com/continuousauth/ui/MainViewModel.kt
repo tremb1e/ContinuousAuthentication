@@ -37,15 +37,23 @@ import com.continuousauth.privacy.PrivacyManager
 import com.continuousauth.privacy.ConsentState
 import com.continuousauth.privacy.DeletionState
 import com.continuousauth.service.DataCollectionService
+import com.continuousauth.auth.AuthHistoryRepository
+import com.continuousauth.auth.AuthenticationManager
+import com.continuousauth.settings.AppSettingsRepository
+import com.continuousauth.settings.ProtectionMode
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
 import java.util.Locale
 import java.security.KeyStore
 import javax.inject.Inject
@@ -70,6 +78,7 @@ data class ContinuousAuthUiState(
     val windowSizeSec: Float = 0f,
     val decisionTimeSec: Float = 0f,
     val authFailure: Boolean = false,
+    val isStarting: Boolean = false,
     val authAnalysis: AuthAnalysisState = AuthAnalysisState()
 )
 
@@ -94,7 +103,10 @@ class MainViewModel @Inject constructor(
     private val privacyManager: PrivacyManager,
     private val systemMonitor: SystemMonitor,
     private val smartTransmissionManager: SmartTransmissionManager,
-    private val envelopeCryptoBox: EnvelopeCryptoBox
+    private val envelopeCryptoBox: EnvelopeCryptoBox,
+    private val settingsRepository: AppSettingsRepository,
+    private val authHistoryRepository: AuthHistoryRepository,
+    private val authenticationManager: AuthenticationManager
 ) : ViewModel() {
     
     companion object {
@@ -166,7 +178,12 @@ class MainViewModel @Inject constructor(
 
     // 上传统计更新任务
     private var uploadStatsJob: Job? = null
+    private var sessionDurationJob: Job? = null
     private var authAnalysisTimerJob: Job? = null
+    private var authStartJob: Job? = null
+    private var consentObservationJob: Job? = null
+    private var deletionObservationJob: Job? = null
+    private var isDeletingData = false
 
     // 服务器测试结果
     private val _serverTestResult = MutableLiveData<String?>()
@@ -210,6 +227,9 @@ class MainViewModel @Inject constructor(
         )
     private val _authUiState = MutableStateFlow(ContinuousAuthUiState())
     val authUiState: StateFlow<ContinuousAuthUiState> = _authUiState
+    val protectionMode = settingsRepository.protectionMode
+    val sensorCollectionSettings = settingsRepository.sensorSettings
+    val authHistory = authHistoryRepository.entries
     init {
         // 初始化状态
         _collectionStatus.value = "STOPPED"
@@ -254,39 +274,55 @@ class MainViewModel @Inject constructor(
 
         // 监听服务端认证结果
         startAuthResultCollection()
+        viewModelScope.launch {
+            sensorCollectionSettings.collect {
+                updateSensorStatus(smartTransmissionManager.collectionState.value.status == SmartTransmissionManager.CollectionStatus.RUNNING)
+            }
+        }
+        observeCollectionState()
+        viewModelScope.launch {
+            fileQueueManager.uploadProgress.collect {
+                refreshUploadStats()
+            }
+        }
+    }
+
+    private fun observeCollectionState() {
+        viewModelScope.launch {
+            smartTransmissionManager.collectionState.collect { state ->
+                val running = state.status == SmartTransmissionManager.CollectionStatus.RUNNING
+                val active = running || state.status == SmartTransmissionManager.CollectionStatus.PAUSED
+                _collectionStatus.value = state.status.name
+                _isCollectionRunning.value = active
+                _isEncryptedUploading.value = active
+                updateSensorStatus(running)
+                if (active) {
+                    _authUiState.value = _authUiState.value.copy(authActive = authenticationManager.active.value)
+                    _sessionId.value = sessionManager.getCurrentSessionId()
+                    _sessionStartTime.value = sessionManager.getSessionStartTime()
+                    startSessionDurationUpdate()
+                    startUploadStatsUpdates()
+                } else if (state.status == SmartTransmissionManager.CollectionStatus.STOPPED ||
+                    state.status == SmartTransmissionManager.CollectionStatus.ERROR) {
+                    uploadStatsJob?.cancel()
+                    sessionDurationJob?.cancel()
+                    _sessionId.value = null
+                    _sessionStartTime.value = 0L
+                    _sessionDuration.value = "00:00"
+                    _authUiState.value = _authUiState.value.copy(authActive = false)
+                    refreshUploadStats()
+                }
+                state.errorMessage?.let { _errorMessage.value = it }
+                _connectionStatus.value = uploadManager.getUploadStatus().connectionStatus
+            }
+        }
     }
 
     private fun startAuthResultCollection() {
         viewModelScope.launch {
-            uploadManager.authResultFlow.collect { result ->
+            authenticationManager.latestResult.collect { result ->
+                if (result == null) return@collect
                 try {
-                    val currentSession = _sessionId.value ?: sessionManager.getCurrentSessionId()
-                    if (currentSession.isNullOrBlank()) {
-                        Log.w(TAG, "忽略认证结果：本地会话未初始化")
-                        return@collect
-                    }
-                    if (currentSession != result.sessionId) {
-                        Log.w(
-                            TAG,
-                            "忽略认证结果：会话不匹配 local=$currentSession, remote=${result.sessionId}"
-                        )
-                        return@collect
-                    }
-                    val expectedDevice = _deviceIdHash.value
-                    if (!expectedDevice.isNullOrBlank() &&
-                        result.deviceIdHash.isNotBlank() &&
-                        result.deviceIdHash != expectedDevice
-                    ) {
-                        Log.w(
-                            TAG,
-                            "忽略认证结果：设备不匹配 local=$expectedDevice, remote=${result.deviceIdHash}"
-                        )
-                        return@collect
-                    }
-                    if (_isEncryptedUploading.value != true) {
-                        Log.w(TAG, "忽略认证结果：加密上传未开启")
-                        return@collect
-                    }
                     val latency = System.currentTimeMillis() - result.serverTimestampMs
                     updateAuthResult(
                         score = result.normalizedScore,
@@ -303,6 +339,14 @@ class MainViewModel @Inject constructor(
                 } catch (error: Exception) {
                     Log.e(TAG, "处理认证结果异常", error)
                 }
+            }
+        }
+        viewModelScope.launch {
+            authenticationManager.active.collect { active ->
+                _authUiState.value = _authUiState.value.copy(
+                    authActive = active,
+                    authFailure = active && _authUiState.value.authFailure
+                )
             }
         }
     }
@@ -412,11 +456,17 @@ class MainViewModel @Inject constructor(
     fun startEncryptedUpload() {
         viewModelScope.launch {
             try {
-                if (_isEncryptedUploading.value == true) {
+                if (isDeletingData) return@launch
+                if (_isEncryptedUploading.value == true || _collectionStatus.value == "STARTING" ||
+                    _collectionStatus.value == "STOPPING") {
                     Log.w(TAG, "加密上传已在运行中")
                     return@launch
                 }
 
+                if (!sensorCollectionSettings.value.anyEnabled) {
+                    _errorMessage.value = "请先到设置允许至少一种传感器采集"
+                    return@launch
+                }
                 // 检查隐私协议是否已同意
                 if (privacyManager.consentState.value != ConsentState.GRANTED) {
                     _errorMessage.value = "请先同意隐私协议才能开始数据采集"
@@ -435,35 +485,13 @@ class MainViewModel @Inject constructor(
                     return@launch
                 }
 
-                // 开始新的会话
-                val sessionId = sessionManager.startNewSession()
-                _sessionId.value = sessionId
-                _sessionStartTime.value = sessionManager.getSessionStartTime()
-
                 // 确保前台服务运行，避免切后台被系统限制网络/传感器
                 startForegroundCollectionService()
-
-                // 启动传输管理器（传感器采集 + 加密 + gRPC上传）
-                smartTransmissionManager.start()
-
-                val uploadStatus = uploadManager.getUploadStatus()
-
-                _collectionStatus.value = "RUNNING"
-                _isCollectionRunning.value = true
-                _isEncryptedUploading.value = true  // 启动后进入"加密上传中"状态
-                updateSensorStatus(running = true)
-                _connectionStatus.value = uploadStatus.connectionStatus
-
-                // 开始更新会话时长与上传统计
-                startSessionDurationUpdate()
-                startUploadStatsUpdates()
-                
-                updateDebugInfo()
                 
             } catch (e: Exception) {
                 _collectionStatus.value = "ERROR"
-                _errorMessage.value = "启动加密数据上传异常: ${e.message}"
-                sessionManager.endSession()
+                Log.e(TAG, "启动数据采集失败", e)
+                _errorMessage.value = "暂时无法开始数据采集，请检查应用权限和设置后重试"
             }
         }
     }
@@ -472,72 +500,133 @@ class MainViewModel @Inject constructor(
      * 开始认证会话
      */
     fun startAuthentication() {
-        viewModelScope.launch {
+        if (authStartJob?.isActive == true) return
+        if (authenticationManager.active.value) {
+            val status = smartTransmissionManager.collectionState.value.status
+            if (status != SmartTransmissionManager.CollectionStatus.STOPPED &&
+                status != SmartTransmissionManager.CollectionStatus.ERROR) return
+            // A force-stopped process can leave a persisted auth session without a service.
+            // An explicit new start must recover instead of silently ignoring the button.
+            authenticationManager.stopAuthentication()
+            sessionManager.endSession()
+        }
+        if (privacyManager.consentState.value != ConsentState.GRANTED) {
+            _errorMessage.value = "请先到设置阅读并同意数据使用说明"
+            return
+        }
+        if (protectionMode.value == ProtectionMode.OFF) {
+            _errorMessage.value = "防护已关闭，请先到设置选择仅监测或即时警示"
+            return
+        }
+        if (!sensorCollectionSettings.value.anyEnabled) {
+            _errorMessage.value = "请先到设置允许至少一种传感器采集，再开始认证"
+            return
+        }
+        if (isDeletingData) return
+        _authUiState.value = _authUiState.value.copy(isStarting = true, authMessage = "正在准备认证，请稍候")
+        authStartJob = viewModelScope.launch {
             try {
-                if (_connectionStatus.value != ConnectionStatus.CONNECTED) {
-                    _errorMessage.value = "尚未连接服务器，无法开始认证"
-                    return@launch
+                if (_isEncryptedUploading.value != true && _collectionStatus.value != "STARTING") {
+                    _collectionStatus.value = "STARTING"
+                    startForegroundCollectionService()
+                } else if (smartTransmissionManager.collectionState.value.status == SmartTransmissionManager.CollectionStatus.PAUSED) {
+                    context.startService(Intent(context, DataCollectionService::class.java)
+                        .setAction(DataCollectionService.ACTION_RESUME_COLLECTION))
                 }
-                if (_isEncryptedUploading.value != true) {
-                    _errorMessage.value = "请先开始加密上传，再发起认证"
-                    return@launch
+                withTimeout(30_000L) {
+                    val state = smartTransmissionManager.collectionState.first {
+                        it.status == SmartTransmissionManager.CollectionStatus.RUNNING ||
+                            it.status == SmartTransmissionManager.CollectionStatus.PAUSED ||
+                            it.status == SmartTransmissionManager.CollectionStatus.ERROR
+                    }
+                    check(state.status != SmartTransmissionManager.CollectionStatus.ERROR) {
+                        "数据采集未能启动，请检查设置后重试"
+                    }
+                    while (uploadManager.getUploadStatus().connectionStatus != ConnectionStatus.CONNECTED) {
+                        delay(250)
+                    }
                 }
-
+                if (protectionMode.value == ProtectionMode.OFF || privacyManager.consentState.value != ConsentState.GRANTED) return@launch
                 envelopeCryptoBox.initialize()
                 val deviceIdHash = envelopeCryptoBox.getDeviceIdHash()
-                val currentSession = _sessionId.value ?: sessionManager.getCurrentSessionId()
-                val response = uploadManager.startAuthentication(deviceIdHash, currentSession)
+                val currentSession = sessionManager.getCurrentSessionId()
+                check(!currentSession.isNullOrBlank()) { "数据采集尚未准备好，请稍后再试" }
+                val response = authenticationManager.startAuthentication(deviceIdHash, currentSession)
                 if (response == null) {
-                    _errorMessage.value = "认证会话启动失败"
+                    showAuthenticationStartError("暂时无法开始认证，请检查网络或服务器设置后重试")
                     return@launch
                 }
                 if (!response.accepted) {
-                    val message = formatAuthStartMessage(response.message)
-                    _errorMessage.value = message
-                    _authUiState.value = _authUiState.value.copy(
-                        authActive = false,
-                        authMessage = message,
-                        lastScore = 0f,
-                        lastThreshold = 0f,
-                        lastWindowId = 0L,
-                        lastDecision = AuthDecision.UNKNOWN,
-                        lastDecisionMessage = "",
-                        lastUpdateTime = 0L,
-                        serverLatencyMs = null,
-                        serverTimestampMs = null,
-                        authFailure = false,
-                        scoreValid = false
-                    )
+                    showAuthenticationStartError(formatAuthStartMessage(response.message))
                     return@launch
                 }
-
-                if (response.sessionId.isNotBlank()) {
-                    _sessionId.value = response.sessionId
-                }
-                _authUiState.value = _authUiState.value.copy(
-                    modelVersion = response.modelVersion.ifBlank { _authUiState.value.modelVersion },
+                _sessionId.value = currentSession
+                _authUiState.value = ContinuousAuthUiState(
+                    modelVersion = response.modelVersion,
                     authActive = true,
-                    authMessage = response.message,
-                    lastScore = 0f,
-                    lastThreshold = 0f,
-                    lastWindowId = 0L,
-                    lastDecision = AuthDecision.UNKNOWN,
-                    lastDecisionMessage = "",
-                    lastUpdateTime = 0L,
-                    serverLatencyMs = null,
-                    serverTimestampMs = null,
+                    authMessage = "认证已开始，正常使用手机即可",
                     windowSizeSec = response.windowSizeSec,
                     decisionTimeSec = response.decisionTimeSec,
-                    authFailure = false,
-                    scoreValid = false
+                    authAnalysis = _authUiState.value.authAnalysis
                 )
+            } catch (e: TimeoutCancellationException) {
+                showAuthenticationStartError(when {
+                    getSmartTransmissionEnabled() && !smartTransmissionManager.smartUploadWindowOpen.value ->
+                        "当前智能传输正在等待允许上传的时段。请在设置中关闭智能传输后重试，以便及时获得认证结果"
+                    getUploadPolicyWiFiOnly() ->
+                        "尚未连上服务器。你已选择仅 Wi-Fi 上传，请连接 Wi-Fi 或检查服务器设置后重试"
+                    else -> "尚未连上服务器，请检查网络和服务器设置后重试。采集的数据会暂存在本机"
+                })
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
-                _errorMessage.value = "认证会话启动异常: ${e.message}"
-                _authUiState.value = _authUiState.value.copy(authActive = false)
+                Log.e(TAG, "开始认证失败", e)
+                showAuthenticationStartError("认证暂时无法开始，请检查设置后再试")
+            } finally {
+                _authUiState.value = _authUiState.value.copy(isStarting = false)
             }
         }
     }
-    
+
+    private fun showAuthenticationStartError(message: String) {
+        _errorMessage.value = message
+        _authUiState.value = _authUiState.value.copy(authActive = false, authMessage = message, authFailure = false)
+    }
+
+    fun stopAuthentication() {
+        val needsNewSession = authenticationManager.active.value || authStartJob?.isActive == true
+        authStartJob?.cancel()
+        authenticationManager.stopAuthentication()
+        _authUiState.value = ContinuousAuthUiState(
+            authMessage = "认证已停止，数据采集仍按你的设置运行",
+            authAnalysis = _authUiState.value.authAnalysis
+        )
+        if (needsNewSession && (_isCollectionRunning.value == true || _collectionStatus.value == "STARTING")) {
+            try {
+                context.startService(Intent(context, DataCollectionService::class.java)
+                    .setAction(DataCollectionService.ACTION_RESET_AUTHENTICATION))
+            } catch (e: Exception) {
+                Log.e(TAG, "结束服务端认证会话失败", e)
+                stopEncryptedUpload()
+            }
+        } else if (needsNewSession) {
+            sessionManager.endSession()
+        }
+    }
+
+    fun setProtectionMode(mode: ProtectionMode) {
+        if (mode == ProtectionMode.OFF) stopAuthentication()
+        settingsRepository.setProtectionMode(mode)
+    }
+
+    fun setSensorCollectionEnabled(sensorKey: String, enabled: Boolean) {
+        settingsRepository.setSensorEnabled(sensorKey, enabled)
+        if (!sensorCollectionSettings.value.anyEnabled &&
+            (_isCollectionRunning.value == true || _collectionStatus.value == "STARTING")) {
+            stopEncryptedUpload()
+        }
+    }
+
     /**
      * 开始数据采集（保留兼容性）
      */
@@ -605,6 +694,7 @@ class MainViewModel @Inject constructor(
         serverTimestampMs: Long? = null,
         message: String? = null
     ) {
+        if (protectionMode.value == ProtectionMode.OFF || !authenticationManager.active.value) return
         val isValidScore = score.isFinite()
         val clampedScore = if (isValidScore) score.coerceIn(0f, 1f) else 0f
         val isValidThreshold = threshold.isFinite()
@@ -626,7 +716,7 @@ class MainViewModel @Inject constructor(
             serverLatencyMs = latencyMs ?: current.serverLatencyMs,
             serverTimestampMs = serverTimestampMs ?: current.serverTimestampMs,
             windowSizeSec = windowSizeSec ?: current.windowSizeSec,
-            authFailure = interrupt,
+            authFailure = !acceptedDecision,
             authActive = true,
             authAnalysis = current.authAnalysis.recordResult(acceptedDecision, now)
         )
@@ -664,31 +754,25 @@ class MainViewModel @Inject constructor(
 
     private fun formatAuthStartMessage(rawMessage: String?): String {
         val message = rawMessage?.trim().orEmpty()
-        if (message.isBlank()) return "模型未就绪，稍后重试"
+        if (message.isBlank()) return "还在了解你的使用习惯，请正常使用手机后再试"
 
         val dataMatch = Regex("data_insufficient:\\s*([0-9.]+)MB/([0-9.]+)MB", RegexOption.IGNORE_CASE)
             .find(message)
         if (dataMatch != null) {
             val uploaded = dataMatch.groupValues[1]
             val required = dataMatch.groupValues[2]
-            return "数据不足：已上传 ${uploaded}MB / 需要 ${required}MB"
+            return "还在了解你的使用习惯（已积累 ${uploaded}MB / 需要 ${required}MB），请继续正常使用手机后再试"
         }
 
         return when {
-            message.startsWith("training_in_progress") -> "模型训练中，请稍后重试"
-            message.startsWith("training_failed") -> {
-                val detail = message.removePrefix("training_failed").trimStart(':', ' ')
-                if (detail.isNotBlank()) "模型训练失败：$detail" else "模型训练失败，请稍后重试"
-            }
-            message.startsWith("model_not_ready") -> {
-                val detail = message.removePrefix("model_not_ready").trimStart(':', ' ')
-                if (detail.isNotBlank()) "模型未就绪：$detail" else "模型未就绪，请稍后重试"
-            }
-            message.startsWith("data_insufficient") -> "数据不足，请继续上传后再试"
-            else -> message
+            message.startsWith("training_in_progress") -> "正在学习你的使用习惯，请稍后再试"
+            message.startsWith("training_failed") -> "暂时无法完成使用习惯分析，请稍后重试或联系服务器管理者"
+            message.startsWith("model_not_ready") || message.startsWith("data_insufficient") ->
+                "还在了解你的使用习惯，请继续正常使用手机后再试"
+            else -> "服务暂时未准备好，请稍后再试或检查服务器设置"
         }
     }
-    
+
     /**
      * 初始化上传策略设置
      */
@@ -757,30 +841,7 @@ class MainViewModel @Inject constructor(
      * 应用上传策略到上传管理器
      */
     private fun applyUploadPolicy(wifiOnly: Boolean) {
-        viewModelScope.launch {
-            try {
-                // 检查当前网络状态
-                val currentNetworkState = _networkState.value ?: NetworkState.UNKNOWN
-                
-                // 如果设置为仅WiFi，且当前不是WiFi网络，暂停上传
-                if (wifiOnly && !isWiFiNetwork(currentNetworkState)) {
-                    // 如果正在上传，暂停上传
-                    if (_isCollectionRunning.value == true) {
-                        Log.i(TAG, "当前非WiFi网络，暂停数据上传")
-                        uploadManager.pauseUpload("network_policy")
-                    }
-                } else {
-                    // 恢复上传（如果之前被暂停）
-                    if (_isCollectionRunning.value == true) {
-                        Log.i(TAG, "网络条件满足，恢复数据上传")
-                        uploadManager.resumeUpload("network_policy")
-                    }
-                }
-                
-            } catch (e: Exception) {
-                Log.e(TAG, "应用上传策略失败", e)
-            }
-        }
+        uploadManager.setWifiOnlyMode(wifiOnly)
     }
     
     /**
@@ -796,27 +857,14 @@ class MainViewModel @Inject constructor(
      * 停止加密数据上传
      */
     fun stopEncryptedUpload() {
+        authStartJob?.cancel()
+        authenticationManager.stopAuthentication()
         viewModelScope.launch {
             try {
                 _collectionStatus.value = "STOPPING"
                 
-                // 停止智能传输管理器
-                smartTransmissionManager.stop()
-                uploadStatsJob?.cancel()
-                
-                // 结束会话
-                sessionManager.endSession()
-                _sessionId.value = null
-                _sessionStartTime.value = 0
-                _sessionDuration.value = "00:00"
-                
-                _collectionStatus.value = "STOPPED"
-                _isCollectionRunning.value = false
-                _isEncryptedUploading.value = false  // 停止后回到"未加密上传"状态
-                updateSensorStatus(running = false)
-                _connectionStatus.value = ConnectionStatus.DISCONNECTED
-                _transmissionStats.value = TransmissionStats()
-                _fileQueueStats.value = QueueStats()
+                stopCollectionAndAwait()
+                _collectionStatus.value = smartTransmissionManager.collectionState.value.status.name
                 _authUiState.value = _authUiState.value.copy(
                     authActive = false,
                     authMessage = "",
@@ -835,13 +883,12 @@ class MainViewModel @Inject constructor(
                     scoreValid = false
                 )
 
-                stopForegroundCollectionService()
-
                 updateDebugInfo()
                 
             } catch (e: Exception) {
                 _collectionStatus.value = "ERROR"
-                _errorMessage.value = "停止加密数据上传异常: ${e.message}"
+                Log.e(TAG, "停止数据采集失败", e)
+                _errorMessage.value = "数据采集尚未完全停止，请稍后重试"
             }
         }
     }
@@ -858,9 +905,9 @@ class MainViewModel @Inject constructor(
      */
     private fun updateSensorStatus(running: Boolean) {
         _sensorStatus.value = mapOf(
-            "accelerometer" to running,
-            "gyroscope" to running,
-            "magnetometer" to running
+            "accelerometer" to (running && sensorCollectionSettings.value.accelerometerEnabled),
+            "gyroscope" to (running && sensorCollectionSettings.value.gyroscopeEnabled),
+            "magnetometer" to (running && sensorCollectionSettings.value.magnetometerEnabled)
         )
     }
     
@@ -873,21 +920,7 @@ class MainViewModel @Inject constructor(
                 // 更新网络状态
                 _networkState.value = networkEnvironmentDetector.getCurrentNetworkState()
 
-                val uploadStatus = uploadManager.getUploadStatus()
-                _connectionStatus.value = uploadStatus.connectionStatus
-
-                val pending = uploadStatus.bufferedPackets +
-                    (uploadStatus.fileQueueStats?.pendingPackets ?: 0)
-                _fileQueueStats.value = uploadStatus.fileQueueStats ?: QueueStats(
-                    totalPackets = (uploadStatus.uploadedPackets + pending).toInt(),
-                    pendingPackets = pending,
-                    uploadedPackets = uploadStatus.uploadedPackets.toInt(),
-                    corruptedPackets = 0,
-                    totalSizeBytes = uploadStatus.fileQueueStats?.totalSizeBytes ?: 0
-                )
-
-                // 更新传输统计
-                updateTransmissionStats(uploadStatus)
+                refreshUploadStats()
                 
                 // 更新调试信息
                 updateDebugInfo()
@@ -917,14 +950,24 @@ class MainViewModel @Inject constructor(
      */
     private fun updateTransmissionStats(status: UploadStatus? = null) {
         val uploadStatus = status ?: uploadManager.getUploadStatus()
-        val pending = uploadStatus.bufferedPackets +
-            (uploadStatus.fileQueueStats?.pendingPackets ?: 0)
+        val pending = maxOf(uploadStatus.bufferedPackets,
+            uploadStatus.fileQueueStats?.pendingPackets ?: 0)
 
         _transmissionStats.value = TransmissionStats(
             isFastMode = false,
             packetsSent = uploadStatus.uploadedPackets,
             packetsPending = pending,
             lastAckLatency = uploadStatus.connectionStats.lastAckLatency
+        )
+    }
+
+    private fun refreshUploadStats() {
+        val status = uploadManager.getUploadStatus()
+        _connectionStatus.value = status.connectionStatus
+        updateTransmissionStats(status)
+        _fileQueueStats.value = status.fileQueueStats ?: QueueStats(
+            totalPackets = status.bufferedPackets,
+            pendingPackets = status.bufferedPackets
         )
     }
     
@@ -997,22 +1040,12 @@ class MainViewModel @Inject constructor(
             // 获取磁盘队列统计
             val queueStats = runBlocking { fileQueueManager.getQueueStatistics() }
 
-            appendLine("内存样本数: $memorySamples")
-//            appendLine("内存样本数: 0") // TODO: 从实际缓冲区获取
-            appendLine("磁盘队列批次数: ${metricsSnapshot.counters[com.continuousauth.observability.MetricType.BATCHES_PROCESSED] ?: 0}")
-            appendLine("已发送数据包: ${metricsSnapshot.counters[com.continuousauth.observability.MetricType.UPLOADS_SUCCESS] ?: 0}")
+            appendLine("内存待发包数: $memorySamples")
+            appendLine("磁盘队列包数: ${queueStats.pendingPackets}")
+            appendLine("服务器已确认数据包: ${uploadStatus.uploadedPackets}")
             appendLine("上传失败数: ${(metricsSnapshot.counters[com.continuousauth.observability.MetricType.UPLOADS_FAILED_NETWORK] ?: 0) + 
                 (metricsSnapshot.counters[com.continuousauth.observability.MetricType.UPLOADS_FAILED_SERVER] ?: 0)}")
-            // 计算已丢弃数据包（内存缓冲区丢弃 + 磁盘队列丢弃）
-            val diskDiscarded = queueStats.totalDiscarded
-            val totalSent = uploadStatus.uploadedPackets
-            val totalAcknowledged = uploadStatus.fileQueueStats!!.acknowledgedCount
-            val memoryDiscarded = maxOf(0, totalSent - totalAcknowledged - diskDiscarded)
-//            (内存: $memoryDiscarded, 磁盘: $diskDiscarded)
-            val totalDiscarded = memoryDiscarded + diskDiscarded
-            appendLine("已丢弃数据包: $totalDiscarded")
-
-//            appendLine("已丢弃数据包: 0") // TODO: 实现丢弃计数
+            appendLine("磁盘已丢弃数据包: ${queueStats.totalDiscarded}")
             appendLine("上传成功率: ${"%.1f".format(metricsSnapshot.summary.currentUploadSuccessRate)}%")
             appendLine()
             
@@ -1140,19 +1173,7 @@ class MainViewModel @Inject constructor(
         }
     }
 
-    fun startDataCollectionService() {
-        // 创建启动服务的Intent
-        val intent = Intent(context, DataCollectionService::class.java)
-        intent.action = DataCollectionService.ACTION_START_COLLECTION
-
-        // Android 8.0 (API 26)及以上版本必须使用startForegroundService
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            context.startForegroundService(intent)
-        } else {
-            // 旧版本使用普通的startService
-            context.startService(intent)
-        }
-    }
+    fun startDataCollectionService() = startEncryptedUpload()
     /**
      * 检查 Usage Stats 权限是否已授予
      */
@@ -1261,8 +1282,11 @@ class MainViewModel @Inject constructor(
      * 开始更新会话时长
      */
     private fun startSessionDurationUpdate() {
-        viewModelScope.launch { 
+        sessionDurationJob?.cancel()
+        sessionDurationJob = viewModelScope.launch {
             while (_isEncryptedUploading.value == true) {
+                _sessionId.value = sessionManager.getCurrentSessionId()
+                _sessionStartTime.value = sessionManager.getSessionStartTime()
                 _sessionDuration.value = sessionManager.getFormattedSessionDuration()
                 delay(1000) // 每秒更新一次
             }
@@ -1276,34 +1300,7 @@ class MainViewModel @Inject constructor(
         uploadStatsJob?.cancel()
         uploadStatsJob = viewModelScope.launch {
             while (_isEncryptedUploading.value == true) {
-                val status = uploadManager.getUploadStatus()
-//                val pending = status.bufferedPackets +
-//                    (status.fileQueueStats?.pendingPackets ?: 0)
-                val pending = uploadManager.getPendingPacketsCount()
-
-                // 获取文件队列统计信息，确保与pending计算一致
-                val queueStats = runBlocking {
-                    fileQueueManager.getQueueStatistics()
-                }
-
-                _transmissionStats.postValue(
-                    TransmissionStats(
-                        isFastMode = false,
-                        packetsSent = status.uploadedPackets,
-                        packetsPending = queueStats.pendingPackets,  // 使用队列统计的pending值
-                        lastAckLatency = status.connectionStats.lastAckLatency
-                    )
-                )
-
-                _fileQueueStats.postValue(
-                    status.fileQueueStats ?: QueueStats(
-                        totalPackets = (status.uploadedPackets + queueStats.pendingPackets).toInt(),
-                        pendingPackets = queueStats.pendingPackets,  // 使用相同的值
-                        uploadedPackets = status.uploadedPackets.toInt(),
-                        corruptedPackets = 0,
-                        totalSizeBytes = 0
-                    )
-                )
+                refreshUploadStats()
 
                 delay(1000)
             }
@@ -1348,20 +1345,28 @@ class MainViewModel @Inject constructor(
      */
     fun checkPrivacyConsent() {
         privacyManager.checkConsentStatus()
-        viewModelScope.launch {
-            privacyManager.consentState.collect { state ->
-                _consentState.value = state
-                
-                // 如果用户未同意或已撤回，停止采集
-                if (state == ConsentState.NOT_GRANTED || state == ConsentState.WITHDRAWN) {
-                    stopCollection()
+        if (consentObservationJob?.isActive != true) {
+            consentObservationJob = viewModelScope.launch {
+                privacyManager.consentState.collect { state ->
+                    _consentState.value = state
+                    if (state == ConsentState.NOT_GRANTED || state == ConsentState.WITHDRAWN) {
+                        try {
+                            stopCollectionAndAwait()
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            _errorMessage.value = "停止数据采集失败: ${e.message}"
+                        }
+                    }
                 }
             }
         }
-        
-        viewModelScope.launch {
-            privacyManager.deletionState.collect { state ->
-                _deletionState.value = state
+
+        if (deletionObservationJob?.isActive != true) {
+            deletionObservationJob = viewModelScope.launch {
+                privacyManager.deletionState.collect { state ->
+                    _deletionState.value = state
+                }
             }
         }
     }
@@ -1374,9 +1379,11 @@ class MainViewModel @Inject constructor(
      */
     fun withdrawConsentAndDeleteData() {
         viewModelScope.launch {
+            if (isDeletingData) return@launch
+            isDeletingData = true
             try {
-                // 先停止采集
-                stopCollection()
+                // Deletion must wait until the final encrypted batch is persisted and uploads stop.
+                stopCollectionAndAwait()
                 
                 // 显示删除进度
                 _collectionStatus.value = "正在删除数据..."
@@ -1385,8 +1392,10 @@ class MainViewModel @Inject constructor(
                 val result = privacyManager.withdrawConsentAndDeleteData()
                 
                 if (result.isSuccess) {
-                    _collectionStatus.value = "数据已删除"
-                    _errorMessage.value = null
+                    initializeUploadPolicy()
+                    val remotePending = privacyManager.deletionState.value == DeletionState.PARTIAL_SUCCESS
+                    _collectionStatus.value = if (remotePending) "本地数据已删除，服务端删除尚未完成" else "数据已删除"
+                    _errorMessage.value = if (remotePending) "本地数据已删除，服务端删除尚未完成" else null
                     
                     // 清除会话信息
                     _sessionId.value = null
@@ -1400,9 +1409,13 @@ class MainViewModel @Inject constructor(
                     _errorMessage.value = "数据删除失败: ${result.exceptionOrNull()?.message}"
                     Log.e(TAG, "撤回同意失败", result.exceptionOrNull())
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 _errorMessage.value = "撤回同意失败: ${e.message}"
                 Log.e(TAG, "撤回同意过程中发生错误", e)
+            } finally {
+                isDeletingData = false
             }
         }
     }
@@ -1444,23 +1457,20 @@ class MainViewModel @Inject constructor(
     
     override fun onCleared() {
         super.onCleared()
-        // 清理资源
-        networkEnvironmentDetector.cleanup()
-        // 清理智能传输管理器（已移除）
-        performanceMonitor.cleanup()
-        memoryMonitor.cleanup()
+        // 单例监控器由应用持有，销毁界面不能中断后台服务。
         uploadStatsJob?.cancel()
+        sessionDurationJob?.cancel()
         authAnalysisTimerJob?.cancel()
-        viewModelScope.launch {
-            performanceMonitor.stopMonitoring()
-            memoryMonitor.stopMonitoring()
-        }
     }
 
     /**
      * 启动数据采集前台服务，避免后台被系统限制网络/传感器。
      */
     private fun startForegroundCollectionService() {
+        val prefs = context.getSharedPreferences(DataCollectionService.PREFS_NAME, Context.MODE_PRIVATE)
+        check(prefs.edit().putBoolean(DataCollectionService.COLLECTION_REQUESTED_KEY, true).commit()) {
+            "无法保存采集启动状态"
+        }
         try {
             val intent = Intent(context, DataCollectionService::class.java).apply {
                 action = DataCollectionService.ACTION_START_COLLECTION
@@ -1471,7 +1481,9 @@ class MainViewModel @Inject constructor(
                 context.startService(intent)
             }
         } catch (e: Exception) {
+            prefs.edit().putBoolean(DataCollectionService.COLLECTION_REQUESTED_KEY, false).apply()
             Log.e(TAG, "启动前台采集服务失败", e)
+            throw e
         }
     }
 
@@ -1480,10 +1492,37 @@ class MainViewModel @Inject constructor(
      */
     private fun stopForegroundCollectionService() {
         try {
-            val intent = Intent(context, DataCollectionService::class.java)
-            context.stopService(intent)
+            val prefs = context.getSharedPreferences(DataCollectionService.PREFS_NAME, Context.MODE_PRIVATE)
+            val wasRequested = prefs.getBoolean(DataCollectionService.COLLECTION_REQUESTED_KEY, false)
+            check(prefs.edit().putBoolean(DataCollectionService.COLLECTION_REQUESTED_KEY, false).commit()) {
+                "无法保存采集停止状态"
+            }
+            val state = smartTransmissionManager.collectionState.value.status
+            if (!wasRequested && (state == SmartTransmissionManager.CollectionStatus.STOPPED ||
+                    state == SmartTransmissionManager.CollectionStatus.ERROR)) return
+            val intent = Intent(context, DataCollectionService::class.java).apply {
+                action = DataCollectionService.ACTION_STOP_COLLECTION
+            }
+            context.startService(intent)
         } catch (e: Exception) {
             Log.e(TAG, "停止前台采集服务失败", e)
+            throw e
+        }
+    }
+
+    private suspend fun stopCollectionAndAwait() {
+        authStartJob?.cancel()
+        authenticationManager.stopAuthentication()
+        stopForegroundCollectionService()
+        try {
+            withTimeout(30_000L) {
+                smartTransmissionManager.collectionState.first {
+                    it.status == SmartTransmissionManager.CollectionStatus.STOPPED ||
+                        it.status == SmartTransmissionManager.CollectionStatus.ERROR
+                }
+            }
+        } catch (e: TimeoutCancellationException) {
+            throw IllegalStateException("采集停止超时，未执行后续删除操作", e)
         }
     }
 }

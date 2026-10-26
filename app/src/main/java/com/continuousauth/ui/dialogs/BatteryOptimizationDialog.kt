@@ -1,6 +1,7 @@
 package com.continuousauth.ui.dialogs
 
 import android.app.Dialog
+import android.content.DialogInterface
 import android.os.Bundle
 import androidx.appcompat.app.AlertDialog
 import androidx.fragment.app.DialogFragment
@@ -12,8 +13,17 @@ import com.google.android.material.dialog.MaterialAlertDialogBuilder
  * 引导用户关闭应用的电池优化，确保后台数据采集稳定运行
  */
 class BatteryOptimizationDialog(
-    private val onResult: (disableOptimization: Boolean) -> Unit
+    private var onResult: (disableOptimization: Boolean) -> Unit = {}
 ) : DialogFragment() {
+
+    fun setOnResultListener(listener: (Boolean) -> Unit) {
+        onResult = listener
+    }
+
+    override fun onCancel(dialog: DialogInterface) {
+        super.onCancel(dialog)
+        onResult(false)
+    }
     
     companion object {
         private const val TAG = "BatteryOptimizationDialog"

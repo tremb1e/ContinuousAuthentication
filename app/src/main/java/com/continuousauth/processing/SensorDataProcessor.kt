@@ -12,6 +12,8 @@ import com.google.protobuf.InvalidProtocolBufferException
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
@@ -46,6 +48,7 @@ class SensorDataProcessor @Inject constructor(
     
     // 协程作用域
     private val processingScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val processingMutex = Mutex()
     private var processingJob: Job? = null
     
     // 当前会话信息
@@ -57,41 +60,43 @@ class SensorDataProcessor @Inject constructor(
     suspend fun startProcessing(
         sensorDataFlow: Flow<SensorSample>,
         sessionId: String = UUID.randomUUID().toString()
-    ): Boolean {
+    ): Boolean = processingMutex.withLock {
         if (isProcessing.get()) {
             android.util.Log.w(TAG, "数据处理已在运行中")
-            return true
+            return@withLock true
         }
         
         // 初始化加密系统
         if (!cryptoBox.initialize()) {
             android.util.Log.e(TAG, "加密系统初始化失败")
-            return false
+            return@withLock false
         }
         
         currentSessionId = sessionId
         
         // 启动数据处理协程
+        isProcessing.set(true)
         processingJob = processingScope.launch {
-            processSensorDataFlow(sensorDataFlow)
+            try {
+                processSensorDataFlow(sensorDataFlow)
+            } finally {
+                isProcessing.set(false)
+            }
         }
         
-        isProcessing.set(true)
         android.util.Log.i(TAG, "传感器数据处理已启动 - 会话ID: $sessionId")
         
-        return true
+        true
     }
     
     /**
      * 停止数据处理
      */
-    suspend fun stopProcessing() {
-        if (!isProcessing.get()) {
-            return
-        }
-        
-        processingJob?.cancel()
-        processingJob?.join()
+    suspend fun stopProcessing(graceful: Boolean = false): Unit = processingMutex.withLock {
+        val job = processingJob ?: return@withLock
+        if (!graceful) job.cancel()
+        job.join()
+        processingJob = null
         
         isProcessing.set(false)
         
@@ -103,6 +108,13 @@ class SensorDataProcessor @Inject constructor(
      */
     fun getEncryptedPacketFlow(): Flow<DataPacket> {
         return encryptedPacketChannel.receiveAsFlow()
+    }
+
+    fun discardPendingOutput() {
+        check(!isProcessing.get())
+        while (encryptedPacketChannel.tryReceive().isSuccess) {
+            // Packets are already persisted; no stale notifications should survive an explicit stop.
+        }
     }
     
     /**
@@ -122,12 +134,9 @@ class SensorDataProcessor @Inject constructor(
     private suspend fun processSensorDataFlow(sensorDataFlow: Flow<SensorSample>) {
         try {
             // 收集传感器样本进行批处理
-            sensorDataFlow
-                .buffer() // 使用缓冲区避免背压
-                .chunked() // 按传输模式决定批次大小
-                .collect { sampleBatch ->
+            sensorDataFlow.collectTimedBatches(1000L) { sampleBatch ->
                     if (sampleBatch.isNotEmpty()) {
-                        processSampleBatch(sampleBatch)
+                        withContext(NonCancellable) { processSampleBatch(sampleBatch) }
                         processedCount.addAndGet(sampleBatch.size.toLong())
                     }
                 }
@@ -201,7 +210,8 @@ class SensorDataProcessor @Inject constructor(
                 dekKeyId = dekKeyId,
                 sha256 = sha256,
                 compressionType = compressionManager.getCompressionTypeString(compressionType),
-                uncompressedSizeBytes = sensorBatchBytes.size
+                uncompressedSizeBytes = sensorBatchBytes.size,
+                packetId = packetId
             )
             
             // 8. 检查是否需要分片（Epic 1.4.4）
@@ -231,40 +241,6 @@ class SensorDataProcessor @Inject constructor(
             
         } catch (e: Exception) {
             android.util.Log.e(TAG, "处理批次失败", e)
-        }
-    }
-    
-    /**
-     * 将数据流按时间窗口分块 (默认1秒窗口)
-     */
-    private fun <T> Flow<T>.chunked(): Flow<List<T>> {
-        // 根据规范，使用1秒窗口
-        return this.chunked(1000) // 1秒
-    }
-    
-    /**
-     * 按时间窗口分块数据流
-     */
-    private fun <T> Flow<T>.chunked(windowMillis: Long): Flow<List<T>> = flow {
-        val buffer = mutableListOf<T>()
-        var lastEmitTime = System.currentTimeMillis()
-        
-        collect { item ->
-            buffer.add(item)
-            val currentTime = System.currentTimeMillis()
-            
-            if (currentTime - lastEmitTime >= windowMillis) {
-                if (buffer.isNotEmpty()) {
-                    emit(buffer.toList())
-                    buffer.clear()
-                }
-                lastEmitTime = currentTime
-            }
-        }
-        
-        // 发送剩余数据
-        if (buffer.isNotEmpty()) {
-            emit(buffer.toList())
         }
     }
     
