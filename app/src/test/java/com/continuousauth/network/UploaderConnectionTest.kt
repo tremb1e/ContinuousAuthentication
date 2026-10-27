@@ -21,9 +21,14 @@ import io.grpc.stub.StreamObserver
 import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -35,6 +40,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
 /** Real client/server calls in memory exercise RPC semantics without sending data to production. */
+@OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [30], application = Application::class)
 class UploaderConnectionTest {
@@ -42,12 +48,15 @@ class UploaderConnectionTest {
     private val channels = mutableListOf<ManagedChannel>()
     private val endpoints = mutableListOf<ServerEndpoint>()
     private val services = mutableMapOf<String, String>()
+    private val uploaderDispatcher = StandardTestDispatcher()
     private val policy = mockk<PolicyManager> {
         every { getCurrentPolicyConfiguration() } returns mockk<PolicyConfiguration> {
             every { securityConfig } returns SecurityConfiguration("", emptySet())
         }
     }
-    private val uploader = UploaderImpl(TlsSecurityManager(), policy, mockk(relaxed = true), mockk(relaxed = true)) { endpoint, _ ->
+    private val uploader = UploaderImpl(
+        TlsSecurityManager(), policy, mockk(relaxed = true), mockk(relaxed = true), uploaderDispatcher
+    ) { endpoint, _ ->
         endpoints += endpoint
         InProcessChannelBuilder.forName(services.getValue(endpoint.host)).directExecutor().build().also(channels::add)
     }
@@ -158,6 +167,34 @@ class UploaderConnectionTest {
             }
         })
         assertFalse(uploader.connect("https://echo.test:443"))
+    }
+
+    @Test fun serverClosureLeavesReconnectionToTheUploadManager() = runTest(uploaderDispatcher) {
+        val response = CompletableDeferred<StreamObserver<ServerDirective>>()
+        serve("closed.test", object : HealthyService() {
+            override fun streamSensorData(observer: StreamObserver<ServerDirective>): StreamObserver<DataPacket> {
+                response.complete(observer)
+                return super.streamSensorData(observer)
+            }
+        })
+        assertTrue(uploader.connect("https://closed.test:443"))
+        response.await().onCompleted()
+        runCurrent()
+
+        assertEquals(ConnectionStatus.DISCONNECTED.name, uploader.getConnectionStatus().state)
+        advanceTimeBy(30_000)
+        runCurrent()
+        assertEquals("Only the owner may open another connection", 1, channels.size)
+        assertFalse(uploader.sendDataPacket(DataPacket.newBuilder().setPacketId("after-close").build()))
+
+        // The running UploadManager can explicitly recover the connection on its next check.
+        assertTrue(uploader.connect("https://closed.test:443"))
+        assertEquals(2, channels.size)
+        uploader.disconnect()
+        advanceTimeBy(30_000)
+        runCurrent()
+        assertEquals(2, channels.size)
+        assertEquals(ConnectionStatus.DISCONNECTED.name, uploader.getConnectionStatus().state)
     }
 
     private fun serve(host: String, service: SensorDataServiceGrpc.SensorDataServiceImplBase) {

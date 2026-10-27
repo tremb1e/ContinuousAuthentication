@@ -126,13 +126,13 @@ class FileQueueManagerTest {
     @Test
     fun staleUploadedPacketsAreMergedInCreationOrderWithPendingAndFailed() = runBlocking {
         val now = System.currentTimeMillis()
-        rows["pending"] = metadata("pending", createdTime = 300)
-        rows["failed"] = metadata("failed", createdTime = 200, status = BatchStatus.FAILED)
-        rows["old-upload"] = metadata("old-upload", createdTime = 100, status = BatchStatus.UPLOADED)
+        rows["pending"] = metadata("pending", createdTime = now - 1_000)
+        rows["failed"] = metadata("failed", createdTime = now - 2_000, status = BatchStatus.FAILED)
+        rows["old-upload"] = metadata("old-upload", createdTime = now - 3_000, status = BatchStatus.UPLOADED)
             .copy(uploadTime = now - 60_000)
-        rows["fresh-upload"] = metadata("fresh-upload", createdTime = 50, status = BatchStatus.UPLOADED)
+        rows["fresh-upload"] = metadata("fresh-upload", createdTime = now - 5_000, status = BatchStatus.UPLOADED)
             .copy(uploadTime = now)
-        rows["acknowledged"] = metadata("acknowledged", createdTime = 25, status = BatchStatus.ACKNOWLEDGED)
+        rows["acknowledged"] = metadata("acknowledged", createdTime = now - 6_000, status = BatchStatus.ACKNOWLEDGED)
 
         assertEquals(listOf("old-upload", "failed", "pending"),
             manager.getPendingPackets(retryUploadedAfterMs = 30_000).map { it.packetId })
@@ -141,8 +141,9 @@ class FileQueueManagerTest {
 
     @Test
     fun uploadedPacketWithoutUploadTimestampCanBeRecovered() = runBlocking {
-        rows["unconfirmed"] = metadata("unconfirmed", createdTime = 100, status = BatchStatus.UPLOADED)
-        rows["pending"] = metadata("pending", createdTime = 200)
+        val now = System.currentTimeMillis()
+        rows["unconfirmed"] = metadata("unconfirmed", createdTime = now - 2_000, status = BatchStatus.UPLOADED)
+        rows["pending"] = metadata("pending", createdTime = now - 1_000)
 
         assertEquals(listOf("unconfirmed", "pending"),
             manager.getPendingPackets(retryUploadedAfterMs = 30_000).map { it.packetId })
@@ -209,9 +210,67 @@ class FileQueueManagerTest {
         assertEquals(0, manager.queueStats.value.fileCount)
     }
 
+    @Test
+    fun fixedSevenDayRetentionCleansAllPacketStatesAndInterruptedWriteFiles() = runBlocking {
+        val now = System.currentTimeMillis() + 60_000
+        val cutoff = now - 7 * 24 * 60 * 60 * 1_000L
+        val expiredFiles = BatchStatus.entries.map { status ->
+            val id = "expired-${status.name}"
+            val file = File(durableDir, "data_queue/$id.dat").apply {
+                parentFile!!.mkdirs()
+                writeBytes(byteArrayOf(1))
+            }
+            rows[id] = metadata(id, cutoff - 1, status).copy(filePath = file.absolutePath)
+            file
+        }
+        val boundary = File(cacheDir, "data_queue/boundary.dat").apply {
+            parentFile!!.mkdirs()
+            writeBytes(byteArrayOf(2))
+        }
+        rows["boundary"] = metadata("boundary", cutoff).copy(filePath = boundary.absolutePath)
+        val orphan = File(durableDir, "data_queue/interrupted.tmp").apply {
+            writeBytes(byteArrayOf(3))
+            assertTrue(setLastModified(cutoff - 1))
+        }
+        val recent = manager.saveDataPacket("recent", byteArrayOf(4), metadata("recent")).getOrThrow()
+
+        assertTrue(manager.cleanupExpiredPackets(now))
+
+        assertEquals(setOf("boundary", "recent"), rows.keys)
+        expiredFiles.forEach { assertFalse(it.exists()) }
+        assertFalse(orphan.exists())
+        assertTrue(boundary.exists())
+        assertTrue(recent.exists())
+    }
+
+    @Test
+    fun expiredUndeletablePacketsCannotBeReadOrRetriedAndKeepRecoveryMetadata() = runBlocking {
+        val now = System.currentTimeMillis()
+        val blocked = File(durableDir, "data_queue/expired-blocked.dat").apply { mkdirs() }
+        val child = File(blocked, "child").apply { writeText("still present") }
+        rows["expired-blocked"] = metadata("expired-blocked", now - FileQueueManager.RETENTION_MS - 1)
+            .copy(filePath = blocked.absolutePath)
+
+        assertFalse(manager.cleanupExpiredPackets(now))
+        assertTrue(manager.getPendingPackets().isEmpty())
+        assertTrue(manager.readDataPacket("expired-blocked").isFailure)
+        assertTrue(rows.containsKey("expired-blocked"))
+        assertTrue(child.delete())
+        assertTrue(manager.cleanupExpiredPackets(now))
+        assertFalse(rows.containsKey("expired-blocked"))
+    }
+
+    @Test
+    fun alreadyExpiredPacketsCannotBeWrittenBackToTheQueue() = runBlocking {
+        val expired = metadata("expired", System.currentTimeMillis() - FileQueueManager.RETENTION_MS - 1)
+        assertTrue(manager.saveDataPacket("expired", byteArrayOf(1), expired).isFailure)
+        assertFalse(rows.containsKey("expired"))
+        assertFalse(File(durableDir, "data_queue/expired.dat").exists())
+    }
+
     private fun metadata(
         id: String,
-        createdTime: Long = 1_000,
+        createdTime: Long = System.currentTimeMillis(),
         status: BatchStatus = BatchStatus.PENDING
     ) = BatchMetadata(
         packetId = id, filePath = "", status = status, createdTime = createdTime,

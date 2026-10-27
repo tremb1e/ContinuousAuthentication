@@ -1,26 +1,21 @@
 package com.continuousauth.monitor
 
-import android.app.ActivityManager
 import android.content.Context
 import android.hardware.Sensor
 import android.hardware.SensorManager
 import android.os.BatteryManager
 import android.os.Build
-import android.os.Debug
 import android.os.SystemClock
 import android.security.keystore.KeyProperties
-import androidx.annotation.RequiresApi
 import com.continuousauth.crypto.EnvelopeCryptoBox
 import com.continuousauth.network.TransportMode
 import com.continuousauth.network.Uploader
 import com.continuousauth.network.UploadManager
 import com.continuousauth.sensor.SensorCollector
-import com.continuousauth.storage.FileQueueManager
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import java.security.KeyStore
-import java.text.DecimalFormat
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -32,7 +27,6 @@ class SystemMonitor @Inject constructor(
     @ApplicationContext private val context: Context,
     private val uploader: Uploader,
     private val uploadManager: UploadManager,
-    private val fileQueueManager: FileQueueManager,
     private val sensorCollector: SensorCollector,
     private val cryptoBox: EnvelopeCryptoBox,
     private val enhancedTimeSync: com.continuousauth.time.EnhancedTimeSync
@@ -637,112 +631,6 @@ class SystemMonitor @Inject constructor(
             "TRANSIENT_FAILURE" -> ConnectionState.TRANSIENT_FAILURE
             "ERROR" -> ConnectionState.TRANSIENT_FAILURE
             else -> ConnectionState.DISCONNECTED
-        }
-    }
-    
-    /**
-     * 清空本地队列
-     */
-    suspend fun clearLocalQueue() {
-        fileQueueManager.clearAllPendingPackets()
-    }
-    
-    /**
-     * 导出pending数据
-     */
-    suspend fun exportPendingData(): String {
-        return fileQueueManager.exportEncryptedPendingData()
-    }
-    
-    /**
-     * 强制密钥轮换
-     */
-    suspend fun forceKeyRotation(): Boolean = cryptoBox.rotateKeys()
-    
-    /**
-     * 导出调试日志（已脱敏）
-     */
-    suspend fun exportDebugLog(): String {
-        return withContext(Dispatchers.IO) {
-            val timestamp = System.currentTimeMillis()
-            val fileName = "debug_log_${timestamp}.txt"
-            val file = java.io.File(context.getExternalFilesDir(null), fileName)
-            
-            val log = buildString {
-                appendLine("=== Continuous Authentication Debug Log ===")
-                appendLine("Generated at: ${java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.getDefault()).format(timestamp)}")
-                appendLine()
-                
-                // 传输状态（脱敏）
-                appendLine("【传输状态】")
-                appendLine("压缩算法: ${_transmissionStatus.value.compression}")
-                appendLine("连接状态: ${if (_transmissionStatus.value.isConnected) "已连接" else "未连接"}")
-                appendLine("上传队列大小: ${_transmissionStatus.value.uploadQueueSize}")
-                appendLine()
-                
-                // gRPC状态（脱敏）
-                appendLine("【gRPC连接】")
-                appendLine("连接状态: ${_grpcStatus.value.connectionState}")
-                appendLine("平均延迟: ${_grpcStatus.value.lastAckLatencyMs}ms")
-                appendLine("发送总数: ${_grpcStatus.value.totalPacketsSent}")
-                appendLine("确认总数: ${_grpcStatus.value.totalPacketsAcknowledged}")
-                appendLine()
-                
-                // 缓冲区状态
-                appendLine("【缓冲区】")
-                appendLine("内存样本: ${_bufferStats.value.memorySamples}")
-                appendLine("磁盘队列: ${_bufferStats.value.packetsInDiskQueue}")
-                appendLine("磁盘大小: ${_bufferStats.value.diskQueueSizeMB}MB")
-                appendLine()
-                
-                // 设备信息（脱敏）
-                appendLine("【设备信息】")
-                appendLine("Android版本: ${_deviceKeyInfo.value.androidVersion}")
-                appendLine("StrongBox: ${_deviceKeyInfo.value.strongBoxSupported}")
-                appendLine("密钥轮换次数: ${_deviceKeyInfo.value.keyRotationCount}")
-                appendLine()
-                
-                // 加密状态
-                appendLine("【加密状态】")
-                appendLine("已初始化: ${_encryptionStatus.value.isInitialized}")
-                appendLine("安全锁定: ${_encryptionStatus.value.isSecurityLocked}")
-                appendLine("连续失败: ${_encryptionStatus.value.consecutiveFailures}")
-                appendLine()
-                
-                // 性能指标
-                appendLine("【性能指标】")
-                _performanceMetrics.value.let {
-                    appendLine("CPU使用: ${it.cpuUsagePercent}%")
-                    appendLine("内存使用: ${it.memoryUsedMB}MB / ${it.memoryTotalMB}MB")
-                    appendLine("电池电量: ${it.batteryLevel}%")
-                    appendLine("设备温度: ${it.temperatureCelsius}°C")
-                }
-                appendLine()
-                
-                // 时间同步
-                appendLine("【时间同步】")
-                _timeSyncStatus.value.let {
-                    appendLine("同步有效: ${it.isNtpSyncValid}")
-                    appendLine("NTP偏移: ${it.ntpOffsetMs}ms")
-                    appendLine("同步精度: ${it.syncAccuracyMs}ms")
-                }
-                appendLine()
-                
-                // 传感器信息
-                appendLine("【传感器信息】")
-                _sensorInfoMap.value.forEach { (name, info) ->
-                    appendLine("$name:")
-                    appendLine("  最大采样率: ${info.hardwareMaxSamplingRateHz}Hz")
-                    appendLine("  当前采样率: ${info.currentSamplingRateHz}Hz")
-                    appendLine("  FIFO大小: ${info.fifoMaxEventCount}")
-                }
-                
-                appendLine()
-                appendLine("=== End of Debug Log ===")
-            }
-            
-            file.writeText(log)
-            file.absolutePath
         }
     }
     

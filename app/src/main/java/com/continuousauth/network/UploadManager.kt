@@ -59,6 +59,8 @@ class UploadManager internal constructor(
     // 状态管理
     private val isRunning = AtomicBoolean(false)
     private val isPaused = AtomicBoolean(false)
+    // An explicit stop must survive a start() that was already suspended before it arrived.
+    private val collectionUploadAllowed = AtomicBoolean(true)
     private val uploadPauseReasons = mutableSetOf<String>()
     fun getLastAckTimestamp(): Long = fileQueueManager.uploadProgress.value.lastAckTimestamp
     
@@ -162,7 +164,8 @@ class UploadManager internal constructor(
      * 手动发送数据包
      */
     suspend fun sendDataPacket(dataPacket: DataPacket): Boolean {
-        if (!isRunning.get() || !isConnected() || isPaused.get() || isOfflineMode ||
+        if (isPacketExpired(dataPacket)) return false
+        if (!collectionUploadAllowed.get() || !isRunning.get() || !isConnected() || isPaused.get() || isOfflineMode ||
             (isWifiOnlyMode && !networkEnvironmentDetector.isWifiConnected()) ||
             (smartTransmissionEnabled.get() && !smartTransmissionUploadAllowed.get())) {
             Log.w(TAG, "上传管理器未运行，无法发送数据包")
@@ -170,6 +173,10 @@ class UploadManager internal constructor(
         }
         
         return uploader.sendDataPacket(dataPacket)
+    }
+
+    fun setCollectionUploadAllowed(allowed: Boolean) {
+        collectionUploadAllowed.set(allowed)
     }
     
     /**
@@ -331,7 +338,7 @@ class UploadManager internal constructor(
             while (isRunning.get() && isActive) {
                 try {
                     // 检查是否处于暂停状态
-                    if (isPaused.get() || isOfflineMode) {
+                    if (!collectionUploadAllowed.get() || isPaused.get() || isOfflineMode) {
                         delay(currentUploadInterval)
                         continue
                     }
@@ -365,7 +372,7 @@ class UploadManager internal constructor(
      */
     private suspend fun uploadBatchFromBuffer(): Int {
         // 检查是否处于暂停状态
-        if (isPaused.get() || isOfflineMode) {
+        if (!collectionUploadAllowed.get() || isPaused.get() || isOfflineMode) {
             Log.v(TAG, "上传已暂停，跳过批次上传")
             return 0
         }
@@ -409,7 +416,9 @@ class UploadManager internal constructor(
                 }
             }
         }
-        val memoryPackets = inMemoryBuffer.dequeue(currentBatchSize)
+        // Disk cleanup cannot remove the matching in-memory copy. This also covers
+        // packets retained only in memory when the original disk write failed.
+        val memoryPackets = inMemoryBuffer.dequeue(currentBatchSize).filterNot(::isPacketExpired)
         val packets = (diskPackets + memoryPackets).distinctBy { it.packetId }
         val unsentMemoryPackets = memoryPackets.associateBy { it.packetId }.toMutableMap()
         
@@ -424,8 +433,12 @@ class UploadManager internal constructor(
             var successCount = 0
             
             for (packet in packets) {
+                if (isPacketExpired(packet)) {
+                    unsentMemoryPackets.remove(packet.packetId)
+                    continue
+                }
 
-                if (!isRunning.get() || isPaused.get() || isOfflineMode ||
+                if (!collectionUploadAllowed.get() || !isRunning.get() || isPaused.get() || isOfflineMode ||
                     (isWifiOnlyMode && !networkEnvironmentDetector.isWifiConnected()) ||
                     (smartTransmissionEnabled.get() && !smartTransmissionUploadAllowed.get())) break
 
@@ -476,6 +489,15 @@ class UploadManager internal constructor(
         }
 
         return packets.size
+    }
+
+    private fun isPacketExpired(packet: DataPacket): Boolean {
+        // baseWallMs includes NTP correction; retention uses the phone's wall clock,
+        // just like the persisted queue's createdTime. Invalid timestamps fail closed.
+        val createdAt = runCatching {
+            Math.subtractExact(packet.baseWallMs, if (packet.hasNtpOffsetMs()) packet.ntpOffsetMs else 0L)
+        }.getOrNull() ?: return true
+        return createdAt < System.currentTimeMillis() - FileQueueManager.RETENTION_MS
     }
 
     /**
@@ -757,6 +779,10 @@ class UploadManager internal constructor(
     suspend fun retryPacket(packet: DataPacket): RetryResult {
         Log.i(TAG, "开始重试数据包: ${packet.packetId}")
 
+        if (isPacketExpired(packet)) {
+            return RetryResult(packet.packetId, false, "PACKET_EXPIRED", 0)
+        }
+
         // 检查上传管理器是否正在运行
         if (!isRunning.get()) {
             Log.w(TAG, "上传管理器未运行，无法重试数据包")
@@ -768,7 +794,7 @@ class UploadManager internal constructor(
             )
         }
         // 检查是否处于暂停状态
-        if (isPaused.get() || isOfflineMode ||
+        if (!collectionUploadAllowed.get() || isPaused.get() || isOfflineMode ||
             (smartTransmissionEnabled.get() && !smartTransmissionUploadAllowed.get())) {
             Log.w(TAG, "上传已暂停，无法重试数据包")
             return RetryResult(

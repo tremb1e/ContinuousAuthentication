@@ -92,13 +92,13 @@ class MainComposeNavigationTest {
     fun decliningFirstNoticeKeepsAllTabsAvailableAndRecreationDoesNotRepeatNotice() {
         launchAndDecline()
         assertFalse(entryPoint.privacyManager().consentState.value == ConsentState.GRANTED)
-        val tabs = listOf("认证与分析", "设置", "传感器数据", "详细信息")
+        val tabs = listOf("偷用防护", "设置", "传感器数据", "详细信息")
         val positions = tabs.map { title ->
             tab(title).assertIsDisplayed().fetchSemanticsNode().boundsInRoot.center.x
         }
         assertTrue(positions.zipWithNext().all { (left, right) -> left < right })
         tabs.drop(1).forEach { title -> tab(title).performClick(); tab(title).assertIsSelected() }
-        tab("认证与分析").performClick()
+        tab("偷用防护").performClick()
         scenario!!.recreate()
         compose.onAllNodes(isDialog()).assertCountEquals(0)
         compose.onNodeWithTag("authentication_screen").assertIsDisplayed()
@@ -106,10 +106,10 @@ class MainComposeNavigationTest {
     }
 
     @Test
-    fun settingsHaveEightCollapsedCategoriesAndEveryHeaderExpandsAndCollapses() {
+    fun settingsHaveSixCollapsedCategoriesAndEveryHeaderExpandsAndCollapses() {
         launchAndDecline()
         tab("设置").performClick()
-        val sections = listOf("consent", "sensors", "protection", "background", "transmission", "server", "storage", "maintenance")
+        val sections = listOf("consent", "protection", "background", "transmission", "server", "storage")
         sections.forEach { key -> compose.onNodeWithTag("section_content_$key").assertDoesNotExist() }
         sections.forEach { key ->
             expand(key)
@@ -117,6 +117,33 @@ class MainComposeNavigationTest {
             scrollToTag("section_$key").performClick()
             compose.onNodeWithTag("section_content_$key").assertDoesNotExist()
         }
+    }
+
+    @Test
+    fun protectionShortcutExpandsSettingsAndHomeRemainsReachableAfterRepeatedVisits() {
+        launchAndDecline()
+        repeat(3) {
+            scrollToTag("authentication_protection").performClick()
+            tab("设置").assertIsSelected()
+            compose.onNodeWithTag("settings_screen").assertIsDisplayed()
+            compose.onNodeWithTag("section_content_protection").assertExists()
+            scrollToTag("protection_monitor_only").assertIsDisplayed()
+            // A new shortcut request must reopen a section the user previously collapsed.
+            scrollToTag("section_protection").performClick()
+            compose.onNodeWithTag("section_content_protection").assertDoesNotExist()
+            tab("偷用防护").performClick().assertIsSelected()
+            compose.onNodeWithTag("authentication_screen").assertIsDisplayed()
+            compose.onNodeWithTag("settings_screen").assertDoesNotExist()
+        }
+        tab("设置").performClick().assertIsSelected()
+        tab("传感器数据").performClick().assertIsSelected()
+        tab("偷用防护").performClick().assertIsSelected()
+        scenario!!.recreate()
+        compose.onNodeWithTag("authentication_screen").assertIsDisplayed()
+        scrollToTag("authentication_protection").performClick()
+        compose.onNodeWithTag("section_content_protection").assertExists()
+        tab("偷用防护").performClick().assertIsSelected()
+        compose.onNodeWithTag("authentication_screen").assertIsDisplayed()
     }
 
     @Test
@@ -196,7 +223,7 @@ class MainComposeNavigationTest {
         launchAndDecline()
         tab("详细信息").performClick()
         val sections = listOf("auth_details", "connection_details", "buffer_details", "time_details", "sensor_details",
-            "device_security", "server_policy", "performance", "identifiers", "manual_analysis", "debug_details")
+            "device_security", "server_policy", "performance", "identifiers", "manual_analysis")
         sections.forEach { key -> compose.onNodeWithTag("section_content_$key").assertDoesNotExist() }
         sections.forEach { key ->
             expand(key)
@@ -222,43 +249,31 @@ class MainComposeNavigationTest {
     }
 
     @Test
-    fun visualizationPreferenceAndSensorPageUseTheSameSwitch() {
+    fun sensorCollectionProtectionAndExpandedSectionsSurviveNavigationAndRecreation() {
         launchAndDecline()
         tab("设置").performClick()
-        expand("maintenance")
-        scrollToTag("visualization").assertIsOff().performClick().assertIsOn()
-        tab("传感器数据").performClick()
-        scrollToTag("sensor_chart_accelerometer").assertIsDisplayed()
-        scrollToTag("sensor_chart_toggle").performClick()
-        tab("设置").performClick()
-        scrollToTag("visualization").assertIsOff()
-    }
-
-    @Test
-    fun sensorChoicesProtectionAndExpandedSectionsSurviveNavigationAndRecreation() {
-        launchAndDecline()
-        tab("设置").performClick()
-        expand("sensors")
-        listOf("accelerometer", "gyroscope", "magnetometer").forEach { sensor ->
-            scrollToTag("sensor_$sensor").assertIsOn().performClick().assertIsOff()
-        }
+        expand("consent")
+        scrollToTag("sensor_collection").assertIsOn().performClick().assertIsOff()
         assertFalse(entryPoint.settingsRepository().sensorSettings.value.anyEnabled)
+        scrollToTag("sensor_collection").performClick().assertIsOn()
+        val enabledSensors = entryPoint.settingsRepository().sensorSettings.value
+        assertTrue(enabledSensors.accelerometerEnabled && enabledSensors.gyroscopeEnabled && enabledSensors.magnetometerEnabled)
+        scrollToTag("sensor_collection").performClick().assertIsOff()
         expand("protection")
         compose.onNodeWithTag("protection_monitor_only").assertIsSelected()
-        scrollToTag("protection_off").performClick().assertIsSelected()
-        assertEquals(ProtectionMode.OFF, entryPoint.settingsRepository().protectionMode.value)
+        compose.onNodeWithTag("protection_off").assertDoesNotExist()
         scrollToTag("protection_alert").performClick().assertIsSelected()
+        assertEquals(ProtectionMode.ALERT, entryPoint.settingsRepository().protectionMode.value)
         tab("详细信息").performClick()
         tab("设置").performClick()
-        scrollToTag("section_sensors")
-        compose.onNodeWithTag("section_content_sensors").assertExists()
+        scrollToTag("section_consent")
+        compose.onNodeWithTag("section_content_consent").assertExists()
         scrollToTag("section_protection")
         compose.onNodeWithTag("section_content_protection").assertExists()
         scenario!!.recreate()
         scrollToTag("protection_alert").assertIsSelected()
-        listOf("accelerometer", "gyroscope", "magnetometer").forEach { sensor ->
-            scrollToTag("sensor_$sensor").assertIsOff()
-        }
+        scrollToTag("sensor_collection").assertIsOff()
+        assertFalse(entryPoint.settingsRepository().sensorSettings.value.anyEnabled)
     }
 
     @Test
@@ -272,16 +287,16 @@ class MainComposeNavigationTest {
     }
 
     @Test
-    fun storageInputRejectsInvalidDaysAndKeepsSavedChoice() {
+    fun storageShowsFixedRetentionAndDoesNotOfferAnEditableDuration() {
         launchAndDecline()
         tab("设置").performClick()
         expand("storage")
-        scrollToTag("retention_days").performTextReplacement("0")
-        scrollToText("保存天数").performClick()
-        compose.onNodeWithText("请输入 1 至 365 之间的整数").assertExists()
-        compose.onNodeWithTag("retention_days").performTextReplacement("7")
-        scrollToText("保存天数").performClick()
-        compose.onNodeWithText("保存期限已更新").assertExists()
+        compose.onNodeWithText("认证记录保存期限").assertExists()
+        compose.onNodeWithText("固定 30 天").assertExists()
+        compose.onNodeWithText("传感器缓存保存期限").assertExists()
+        compose.onNodeWithText("固定 7 天").assertExists()
+        compose.onNodeWithTag("retention_days").assertDoesNotExist()
+        compose.onNodeWithText("保存天数").assertDoesNotExist()
         assertEquals(7, entryPoint.privacyManager().getDataRetentionDays())
     }
 

@@ -43,6 +43,7 @@ class UploaderImpl internal constructor(
     private val policyManager: PolicyManager,
     private val inMemoryBuffer: InMemoryBuffer,
     private val fileQueueManager: FileQueueManager,
+    dispatcher: CoroutineDispatcher = Dispatchers.IO,
     private val channelFactory: ((ServerEndpoint, Set<String>) -> ManagedChannel)?
 ) : Uploader {
     @Inject constructor(
@@ -50,7 +51,7 @@ class UploaderImpl internal constructor(
         policyManager: PolicyManager,
         inMemoryBuffer: InMemoryBuffer,
         fileQueueManager: FileQueueManager
-    ) : this(tlsSecurityManager, policyManager, inMemoryBuffer, fileQueueManager, null)
+    ) : this(tlsSecurityManager, policyManager, inMemoryBuffer, fileQueueManager, channelFactory = null)
 
 
     companion object {
@@ -58,7 +59,6 @@ class UploaderImpl internal constructor(
         private const val CONNECTION_TIMEOUT_SECONDS = 20L
         private const val KEEPALIVE_TIME_SECONDS = 30L
         private const val KEEPALIVE_TIMEOUT_SECONDS = 5L
-        private const val MAX_RETRY_ATTEMPTS = 3
         private const val ACK_TIMEOUT_MS = 10000L // 10秒ACK超时
     }
 
@@ -69,7 +69,6 @@ class UploaderImpl internal constructor(
     private val connectionMutex = Mutex()
     private val streamLock = Any()
     private val connectionGeneration = AtomicLong(0L)
-    @Volatile private var reconnectAllowed = false
 
     // 状态管理
     private val connectionStatus = AtomicReference(ConnectionStatus.DISCONNECTED)
@@ -80,7 +79,7 @@ class UploaderImpl internal constructor(
     private val serverDirectiveChannel = Channel<ServerDirective>(Channel.UNLIMITED)
 
     // 协程作用域
-    private val uploaderScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val uploaderScope = CoroutineScope(SupervisorJob() + dispatcher)
 
     // 统计信息
     private val totalPacketsSent = AtomicLong(0L)
@@ -95,8 +94,6 @@ class UploaderImpl internal constructor(
     private var lastAckLatency: Long? = null
     private val ackLatencies = mutableListOf<Long>()
 
-    // 重连逻辑
-    private var reconnectJob: Job? = null
     private var currentEndpoint: String = ""
 
     private fun buildChannel(endpoint: ServerEndpoint, pinnedCertificates: Set<String>): ManagedChannel {
@@ -132,7 +129,6 @@ class UploaderImpl internal constructor(
 
             val generation = connectionGeneration.incrementAndGet()
             currentEndpoint = endpoint.endpoint
-            reconnectAllowed = true
             connectionStatus.set(ConnectionStatus.CONNECTING)
             connectedSince = null
             requestObserver = null
@@ -163,7 +159,6 @@ class UploaderImpl internal constructor(
                 ))
                 true
             } catch (e: CancellationException) {
-                reconnectAllowed = false
                 connectionGeneration.incrementAndGet()
                 channel?.shutdownNow()
                 channel = null
@@ -280,11 +275,7 @@ class UploaderImpl internal constructor(
     }
 
     override suspend fun disconnect(): Unit = withContext(Dispatchers.IO) {
-        // Cancel a reconnect's pending heartbeat before waiting for its connection mutex.
-        reconnectAllowed = false
-        reconnectJob?.cancel()
         connectionMutex.withLock {
-            reconnectAllowed = false
             connectionGeneration.incrementAndGet()
             connectionStatus.set(ConnectionStatus.DISCONNECTED)
             connectedSince = null
@@ -363,18 +354,17 @@ class UploaderImpl internal constructor(
                     if (generation == connectionGeneration.get()) handleServerDirective(directive)
                 }
 
+                // UploadManager owns retry timing and cancels that work when collection stops.
                 override fun onError(t: Throwable) {
                     if (generation != connectionGeneration.get()) return
                     Log.e(TAG, "服务器响应流错误", t)
                     handleConnectionError(describeConnectionFailure(t))
-                    startReconnect()
                 }
 
                 override fun onCompleted() {
                     if (generation != connectionGeneration.get()) return
                     Log.i(TAG, "服务器响应流已完成")
                     connectionStatus.set(ConnectionStatus.DISCONNECTED)
-                    startReconnect()
                 }
             }
 
@@ -491,40 +481,6 @@ class UploaderImpl internal constructor(
         connectionStatus.set(ConnectionStatus.ERROR)
         
         Log.e(TAG, "连接错误: $errorMessage")
-    }
-
-    /**
-     * 启动重连
-     */
-    private fun startReconnect(overrideEndpoint: String? = null) {
-        if (!reconnectAllowed) return
-        if (currentEndpoint.isEmpty() && overrideEndpoint.isNullOrEmpty()) return
-        
-        reconnectJob?.cancel()
-        reconnectJob = uploaderScope.launch {
-            connectionStatus.set(ConnectionStatus.RECONNECTING)
-            var retryCount = 0
-            val targetEndpoint = overrideEndpoint ?: currentEndpoint
-            
-            while (isActive && reconnectAllowed && retryCount < MAX_RETRY_ATTEMPTS &&
-                connectionStatus.get() != ConnectionStatus.CONNECTED) {
-                delay(kotlin.math.min(1000 * (1 shl retryCount), 30000).toLong()) // 指数退避
-                
-                Log.i(TAG, "尝试重连 (${retryCount + 1}/$MAX_RETRY_ATTEMPTS): $targetEndpoint")
-                
-                if (connect(targetEndpoint)) {
-                    Log.i(TAG, "重连成功")
-                    return@launch
-                }
-                
-                retryCount++
-            }
-            
-            if (connectionStatus.get() != ConnectionStatus.CONNECTED) {
-                Log.e(TAG, "重连失败，已达到最大重试次数")
-                connectionStatus.set(ConnectionStatus.ERROR)
-            }
-        }
     }
 
     /**

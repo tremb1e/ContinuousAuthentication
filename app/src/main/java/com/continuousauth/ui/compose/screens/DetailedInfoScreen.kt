@@ -24,9 +24,11 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.continuousauth.auth.AuthHistoryRepository
 import com.continuousauth.monitor.SystemMonitor
 import com.continuousauth.network.ConnectionStatus
 import com.continuousauth.network.TransportMode
+import com.continuousauth.storage.FileQueueManager
 import com.continuousauth.ui.AuthDecision
 import com.continuousauth.ui.MainViewModel
 import com.continuousauth.ui.compose.components.ExpandableSection
@@ -119,7 +121,7 @@ fun DetailedInfoScreen(
                     InfoRow("上传失败", buffer.totalFailedCount.toString())
                     InfoRow("已丢弃", buffer.totalDiscardedCount.toString())
                     InfoRow("磁盘队列占用", "${decimal.format(buffer.diskQueueSizeMB)} MB")
-                    DetailNote("缓存清理、导出和保存期限可以在“设置”中管理。")
+                    DetailNote("认证记录固定保留 ${AuthHistoryRepository.RETENTION_DAYS} 天，传感器缓存固定保留 ${FileQueueManager.RETENTION_DAYS} 天。缓存占用和清理可在“设置”中查看。")
                 }
             }
 
@@ -245,7 +247,7 @@ fun DetailedInfoScreen(
                 ExpandableSection("manual_analysis", "手动统计（高级）", "保留原有的临时分段统计", Icons.Default.Timer) {
                     val auth by mainViewModel.authUiState.collectAsStateWithLifecycle()
                     val analysis = auth.authAnalysis
-                    DetailNote("用于观察一次手动选定的运行片段。关闭应用进程后不会保留；首页的最近 7 天认证记录会自动保存，不需要在这里开始统计。")
+                    DetailNote("用于观察一次手动选定的运行片段。关闭应用进程后不会保留；首页的最近 ${AuthHistoryRepository.RETENTION_DAYS} 天认证记录会自动保存，不需要在这里开始统计。")
                     InfoRow("统计状态", if (analysis.isRunning) "正在统计" else "未在统计")
                     InfoRow("累计时间", formatDetailDuration(analysis.elapsedMs))
                     InfoRow("通过次数", analysis.passCount.toString())
@@ -256,7 +258,7 @@ fun DetailedInfoScreen(
                         enabled = analysis.isRunning || auth.authActive,
                         modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)
                     ) { Text(if (analysis.isRunning) "结束本段统计" else "开始本段统计") }
-                    if (!auth.authActive && !analysis.isRunning) DetailNote("请先在“认证与分析”中开始认证。")
+                    if (!auth.authActive && !analysis.isRunning) DetailNote("请先在“偷用防护”中启用认证。")
                     if (analysis.logs.isEmpty()) DetailNote("暂无已结束的统计片段。")
                     analysis.logs.forEach { log ->
                         HorizontalDivider()
@@ -265,13 +267,6 @@ fun DetailedInfoScreen(
                         InfoRow("通过 / 不通过", "${log.passCount} / ${log.failCount}")
                         InfoRow("通过比例", if (log.passCount + log.failCount > 0) "${decimal.format(log.passRatePercent)}%" else "尚无结果")
                     }
-                }
-            }
-
-            item(key = "debug_details", contentType = "details") {
-                ExpandableSection("debug_details", "诊断信息", "供维护人员排查问题", Icons.Default.BugReport) {
-                    val debugInfo by mainViewModel.debugInfo.observeAsState("")
-                    SelectionContainer { Text(debugInfo.ifBlank { "暂无诊断信息。可在设置的“维护工具”中打开调试信息。" }, style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace) }
                 }
             }
         }

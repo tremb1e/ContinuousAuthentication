@@ -17,6 +17,7 @@ import androidx.core.app.NotificationCompat
 import com.continuousauth.R
 import com.continuousauth.auth.AuthenticationManager
 import com.continuousauth.core.SmartTransmissionManager
+import com.continuousauth.network.UploadManager
 import com.continuousauth.ui.compose.MainComposeActivity
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.CancellationException
@@ -29,6 +30,9 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -54,10 +58,59 @@ class DataCollectionService : Service() {
         const val ACTION_RESET_AUTHENTICATION = "com.continuousauth.RESET_AUTHENTICATION"
         const val PREFS_NAME = "app_prefs"
         const val COLLECTION_REQUESTED_KEY = "collection_requested"
+        internal const val EXTRA_STOP_REQUEST_ID = "stop_request_id"
+
+        internal data class StopState(val requestedId: Long = 0, val completedId: Long = 0) {
+            val isPending: Boolean get() = requestedId > completedId
+        }
+
+        private val stopLock = Any()
+        private val mutableStopState = MutableStateFlow(StopState())
+        internal val stopState: StateFlow<StopState> = mutableStopState.asStateFlow()
+        private var stopIntentDispatched = false
+        private var serviceInstances = 0
+        internal val hasServiceInstance: Boolean get() = synchronized(stopLock) { serviceInstances > 0 }
+
+        /** Concurrent stop and deletion callers share the same actual service completion. */
+        internal fun requestStop(context: Context): Long = synchronized(stopLock) {
+            val requestId = pendingOrNewStopRequest()
+            if (!stopIntentDispatched) {
+                context.startService(Intent(context, DataCollectionService::class.java)
+                    .setAction(ACTION_STOP_COLLECTION)
+                    .putExtra(EXTRA_STOP_REQUEST_ID, requestId))
+                stopIntentDispatched = true
+            }
+            requestId
+        }
+
+        private fun pendingOrNewStopRequest(): Long {
+            if (!mutableStopState.value.isPending) {
+                val previous = mutableStopState.value
+                mutableStopState.value = previous.copy(requestedId = previous.requestedId + 1)
+                stopIntentDispatched = false
+            }
+            return mutableStopState.value.requestedId
+        }
+
+        private fun acceptStopRequest(intent: Intent): Long = synchronized(stopLock) {
+            val suppliedId = intent.getLongExtra(EXTRA_STOP_REQUEST_ID, 0)
+            if (suppliedId > 0 && suppliedId <= mutableStopState.value.completedId) return@synchronized 0L
+            val requestId = if (suppliedId in 1L..mutableStopState.value.requestedId) suppliedId else pendingOrNewStopRequest()
+            stopIntentDispatched = true
+            requestId
+        }
+
+        internal fun completeStopRequest(requestId: Long) = synchronized(stopLock) {
+            val state = mutableStopState.value
+            if (requestId > state.completedId && requestId <= state.requestedId) {
+                mutableStopState.value = state.copy(completedId = requestId)
+            }
+        }
     }
 
     @Inject lateinit var smartTransmissionManager: SmartTransmissionManager
     @Inject lateinit var authenticationManager: AuthenticationManager
+    @Inject lateinit var uploadManager: UploadManager
 
     private val serviceScope = CoroutineScope(Dispatchers.Main.immediate + SupervisorJob())
     private val commandMutex = Mutex()
@@ -67,6 +120,8 @@ class DataCollectionService : Service() {
     private var receiverRegistered = false
     private var isCollecting = false
     private var isPaused = false
+    private var acceptedStopRequestId = 0L
+    private var explicitStopFinished = false
 
     private val prefs by lazy { getSharedPreferences(PREFS_NAME, MODE_PRIVATE) }
     private val powerManager by lazy { getSystemService(Context.POWER_SERVICE) as PowerManager }
@@ -86,6 +141,7 @@ class DataCollectionService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        synchronized(stopLock) { serviceInstances++ }
         createNotificationChannel()
         if (!checkPrivacyConsent()) {
             setCollectionRequested(false)
@@ -118,6 +174,14 @@ class DataCollectionService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // A stop must be accepted even after consent was withdrawn, before any
+        // foreground-start rejection or suspended startup can bypass its receipt.
+        if (intent?.action == ACTION_STOP_COLLECTION) {
+            val requestId = acceptStopRequest(intent)
+            if (requestId > 0) stopCollection(requestId)
+            if (requestId == 0L && !isCollectionRequested()) stopSelf()
+            return if (isCollectionRequested()) START_STICKY else START_NOT_STICKY
+        }
         if (!checkPrivacyConsent()) {
             setCollectionRequested(false)
             stopSelf()
@@ -143,7 +207,6 @@ class DataCollectionService : Service() {
                 refreshScreenState()
                 reconcileCollectionState()
             }
-            ACTION_STOP_COLLECTION -> stopCollection()
             ACTION_RESET_AUTHENTICATION -> {
                 authenticationManager.stopAuthentication()
                 serviceScope.launch {
@@ -180,7 +243,7 @@ class DataCollectionService : Service() {
         }
 
         if (!isCollectionRequested()) {
-            if (intent?.action != ACTION_STOP_COLLECTION) stopSelf()
+            stopSelf()
             return START_NOT_STICKY
         }
         return START_STICKY
@@ -199,7 +262,14 @@ class DataCollectionService : Service() {
         // Preserve the session only for an unexpected restart. Explicit stop or consent
         // revocation still requires clearing volatile data if its command was cancelled.
         serviceScope.launch(NonCancellable, start = CoroutineStart.UNDISPATCHED) {
-            smartTransmissionManager.stop(endSession = !isCollectionRequested() || !checkPrivacyConsent())
+            try {
+                if (!explicitStopFinished) {
+                    smartTransmissionManager.stop(endSession = !isCollectionRequested() || !checkPrivacyConsent())
+                }
+                completeStopRequest(acceptedStopRequestId)
+            } finally {
+                synchronized(stopLock) { serviceInstances-- }
+            }
         }
         super.onDestroy()
     }
@@ -209,7 +279,11 @@ class DataCollectionService : Service() {
             commandMutex.withLock {
                 if (!isCollectionRequested()) return@withLock
                 try {
+                    explicitStopFinished = false
+                    uploadManager.setCollectionUploadAllowed(true)
                     smartTransmissionManager.start()
+                    // Stop can arrive while start() is suspended on its IO dispatcher.
+                    if (!isCollectionRequested() || !checkPrivacyConsent()) return@withLock
                     isCollecting = true
                     if (pauseState.isPaused) {
                         smartTransmissionManager.pause(allowBufferedUpload = pauseState.allowBufferedUpload)
@@ -233,7 +307,12 @@ class DataCollectionService : Service() {
         }
     }
 
-    private fun stopCollection() {
+    private fun stopCollection(requestId: Long) {
+        if (requestId <= acceptedStopRequestId) return
+        acceptedStopRequestId = requestId
+        explicitStopFinished = false
+        uploadManager.setCollectionUploadAllowed(false)
+        uploadManager.pauseUpload("collection_stopping")
         authenticationManager.stopAuthentication()
         setCollectionRequested(false)
         setManuallyPaused(false)
@@ -243,10 +322,12 @@ class DataCollectionService : Service() {
                 isCollecting = false
                 isPaused = false
                 releaseWakeLock()
+                explicitStopFinished = true
                 if (!isCollectionRequested()) {
                     stopForeground(STOP_FOREGROUND_REMOVE)
                     stopSelf()
                 }
+                completeStopRequest(requestId)
             }
         }
     }

@@ -8,6 +8,7 @@ import com.continuousauth.privacy.PrivacyManager
 import com.continuousauth.proto.AuthResult
 import com.continuousauth.proto.AuthSessionResponse
 import com.continuousauth.settings.AppSettingsRepository
+import com.continuousauth.service.DataCollectionService
 import com.continuousauth.settings.ProtectionMode
 import com.continuousauth.utils.ForegroundAppDetector
 import com.continuousauth.utils.SessionManager
@@ -63,6 +64,8 @@ class AuthenticationManagerTest {
         Dispatchers.setMain(dispatcher)
         context = RuntimeEnvironment.getApplication()
         context.getSharedPreferences("authentication_state", Context.MODE_PRIVATE).edit().clear().commit()
+        context.getSharedPreferences(DataCollectionService.PREFS_NAME, Context.MODE_PRIVATE).edit().clear()
+            .putBoolean(DataCollectionService.COLLECTION_REQUESTED_KEY, true).commit()
         context.getSharedPreferences(AppSettingsRepository.PREFS_NAME, Context.MODE_PRIVATE).edit().clear().commit()
         settings = AppSettingsRepository(context)
         ShadowSystemClock.advanceBy(Duration.ofMinutes(5))
@@ -109,9 +112,10 @@ class AuthenticationManagerTest {
         verify(exactly = 1) { alerts.showFailure("阅读") }
     }
 
-    @Test fun offRejectsLateResultsAndCannotStartANewSession() = withManager { manager ->
+    @Test fun stoppingRejectsLateResultsAndDisabledSensorsPreventANewSession() = withManager { manager ->
         manager.startAuthentication("device", "session")
-        settings.setProtectionMode(ProtectionMode.OFF)
+        manager.stopAuthentication()
+        settings.setAllSensorsEnabled(false)
         results.emit(result(1, accepted = false))
         runCurrent()
         assertFalse(manager.active.value)
@@ -152,6 +156,51 @@ class AuthenticationManagerTest {
         response.complete(AuthSessionResponse.newBuilder().setAccepted(true).setSessionId("session").build())
         assertNull(request.await())
         assertFalse(manager.active.value)
+    }
+
+    @Test fun aPersistedSessionDoesNotResumeAfterTheUserStoppedCollection() {
+        context.getSharedPreferences("authentication_state", Context.MODE_PRIVATE).edit()
+            .putString("active_session", "session").putString("device_hash", "device").commit()
+        context.getSharedPreferences(DataCollectionService.PREFS_NAME, Context.MODE_PRIVATE).edit()
+            .putBoolean(DataCollectionService.COLLECTION_REQUESTED_KEY, false).commit()
+        withManager { manager ->
+            assertFalse(manager.active.value)
+            results.emit(result(1, false))
+            runCurrent()
+            assertTrue(stored.isEmpty())
+            coVerify(exactly = 0) { upload.startAuthentication(any(), any()) }
+        }
+    }
+
+    @Test fun aStopRequestPreventsStartingAnotherRpcWhileTheServiceDrains() = withManager { manager ->
+        context.getSharedPreferences(DataCollectionService.PREFS_NAME, Context.MODE_PRIVATE).edit()
+            .putBoolean(DataCollectionService.COLLECTION_REQUESTED_KEY, false).commit()
+        assertNull(manager.startAuthentication("device", "session"))
+        coVerify(exactly = 0) { upload.startAuthentication(any(), any()) }
+        assertFalse(manager.active.value)
+    }
+
+    @Test fun aStopRequestRejectsAnInFlightResponseEvenBeforeServiceCleanupRuns() = withManager { manager ->
+        val response = CompletableDeferred<AuthSessionResponse>()
+        coEvery { upload.startAuthentication(any(), any()) } coAnswers { response.await() }
+        val request = async { manager.startAuthentication("device", "session") }
+        runCurrent()
+        context.getSharedPreferences(DataCollectionService.PREFS_NAME, Context.MODE_PRIVATE).edit()
+            .putBoolean(DataCollectionService.COLLECTION_REQUESTED_KEY, false).commit()
+        response.complete(AuthSessionResponse.newBuilder().setAccepted(true).setSessionId("session").build())
+        assertNull(request.await())
+        assertFalse(manager.active.value)
+    }
+
+    @Test fun aStopRequestRejectsIncomingResultsBeforeServiceCleanupRuns() = withManager { manager ->
+        settings.setProtectionMode(ProtectionMode.ALERT)
+        manager.startAuthentication("device", "session")
+        context.getSharedPreferences(DataCollectionService.PREFS_NAME, Context.MODE_PRIVATE).edit()
+            .putBoolean(DataCollectionService.COLLECTION_REQUESTED_KEY, false).commit()
+        results.emit(result(1, false))
+        runCurrent()
+        assertTrue(stored.isEmpty())
+        verify(exactly = 0) { alerts.showFailure(any()) }
     }
 
     @Test fun revokingConsentImmediatelyBlocksRecordsAndAlerts() = withManager { manager ->

@@ -9,6 +9,7 @@ import com.continuousauth.privacy.PrivacyManager
 import com.continuousauth.proto.AuthResult
 import com.continuousauth.proto.AuthSessionResponse
 import com.continuousauth.settings.AppSettingsRepository
+import com.continuousauth.service.DataCollectionService
 import com.continuousauth.settings.ProtectionMode
 import com.continuousauth.utils.ForegroundAppDetector
 import com.continuousauth.utils.SessionManager
@@ -58,14 +59,15 @@ class AuthenticationManager internal constructor(
     ) : this(context, uploadManager, settings, history, privacy, sessionManager, foregroundApps, alerts, Dispatchers.Default)
 
     private val prefs = context.getSharedPreferences("authentication_state", Context.MODE_PRIVATE)
+    private val collectionPrefs = context.getSharedPreferences(DataCollectionService.PREFS_NAME, Context.MODE_PRIVATE)
+    private val authStateLock = Any()
     private val scope = CoroutineScope(SupervisorJob() + dispatcher)
     private val resultMutex = Mutex()
     private val generation = AtomicLong()
     @Volatile private var activeSession = prefs.getString("active_session", null)
     @Volatile private var expectedDevice = prefs.getString("device_hash", null)
     private val _active = MutableStateFlow(
-        !activeSession.isNullOrBlank() && activeSession == sessionManager.getCurrentSessionId() &&
-            settings.protectionMode.value != ProtectionMode.OFF && privacy.consentState.value == ConsentState.GRANTED
+        canAuthenticate() && !activeSession.isNullOrBlank() && activeSession == sessionManager.getCurrentSessionId()
     )
     val active = _active.asStateFlow()
     private val _latestResult = MutableStateFlow<AuthResult?>(null)
@@ -104,39 +106,50 @@ class AuthenticationManager internal constructor(
         }
     }
 
+    private fun isCollectionRequested(): Boolean =
+        collectionPrefs.getBoolean(DataCollectionService.COLLECTION_REQUESTED_KEY, false)
+
+    private fun canAuthenticate(): Boolean =
+        isCollectionRequested() && settings.protectionMode.value != ProtectionMode.OFF &&
+            privacy.consentState.value == ConsentState.GRANTED && settings.sensorSettings.value.allEnabled
+
     suspend fun startAuthentication(deviceIdHash: String, sessionId: String): AuthSessionResponse? {
-        if (settings.protectionMode.value == ProtectionMode.OFF ||
-            privacy.consentState.value != ConsentState.GRANTED || !settings.sensorSettings.value.anyEnabled) return null
-        val requestGeneration = generation.incrementAndGet()
-        val response = uploadManager.startAuthentication(deviceIdHash, sessionId)
-        if (requestGeneration != generation.get() || settings.protectionMode.value == ProtectionMode.OFF ||
-            privacy.consentState.value != ConsentState.GRANTED ||
-            sessionManager.getCurrentSessionId() != sessionId) return null
-        if (response?.accepted == true) {
-            // Upload packets keep the local session. A different response session cannot be used safely.
-            if (response.sessionId.isNotBlank() && response.sessionId != sessionId) return null
-            activeSession = sessionId
-            expectedDevice = deviceIdHash
-            prefs.edit().putString("active_session", sessionId).putString("device_hash", deviceIdHash).apply()
-            _latestResult.value = null
-            _active.value = true
+        val requestGeneration = synchronized(authStateLock) {
+            if (!canAuthenticate()) return null
+            generation.incrementAndGet()
         }
-        return response
+        val response = uploadManager.startAuthentication(deviceIdHash, sessionId)
+        return synchronized(authStateLock) {
+            // Stop may arrive before this RPC starts, during it, or before its result is committed.
+            if (requestGeneration != generation.get() || !canAuthenticate() ||
+                sessionManager.getCurrentSessionId() != sessionId) return@synchronized null
+            if (response?.accepted == true) {
+                // Upload packets keep the local session. A different response session cannot be used safely.
+                if (response.sessionId.isNotBlank() && response.sessionId != sessionId) return@synchronized null
+                activeSession = sessionId
+                expectedDevice = deviceIdHash
+                prefs.edit().putString("active_session", sessionId).putString("device_hash", deviceIdHash).apply()
+                _latestResult.value = null
+                _active.value = true
+            }
+            response
+        }
     }
 
     fun stopAuthentication() {
-        generation.incrementAndGet()
-        _active.value = false
-        activeSession = null
-        expectedDevice = null
-        _latestResult.value = null
-        prefs.edit().clear().apply()
+        synchronized(authStateLock) {
+            generation.incrementAndGet()
+            _active.value = false
+            activeSession = null
+            expectedDevice = null
+            _latestResult.value = null
+            prefs.edit().clear().apply()
+        }
         scope.launch(Dispatchers.Main) { alerts.dismiss() }
     }
 
     private fun belongsToActiveSession(result: AuthResult): Boolean =
-        _active.value && settings.protectionMode.value != ProtectionMode.OFF &&
-            privacy.consentState.value == ConsentState.GRANTED &&
+        _active.value && canAuthenticate() &&
             result.sessionId.isNotBlank() && result.sessionId == activeSession &&
             result.sessionId == sessionManager.getCurrentSessionId() &&
             result.deviceIdHash.isNotBlank() && result.deviceIdHash == expectedDevice
@@ -164,8 +177,10 @@ class AuthenticationManager internal constructor(
         if (!history.record(entry, now) {
             generation.get() == resultGeneration && belongsToActiveSession(result)
         }) return@withLock
-        if (generation.get() != resultGeneration || !belongsToActiveSession(result)) return@withLock
-        _latestResult.value = result
+        synchronized(authStateLock) {
+            if (generation.get() != resultGeneration || !belongsToActiveSession(result)) return@withLock
+            _latestResult.value = result
+        }
         if (!entry.accepted && settings.protectionMode.value == ProtectionMode.ALERT) {
             withContext(Dispatchers.Main) {
                 if (generation.get() == resultGeneration && belongsToActiveSession(result) &&

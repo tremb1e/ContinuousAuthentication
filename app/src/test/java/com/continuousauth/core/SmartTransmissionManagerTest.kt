@@ -143,6 +143,30 @@ class SmartTransmissionManagerTest {
     }
 
     @Test
+    fun stoppingBlocksUploadsWhileAcceptedSensorSamplesAreStillDraining() = runBlocking {
+        val drainEntered = CompletableDeferred<Unit>()
+        val finishDrain = CompletableDeferred<Unit>()
+        coEvery { sensor.finishCollection() } coAnswers {
+            drainEntered.complete(Unit)
+            finishDrain.await()
+        }
+        manager.start()
+
+        val stop = async { manager.stop() }
+        try {
+            withTimeout(10_000) { drainEntered.await() }
+            assertEquals(CollectionStatus.STOPPING, manager.collectionState.value.status)
+            verify(exactly = 1) { upload.pauseUpload("collection_stopping") }
+            coVerify(exactly = 0) { upload.stop() }
+        } finally {
+            finishDrain.complete(Unit)
+            withTimeout(10_000) { stop.await() }
+        }
+        assertEquals(CollectionStatus.STOPPED, manager.collectionState.value.status)
+        coVerify(exactly = 1) { upload.stop() }
+    }
+
+    @Test
     fun concurrentStopWaitsForStartupAndLeavesNoRunningSensors() = runBlocking {
         val startupEntered = CompletableDeferred<Unit>()
         val finishStartup = CompletableDeferred<Unit>()

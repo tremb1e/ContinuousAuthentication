@@ -9,10 +9,14 @@ import android.os.BatteryManager
 import android.os.Looper
 import android.os.PowerManager
 import com.continuousauth.core.SmartTransmissionManager
+import com.continuousauth.network.UploadManager
 import io.mockk.clearMocks
+import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
+import io.mockk.verify
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -44,6 +48,7 @@ import org.robolectric.shadows.ShadowPowerManager
 class DataCollectionServiceTest {
     private val dispatcher = StandardTestDispatcher()
     private val manager: SmartTransmissionManager = mockk(relaxed = true)
+    private val upload: UploadManager = mockk(relaxed = true)
     private val uploadWindow = MutableStateFlow(false)
     private val controllers = mutableListOf<ServiceController<DataCollectionService>>()
     private lateinit var context: Context
@@ -51,6 +56,7 @@ class DataCollectionServiceTest {
     @Before
     fun setUp() {
         Dispatchers.setMain(dispatcher)
+        DataCollectionService.completeStopRequest(DataCollectionService.stopState.value.requestedId)
         every { manager.smartUploadWindowOpen } returns uploadWindow
         context = RuntimeEnvironment.getApplication()
         context.getSharedPreferences(DataCollectionService.PREFS_NAME, Context.MODE_PRIVATE)
@@ -124,6 +130,86 @@ class DataCollectionServiceTest {
         assertFalse(collectionRequested())
         coVerify { manager.stop(endSession = true) }
         assertTrue(shadowOf(service).isStoppedBySelf)
+        assertFalse(DataCollectionService.stopState.value.isPending)
+    }
+
+    @Test
+    fun stopDuringSuspendedStartupBlocksSendingAndWaitsForFinalShutdown() = runServiceTest {
+        val startFinished = CompletableDeferred<Unit>()
+        val stopFinished = CompletableDeferred<Unit>()
+        coEvery { manager.start() } coAnswers { startFinished.await() }
+        coEvery { manager.stop(any()) } coAnswers { stopFinished.await() }
+        val service = createService().get()
+        try {
+            service.onStartCommand(command(DataCollectionService.ACTION_START_COLLECTION), 0, 1)
+            runCurrent()
+            verify { upload.setCollectionUploadAllowed(true) }
+
+            service.onStartCommand(command(DataCollectionService.ACTION_STOP_COLLECTION), 0, 2)
+            verify { upload.setCollectionUploadAllowed(false) }
+            verify { upload.pauseUpload("collection_stopping") }
+            assertFalse(collectionRequested())
+            assertTrue(DataCollectionService.stopState.value.isPending)
+            coVerify(exactly = 0) { manager.stop(any()) }
+
+            startFinished.complete(Unit)
+            runCurrent()
+            coVerify(exactly = 0) { manager.resume() }
+            coVerify(exactly = 0) { manager.pause(any()) }
+            coVerify(exactly = 1) { manager.stop(endSession = true) }
+            assertTrue(DataCollectionService.stopState.value.isPending)
+            assertFalse(shadowOf(service).isStoppedBySelf)
+
+            stopFinished.complete(Unit)
+            runCurrent()
+            assertFalse(DataCollectionService.stopState.value.isPending)
+            assertTrue(shadowOf(service).isStoppedBySelf)
+        } finally {
+            startFinished.complete(Unit)
+            stopFinished.complete(Unit)
+        }
+    }
+
+    @Test
+    fun stopAfterConsentRevocationStillWaitsForShutdownAndAcknowledgesTheRequest() = runServiceTest {
+        val stopFinished = CompletableDeferred<Unit>()
+        coEvery { manager.stop(any()) } coAnswers { stopFinished.await() }
+        val service = createService().get()
+        context.getSharedPreferences(DataCollectionService.PREFS_NAME, Context.MODE_PRIVATE).edit()
+            .putBoolean("privacy_consent_granted", false).commit()
+        try {
+            service.onStartCommand(command(DataCollectionService.ACTION_STOP_COLLECTION), 0, 1)
+            runCurrent()
+            verify { upload.setCollectionUploadAllowed(false) }
+            coVerify(exactly = 1) { manager.stop(endSession = true) }
+            assertTrue(DataCollectionService.stopState.value.isPending)
+            stopFinished.complete(Unit)
+            runCurrent()
+            assertFalse(DataCollectionService.stopState.value.isPending)
+        } finally {
+            stopFinished.complete(Unit)
+        }
+    }
+
+    @Test
+    fun explicitStopCannotBeUndoneByUnlockOrStickyRestart() = runServiceTest {
+        val service = createService().get()
+        service.onStartCommand(command(DataCollectionService.ACTION_START_COLLECTION), 0, 1)
+        runCurrent()
+        service.onStartCommand(command(DataCollectionService.ACTION_STOP_COLLECTION), 0, 2)
+        runCurrent()
+        clearMocks(manager, answers = false)
+
+        context.sendBroadcast(Intent(Intent.ACTION_USER_PRESENT))
+        shadowOf(Looper.getMainLooper()).idle()
+        com.continuousauth.receiver.DeviceUnlockReceiver()
+            .onReceive(context, Intent(Intent.ACTION_USER_PRESENT))
+        assertEquals(Service.START_NOT_STICKY, service.onStartCommand(null, 0, 3))
+        runCurrent()
+        assertFalse(collectionRequested())
+        coVerify(exactly = 0) { manager.start() }
+        coVerify(exactly = 0) { manager.resume() }
+        assertTrue(shadowOf(service).isStoppedBySelf)
     }
 
     @Test
@@ -175,15 +261,27 @@ class DataCollectionServiceTest {
 
     @Test
     fun destructionDuringExplicitStopStillClearsTheSession() = runServiceTest {
+        val stopFinished = CompletableDeferred<Unit>()
+        coEvery { manager.stop(any()) } coAnswers { stopFinished.await() }
         val controller = createService()
         controller.get().onStartCommand(command(DataCollectionService.ACTION_START_COLLECTION), 0, 1)
         runCurrent()
         controller.get().onStartCommand(command(DataCollectionService.ACTION_STOP_COLLECTION), 0, 2)
         controller.destroy()
         controllers.remove(controller)
-        runCurrent()
-        coVerify { manager.stop(endSession = true) }
-        coVerify(exactly = 0) { manager.stop(endSession = false) }
+        try {
+            runCurrent()
+            coVerify { manager.stop(endSession = true) }
+            coVerify(exactly = 0) { manager.stop(endSession = false) }
+            assertTrue(DataCollectionService.stopState.value.isPending)
+            assertTrue(DataCollectionService.hasServiceInstance)
+            stopFinished.complete(Unit)
+            runCurrent()
+            assertFalse(DataCollectionService.stopState.value.isPending)
+            assertFalse(DataCollectionService.hasServiceInstance)
+        } finally {
+            stopFinished.complete(Unit)
+        }
     }
 
     @Test
@@ -298,6 +396,7 @@ class DataCollectionServiceTest {
             }
         service.smartTransmissionManager = manager
         service.authenticationManager = mockk(relaxed = true)
+        service.uploadManager = upload
         controllers += controller
         return controller.create()
     }

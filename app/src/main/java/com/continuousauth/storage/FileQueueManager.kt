@@ -16,7 +16,6 @@ import kotlinx.coroutines.sync.withLock
 import java.io.File
 import java.io.FileOutputStream
 import java.security.MessageDigest
-import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -31,7 +30,7 @@ class FileQueueManager @Inject constructor(
 ) {
     
     // 协程作用域
-    private val scope = CoroutineScope(Dispatchers.IO)
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     
     companion object {
         private const val TAG = "FileQueueManager"
@@ -42,7 +41,9 @@ class FileQueueManager @Inject constructor(
         private const val SMART_MAX_QUEUE_SIZE_BYTES = SMART_MAX_QUEUE_SIZE_MB * 1024 * 1024L
         private const val MIN_FREE_SPACE_MB = 50   // 最小剩余空间：50MB
         private const val MIN_FREE_SPACE_BYTES = MIN_FREE_SPACE_MB * 1024 * 1024L
-        private const val CLEANUP_THRESHOLD = 0.9f  // 清理阈值：90%
+        const val RETENTION_DAYS = 7
+        const val RETENTION_MS = RETENTION_DAYS * 24 * 60 * 60 * 1_000L
+        private const val RETENTION_CLEANUP_INTERVAL_MS = 60 * 60 * 1_000L
     }
     
     // 队列目录
@@ -65,6 +66,7 @@ class FileQueueManager @Inject constructor(
     private val _uploadProgress = MutableStateFlow(UploadProgress())
     val uploadProgress: StateFlow<UploadProgress> = _uploadProgress.asStateFlow()
     private val uploadProgressMutex = Mutex()
+    private val retentionMutex = Mutex()
     
     // 是否正在清理
     private var isCleaningUp = false
@@ -82,7 +84,16 @@ class FileQueueManager @Inject constructor(
             } catch (e: Exception) {
                 Log.e(TAG, "恢复上传进度失败", e)
             }
-            updateQueueStats()
+            while (isActive) {
+                try {
+                    cleanupExpiredPackets()
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.e(TAG, "清理过期传感器缓存失败", e)
+                }
+                delay(RETENTION_CLEANUP_INTERVAL_MS)
+            }
         }
     }
     
@@ -96,6 +107,9 @@ class FileQueueManager @Inject constructor(
         metadata: BatchMetadata
     ): Result<File> = withContext(Dispatchers.IO) {
         try {
+            require(metadata.createdTime >= System.currentTimeMillis() - RETENTION_MS) {
+                "数据包已超过固定7天保存期限"
+            }
             // 检查磁盘空间
             if (!hasEnoughSpace(encryptedData.size.toLong())) {
                 // 尝试清理空间
@@ -168,6 +182,11 @@ class FileQueueManager @Inject constructor(
                 ?: return@withContext Result.failure(
                     FileNotFoundException("未找到数据包: $packetId")
                 )
+
+            if (metadata.createdTime < System.currentTimeMillis() - RETENTION_MS) {
+                deleteDataPacket(packetId)
+                return@withContext Result.failure(IllegalStateException("数据包已超过固定7天保存期限"))
+            }
             
             // 检查文件是否已标记为损坏
             if (metadata.status == BatchStatus.CORRUPT) {
@@ -239,6 +258,25 @@ class FileQueueManager @Inject constructor(
             allDeleted
         } finally {
             updateQueueStats()
+        }
+    }
+
+    /** Apply the same fixed limit to every packet state and to files left by interrupted writes. */
+    suspend fun cleanupExpiredPackets(nowMs: Long = System.currentTimeMillis()): Boolean = withContext(Dispatchers.IO) {
+        retentionMutex.withLock {
+            val cutoff = nowMs - RETENTION_MS
+            val batches = batchMetadataDao.getPendingBatches(BatchStatus.entries)
+            val expired = batches.filter { it.createdTime < cutoff }
+            var allDeleted = deleteDataPackets(expired.map { it.packetId })
+            val referencedPaths = batches.mapTo(mutableSetOf()) { it.filePath }
+            for (file in queueFiles()) {
+                if (file.isFile && file.absolutePath !in referencedPaths && file.lastModified() < cutoff &&
+                    !file.delete()) {
+                    allDeleted = false
+                }
+            }
+            updateQueueStats()
+            allDeleted
         }
     }
 
@@ -377,19 +415,26 @@ class FileQueueManager @Inject constructor(
      */
     suspend fun getPendingPackets(retryUploadedAfterMs: Long = 0L): List<BatchMetadata> = withContext(Dispatchers.IO) {
         try {
+            val now = System.currentTimeMillis()
             val pending = batchMetadataDao.getPendingBatches(
                 listOf(BatchStatus.PENDING, BatchStatus.UPLOADING, BatchStatus.FAILED)
             ).toMutableList()
 
             if (retryUploadedAfterMs > 0) {
-                val cutoff = System.currentTimeMillis() - retryUploadedAfterMs
+                val cutoff = now - retryUploadedAfterMs
                 val awaitingAck = batchMetadataDao.getPendingBatches(
                     listOf(BatchStatus.UPLOADED)
                 ).filter { (it.uploadTime ?: 0L) <= cutoff }
                 pending.addAll(awaitingAck)
             }
 
-            pending.sortedBy { it.createdTime }
+            val retentionCutoff = now - RETENTION_MS
+            val expired = pending.filter { it.createdTime < retentionCutoff }
+            if (expired.isNotEmpty()) deleteDataPackets(expired.map { it.packetId })
+            // A failed file deletion must never make an expired packet eligible for upload.
+            pending.filter { it.createdTime >= retentionCutoff }.sortedBy { it.createdTime }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.e(TAG, "获取待上传数据包失败", e)
             emptyList()
@@ -626,42 +671,6 @@ class FileQueueManager @Inject constructor(
     }
     
     /**
-     * 导出加密的待处理数据
-     */
-    suspend fun exportEncryptedPendingData(): String = withContext(Dispatchers.IO) {
-        try {
-            val pendingBatches = batchMetadataDao.getPendingBatches(
-                listOf(BatchStatus.PENDING, BatchStatus.UPLOADING, BatchStatus.UPLOADED, BatchStatus.FAILED)
-            )
-            
-            if (pendingBatches.isEmpty()) {
-                return@withContext "没有待处理的数据包"
-            }
-            
-            // 创建导出目录
-            val exportDir = File(context.cacheDir, "export_${System.currentTimeMillis()}")
-            exportDir.mkdirs()
-            
-            var exportedCount = 0
-            pendingBatches.forEach { batch ->
-                val sourceFile = File(batch.filePath)
-                if (sourceFile.exists()) {
-                    val destFile = File(exportDir, "${batch.packetId}.dat")
-                    sourceFile.copyTo(destFile, overwrite = true)
-                    exportedCount++
-                }
-            }
-            
-            Log.i(TAG, "已导出 $exportedCount 个加密数据包到: ${exportDir.absolutePath}")
-            exportDir.absolutePath
-            
-        } catch (e: Exception) {
-            Log.e(TAG, "导出加密数据失败", e)
-            "导出失败: ${e.message}"
-        }
-    }
-    
-    /**
      * 清理资源
      */
     fun cleanup() {
@@ -707,8 +716,7 @@ class FileQueueManager @Inject constructor(
      * 清理旧文件
      */
     suspend fun cleanupOldFiles() {
-        Log.i(TAG, "清理旧文件")
-        // TODO: 实现清理逻辑
+        check(cleanupExpiredPackets()) { "部分过期传感器缓存无法删除，请稍后重试" }
     }
     
     /**

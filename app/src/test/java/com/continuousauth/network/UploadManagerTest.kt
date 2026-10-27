@@ -465,6 +465,80 @@ class UploadManagerTest {
         }
     }
 
+    @Test
+    fun stopGateSurvivesDelayedStartupAndBlocksQueueDirectSendAndRetry() = runTest {
+        withManager {
+            connected = true
+            val queued = addPacket("queued-before-stop")
+            manager.setCollectionUploadAllowed(false)
+            manager.pauseUpload("collection_stopping")
+
+            manager.start(ENDPOINT)
+            runCurrent()
+            advanceTimeBy(10_000)
+            runCurrent()
+
+            assertTrue(sent.isEmpty())
+            assertEquals(listOf(queued.packetId), memory.map { it.packetId })
+            assertFalse(manager.sendDataPacket(queued))
+            assertEquals("UPLOAD_PAUSED", manager.retryPacket(queued).error)
+            coVerify(exactly = 0) { uploader.sendDataPacket(any()) }
+
+            manager.stop()
+            manager.setCollectionUploadAllowed(true)
+            manager.start(ENDPOINT)
+            runCurrent()
+            advanceTimeBy(5_000)
+            runCurrent()
+            assertEquals(listOf(queued.packetId), sent)
+        }
+    }
+
+    @Test
+    fun expiredMemoryCopiesAndFallbackPacketsCannotBypassDiskRetention() = runTest {
+        withManager {
+            connected = true
+            val oldCreationTime = System.currentTimeMillis() - FileQueueManager.RETENTION_MS - 60_000L
+            val mirrored = addPacket("expired-mirror", createdAt = oldCreationTime)
+            val fallback = addPacket("expired-memory-only", onDisk = false, createdAt = oldCreationTime)
+            // The real file queue removes the expired disk copy before returning candidates.
+            disk.remove(mirrored.packetId)
+            addPacket("fresh-memory-only", onDisk = false)
+
+            manager.start(ENDPOINT)
+            runCurrent()
+
+            assertEquals(listOf("fresh-memory-only"), sent)
+            assertTrue(memory.isEmpty())
+            assertFalse(manager.sendDataPacket(mirrored))
+            assertEquals("PACKET_EXPIRED", manager.retryPacket(fallback).error)
+            advanceTimeBy(20_000)
+            runCurrent()
+            assertEquals(listOf("fresh-memory-only"), sent)
+        }
+    }
+
+    @Test
+    fun retentionRemovesNtpCorrectionBeforeComparingPacketAge() = runTest {
+        withManager {
+            connected = true
+            manager.start(ENDPOINT)
+            runCurrent()
+            val now = System.currentTimeMillis()
+            val correction = 2 * FileQueueManager.RETENTION_MS
+            val recent = packet("recent-with-negative-ntp").toBuilder()
+                .setBaseWallMs(now - correction).setNtpOffsetMs(-correction).build()
+            val expired = packet("expired-with-positive-ntp").toBuilder()
+                .setBaseWallMs(now - FileQueueManager.RETENTION_MS - 60_000 + correction)
+                .setNtpOffsetMs(correction).build()
+
+            assertTrue(manager.sendDataPacket(recent))
+            assertFalse(manager.sendDataPacket(expired))
+            assertEquals("PACKET_EXPIRED", manager.retryPacket(expired).error)
+            assertEquals(listOf(recent.packetId), sent)
+        }
+    }
+
     private suspend fun TestScope.withManager(block: suspend Fixture.() -> Unit) {
         val fixture = Fixture(this)
         try {
@@ -561,8 +635,13 @@ class UploadManagerTest {
             )
         }
 
-        fun addPacket(id: String, inMemory: Boolean = true, onDisk: Boolean = true): DataPacket {
-            val packet = packet(id)
+        fun addPacket(
+            id: String,
+            inMemory: Boolean = true,
+            onDisk: Boolean = true,
+            createdAt: Long = System.currentTimeMillis()
+        ): DataPacket {
+            val packet = packet(id).toBuilder().setBaseWallMs(createdAt).build()
             if (inMemory) memory.addLast(packet)
             if (onDisk) disk[id] = packet
             return packet
@@ -575,6 +654,7 @@ class UploadManagerTest {
         private fun packet(id: String): DataPacket = DataPacket.newBuilder()
             .setPacketId(id)
             .setDeviceIdHash("test-device")
+            .setBaseWallMs(System.currentTimeMillis())
             .build()
 
         private fun metadata(packet: DataPacket, createdTime: Long) = BatchMetadata(

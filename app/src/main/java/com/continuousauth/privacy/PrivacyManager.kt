@@ -4,7 +4,6 @@ import android.content.Context
 import android.util.Log
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
-import com.continuousauth.database.BatchMetadataDao
 import com.continuousauth.database.BatchStatus
 import com.continuousauth.database.ContinuousAuthDatabase
 // import com.continuousauth.proto.DataDeletionRequest
@@ -44,8 +43,7 @@ class PrivacyManager @Inject constructor(
         private const val KEY_DATA_RETENTION_DAYS = "data_retention_days"
         private const val KEY_LAST_CLEANUP_TIME = "last_cleanup_time"
         
-        const val DEFAULT_RETENTION_DAYS = 30  // 默认保留30天
-        const val MAX_RETENTION_DAYS = 365     // 最长保留365天
+        const val SENSOR_CACHE_RETENTION_DAYS = FileQueueManager.RETENTION_DAYS
     }
     
     // 加密的SharedPreferences存储隐私设置
@@ -72,6 +70,8 @@ class PrivacyManager @Inject constructor(
     val deletionState: StateFlow<DeletionState> = _deletionState.asStateFlow()
     
     init {
+        // Retention is fixed in this version; discard any previously customized value.
+        encryptedPrefs.edit().remove(KEY_DATA_RETENTION_DAYS).apply()
         // 初始化时检查同意状态
         checkConsentStatus()
     }
@@ -326,23 +326,9 @@ class PrivacyManager @Inject constructor(
     }
     
     /**
-     * 设置数据保留期限（天）
+     * 传感器缓存固定保留7天，旧版本的自定义值不再影响清理。
      */
-    fun setDataRetentionDays(days: Int) {
-        val validDays = days.coerceIn(1, MAX_RETENTION_DAYS)
-        encryptedPrefs.edit()
-            .putInt(KEY_DATA_RETENTION_DAYS, validDays)
-            .apply()
-        
-        Log.i(TAG, "数据保留期限设置为: $validDays 天")
-    }
-    
-    /**
-     * 获取数据保留期限
-     */
-    fun getDataRetentionDays(): Int {
-        return encryptedPrefs.getInt(KEY_DATA_RETENTION_DAYS, DEFAULT_RETENTION_DAYS)
-    }
+    fun getDataRetentionDays(): Int = SENSOR_CACHE_RETENTION_DAYS
     
     /**
      * 执行数据保留策略清理
@@ -351,18 +337,13 @@ class PrivacyManager @Inject constructor(
     suspend fun performRetentionCleanup() {
         withContext(Dispatchers.IO) {
             try {
-                val retentionDays = getDataRetentionDays()
-                val cutoffTime = System.currentTimeMillis() - (retentionDays * 24 * 60 * 60 * 1000L)
-                
-                Log.i(TAG, "执行数据保留清理，删除 ${java.util.Date(cutoffTime)} 之前的数据")
-                
-                val allBatches = database.batchMetadataDao().getPendingBatches(BatchStatus.entries)
-                val expiredBatches = allBatches.filter { it.createdTime < cutoffTime }
-                check(fileQueueManager.deleteDataPackets(expiredBatches.map { it.packetId })) {
+                val now = System.currentTimeMillis()
+                authHistoryRepository.refresh(now)
+                check(fileQueueManager.cleanupExpiredPackets(now)) {
                     "部分过期数据包无法删除，请稍后重试"
                 }
 
-                Log.i(TAG, "数据保留清理完成，删除了 ${expiredBatches.size} 个过期批次")
+                Log.i(TAG, "数据保留清理完成：认证记录30天，传感器缓存7天")
                 
                 // 更新最后清理时间
                 encryptedPrefs.edit()
@@ -405,7 +386,7 @@ class PrivacyManager @Inject constructor(
             3. 数据存储
             - 传感器数据加密后上传至您配置的服务器
             - 本地传感器缓存保留${getDataRetentionDays()}天
-            - 认证结果和当时使用的应用名称仅在本机保留近7天
+            - 认证结果和当时使用的应用名称仅在本机保留近${AuthHistoryRepository.RETENTION_DAYS}天
             - 仅监测模式不会弹窗；即时警示需要允许显示在其他应用上层
             
             4. 数据共享

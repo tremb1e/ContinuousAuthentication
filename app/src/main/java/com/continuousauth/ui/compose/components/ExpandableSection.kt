@@ -27,9 +27,11 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -50,9 +52,18 @@ fun ExpandableSection(
     summary: String,
     icon: ImageVector,
     modifier: Modifier = Modifier,
+    expandRequest: Int = 0,
     content: @Composable ColumnScope.() -> Unit
 ) {
     var expanded by rememberSaveable(sectionKey) { mutableStateOf(false) }
+    var handledExpandRequest by rememberSaveable(sectionKey) { mutableStateOf(0) }
+    val contentState = rememberSaveableStateHolder()
+    LaunchedEffect(expandRequest) {
+        if (expandRequest > handledExpandRequest) {
+            expanded = true
+            handledExpandRequest = expandRequest
+        }
+    }
     val rotation by animateFloatAsState(if (expanded) 180f else 0f, label = "sectionArrow")
 
     Card(
@@ -88,12 +99,14 @@ fun ExpandableSection(
             enter = fadeIn(tween(120)),
             exit = fadeOut(tween(100))
         ) {
-            Column(
-                modifier = Modifier.fillMaxWidth().testTag("section_content_$sectionKey").padding(horizontal = 20.dp).padding(bottom = 20.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                content()
+            contentState.SaveableStateProvider(sectionKey) {
+                Column(
+                    modifier = Modifier.fillMaxWidth().testTag("section_content_$sectionKey").padding(horizontal = 20.dp).padding(bottom = 20.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                    content()
+                }
             }
         }
     }

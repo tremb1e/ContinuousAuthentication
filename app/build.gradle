@@ -15,8 +15,8 @@ android {
         applicationId = "com.continuousauth"
         minSdk = 30  // Compatible with Android 11+
         targetSdk = 36
-        versionCode = 5
-        versionName = "1.1.1"
+        versionCode = 6
+        versionName = "1.1.2"
 
         // MMKV 2.x provides 64-bit libraries; keep every advertised ABI runnable.
         ndk {

@@ -199,8 +199,10 @@ class SmartTransmissionManager @Inject constructor(
     } }
 
     private suspend fun stopComponents() {
-        // Stop producers first so the processor can persist the final partial batch.
+        // Close the upload gate before a potentially slow drain. Accepted samples still
+        // finish their encrypted local write, but Stop must not send another queued batch.
         val shutdownSteps: List<suspend () -> Unit> = listOf(
+            { uploadManager.pauseUpload("collection_stopping") },
             { sensorCollector.finishCollection() },
             { sensorDataProcessor.stopProcessing(graceful = true) },
             { stopCoreCoroutines() },

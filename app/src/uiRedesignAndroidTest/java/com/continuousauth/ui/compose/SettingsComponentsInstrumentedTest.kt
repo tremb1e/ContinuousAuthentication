@@ -21,6 +21,8 @@ import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.assertIsNotSelected
 import androidx.compose.ui.test.assertIsOff
 import androidx.compose.ui.test.assertIsOn
 import androidx.compose.ui.test.assertIsSelected
@@ -34,10 +36,13 @@ import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import com.continuousauth.settings.ProtectionMode
+import com.continuousauth.privacy.ConsentState
+import com.continuousauth.privacy.DeletionState
 import com.continuousauth.ui.compose.components.ExpandableSection
 import com.continuousauth.ui.compose.dialogs.PrivacyAgreementContent
 import com.continuousauth.ui.compose.screens.PreferenceSwitch
 import com.continuousauth.ui.compose.screens.ProtectionChoice
+import com.continuousauth.ui.compose.screens.CollectionConsentSettings
 import org.junit.Assert.assertTrue
 import org.junit.Assert.assertEquals
 import org.junit.Rule
@@ -91,7 +96,6 @@ class SettingsComponentsInstrumentedTest {
             var selected by remember { mutableStateOf(ProtectionMode.MONITOR_ONLY) }
             MaterialTheme {
                 Column {
-                    ProtectionChoice(ProtectionMode.OFF, selected, "关闭", "停止认证") { selected = it }
                     ProtectionChoice(ProtectionMode.MONITOR_ONLY, selected, "仅监测（默认）", "仅记录") { selected = it }
                     ProtectionChoice(ProtectionMode.ALERT, selected, "即时警示", "弹窗提醒") { selected = it }
                 }
@@ -99,7 +103,61 @@ class SettingsComponentsInstrumentedTest {
         }
         compose.onNodeWithTag("protection_monitor_only").assertIsSelected()
         compose.onNodeWithTag("protection_alert").performClick().assertIsSelected()
-        compose.onNodeWithTag("protection_off").performClick().assertIsSelected()
+        compose.onNodeWithTag("protection_monitor_only").assertIsNotSelected().performClick().assertIsSelected()
+        compose.onNodeWithTag("protection_alert").assertIsNotSelected()
+        compose.onNodeWithTag("protection_off").assertDoesNotExist()
+    }
+
+    @Test fun combinedCollectionSettingsKeepTheSingleSwitchAndConsentActionAboveTheNotice() {
+        var withdrawals = 0
+        compose.setContent {
+            var enabled by remember { mutableStateOf(true) }
+            MaterialTheme {
+                Column(Modifier.width(320.dp).verticalScroll(rememberScrollState())) {
+                    CollectionConsentSettings(
+                        consent = ConsentState.GRANTED,
+                        sensorsEnabled = enabled,
+                        deletion = DeletionState.IDLE,
+                        onSensorsChanged = { enabled = it },
+                        onReviewConsent = {},
+                        onWithdrawConsent = { withdrawals++ },
+                        onRetryServerDeletion = {}
+                    )
+                }
+            }
+        }
+        val toggle = compose.onNodeWithTag("sensor_collection")
+        toggle.assertIsOn().performClick().assertIsOff()
+        listOf("sensor_accelerometer", "sensor_gyroscope", "sensor_magnetometer").forEach {
+            compose.onNodeWithTag(it).assertDoesNotExist()
+        }
+        val toggleBounds = toggle.getUnclippedBoundsInRoot()
+        val actionBounds = compose.onNodeWithTag("withdraw_consent").getUnclippedBoundsInRoot()
+        val noticeBounds = compose.onNodeWithText("会采集什么").getUnclippedBoundsInRoot()
+        assertTrue(toggleBounds.bottom <= actionBounds.top)
+        assertTrue(actionBounds.bottom <= noticeBounds.top)
+        compose.onNodeWithTag("withdraw_consent").performScrollTo().performClick()
+        compose.runOnIdle { assertEquals(1, withdrawals) }
+    }
+
+    @Test fun ongoingDeletionDisablesCollectionAndConsentControls() {
+        compose.setContent {
+            MaterialTheme {
+                Column(Modifier.verticalScroll(rememberScrollState())) {
+                    CollectionConsentSettings(
+                        consent = ConsentState.WITHDRAWN,
+                        sensorsEnabled = false,
+                        deletion = DeletionState.IN_PROGRESS,
+                        onSensorsChanged = {},
+                        onReviewConsent = {},
+                        onWithdrawConsent = {},
+                        onRetryServerDeletion = {}
+                    )
+                }
+            }
+        }
+        compose.onNodeWithTag("sensor_collection").assertIsNotEnabled()
+        compose.onNodeWithTag("review_consent").assertIsNotEnabled()
     }
 
     @Test fun largeFontAndNarrowWidthKeepHeaderAndControlsReachable() {

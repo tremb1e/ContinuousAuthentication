@@ -2,6 +2,7 @@ package com.continuousauth.ui
 
 import android.app.Application
 import android.content.Context
+import android.content.Intent
 import androidx.lifecycle.ViewModelStore
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
@@ -79,6 +80,7 @@ class MainViewModelConsentTest {
     @Before
     fun setUp() {
         Dispatchers.setMain(dispatcher)
+        DataCollectionService.completeStopRequest(DataCollectionService.stopState.value.requestedId)
         application = RuntimeEnvironment.getApplication()
         application.getSharedPreferences(DataCollectionService.PREFS_NAME, Context.MODE_PRIVATE)
             .edit().clear().commit()
@@ -100,6 +102,7 @@ class MainViewModelConsentTest {
     fun tearDown() {
         store.clear()
         dispatcher.scheduler.runCurrent()
+        DataCollectionService.completeStopRequest(DataCollectionService.stopState.value.requestedId)
         Dispatchers.resetMain()
     }
 
@@ -130,12 +133,16 @@ class MainViewModelConsentTest {
             model.withdrawConsentAndDeleteData()
             runCurrent()
             coVerify(exactly = 0) { privacy.withdrawConsentAndDeleteData() }
-            assertEquals(DataCollectionService.ACTION_STOP_COLLECTION, shadowOf(application).nextStartedService.action)
+            val stopIntent = shadowOf(application).nextStartedService
+            assertEquals(DataCollectionService.ACTION_STOP_COLLECTION, stopIntent.action)
 
             collection.value = CollectionState(CollectionStatus.STOPPING)
             runCurrent()
             coVerify(exactly = 0) { privacy.withdrawConsentAndDeleteData() }
             collection.value = CollectionState(CollectionStatus.STOPPED)
+            runCurrent()
+            coVerify(exactly = 0) { privacy.withdrawConsentAndDeleteData() }
+            completeServiceStop(stopIntent)
             runCurrent()
             coVerify(exactly = 1) { privacy.withdrawConsentAndDeleteData() }
             assertEquals("本地数据已删除，服务端删除尚未完成", model.collectionStatus.value)
@@ -219,19 +226,12 @@ class MainViewModelConsentTest {
     }
 
     @Test
-    fun startingWithoutConsentOrWithProtectionOffNeverCreatesAService() = runTest(dispatcher) {
+    fun startingWithoutConsentNeverCreatesAService() = runTest(dispatcher) {
         val model = createModel()
         runCurrent()
         model.startAuthentication()
         runCurrent()
         assertTrue(model.errorMessage.value.orEmpty().contains("同意"))
-        assertNull(shadowOf(application).nextStartedService)
-        consent.value = ConsentState.GRANTED
-        runCurrent()
-        model.setProtectionMode(ProtectionMode.OFF)
-        model.startAuthentication()
-        runCurrent()
-        assertTrue(model.errorMessage.value.orEmpty().contains("防护已关闭"))
         assertNull(shadowOf(application).nextStartedService)
         store.clear()
         runCurrent()
@@ -242,30 +242,144 @@ class MainViewModelConsentTest {
         consent.value = ConsentState.GRANTED
         val model = createModel()
         runCurrent()
-        listOf("accelerometer", "gyroscope", "magnetometer").forEach {
-            model.setSensorCollectionEnabled(it, false)
-        }
-        model.startEncryptedUpload()
+        model.setAllSensorsEnabled(false)
+        runCurrent()
         model.startAuthentication()
         runCurrent()
-        assertTrue(model.errorMessage.value.orEmpty().contains("至少一种"))
+        assertTrue(model.errorMessage.value.orEmpty().contains("开启传感器"))
         assertNull(shadowOf(application).nextStartedService)
         store.clear()
         runCurrent()
     }
 
     @Test
-    fun stoppingAuthenticationRotatesSessionWithoutStoppingCollection() = runTest(dispatcher) {
+    fun stoppingAuthenticationStopsCollectionAndUploadAndBlocksRestartUntilFinished() = runTest(dispatcher) {
         consent.value = ConsentState.GRANTED
         collection.value = CollectionState(CollectionStatus.RUNNING)
         authActive.value = true
         val model = createModel()
         runCurrent()
+        model.startAuthAnalysis()
+        model.stopAuthentication()
+        verify { upload.pauseUpload("authentication_stopped") }
+        runCurrent()
+        val stopIntent = shadowOf(application).nextStartedService
+        assertEquals(DataCollectionService.ACTION_STOP_COLLECTION, stopIntent.action)
+        assertTrue(!application.getSharedPreferences(DataCollectionService.PREFS_NAME, Context.MODE_PRIVATE)
+            .getBoolean(DataCollectionService.COLLECTION_REQUESTED_KEY, true))
+        assertTrue(!model.authUiState.value.authActive)
+        model.startAuthentication()
         model.stopAuthentication()
         runCurrent()
-        assertEquals(DataCollectionService.ACTION_RESET_AUTHENTICATION, shadowOf(application).nextStartedService.action)
-        assertTrue(model.isCollectionRunning.value == true)
-        assertTrue(!model.authUiState.value.authActive)
+        assertNull(shadowOf(application).nextStartedService)
+        collection.value = CollectionState(CollectionStatus.STOPPED)
+        runCurrent()
+        assertTrue(!model.authUiState.value.authMessage.contains("上传已停止"))
+        model.startAuthentication()
+        runCurrent()
+        assertNull(shadowOf(application).nextStartedService)
+        completeServiceStop(stopIntent)
+        runCurrent()
+        assertTrue(model.isCollectionRunning.value == false)
+        assertTrue(!model.authUiState.value.authAnalysis.isRunning)
+        assertTrue(model.authUiState.value.authMessage.contains("上传已停止"))
+        store.clear()
+        runCurrent()
+    }
+
+    @Test
+    fun stoppingDuringQueuedStartupAndConcurrentWithdrawalWaitForTheSameServiceReceipt() = runTest(dispatcher) {
+        consent.value = ConsentState.GRANTED
+        val model = createModel()
+        runCurrent()
+        model.startAuthentication()
+        runCurrent()
+        assertEquals(DataCollectionService.ACTION_START_COLLECTION, shadowOf(application).nextStartedService.action)
+        model.stopAuthentication()
+        runCurrent()
+        val stopIntent = shadowOf(application).nextStartedService
+        assertEquals(DataCollectionService.ACTION_STOP_COLLECTION, stopIntent.action)
+        assertTrue(!model.authUiState.value.isStarting)
+        assertTrue(!application.getSharedPreferences(DataCollectionService.PREFS_NAME, Context.MODE_PRIVATE)
+            .getBoolean(DataCollectionService.COLLECTION_REQUESTED_KEY, true))
+        model.withdrawConsentAndDeleteData()
+        consent.value = ConsentState.WITHDRAWN
+        runCurrent()
+        assertNull(shadowOf(application).nextStartedService)
+        coVerify(exactly = 0) { privacy.withdrawConsentAndDeleteData() }
+        assertEquals("STOPPING", model.collectionStatus.value)
+        collection.value = CollectionState(CollectionStatus.RUNNING)
+        currentConnection = ConnectionStatus.CONNECTED
+        advanceTimeBy(1_000)
+        runCurrent()
+        coVerify(exactly = 0) { authentication.startAuthentication(any(), any()) }
+        coVerify(exactly = 0) { privacy.withdrawConsentAndDeleteData() }
+        collection.value = CollectionState(CollectionStatus.STOPPED)
+        runCurrent()
+        coVerify(exactly = 0) { privacy.withdrawConsentAndDeleteData() }
+        completeServiceStop(stopIntent)
+        runCurrent()
+        coVerify(exactly = 1) { privacy.withdrawConsentAndDeleteData() }
+        store.clear()
+        runCurrent()
+    }
+
+    @Test
+    fun notificationStopCancelsPreparationBeforeCollectionOrConnectionBecomesReady() = runTest(dispatcher) {
+        consent.value = ConsentState.GRANTED
+        val model = createModel()
+        runCurrent()
+        model.startAuthentication()
+        runCurrent()
+        assertEquals(DataCollectionService.ACTION_START_COLLECTION, shadowOf(application).nextStartedService.action)
+
+        application.getSharedPreferences(DataCollectionService.PREFS_NAME, Context.MODE_PRIVATE).edit()
+            .putBoolean(DataCollectionService.COLLECTION_REQUESTED_KEY, false).commit()
+        DataCollectionService.requestStop(application)
+        val stopIntent = shadowOf(application).nextStartedService
+        runCurrent()
+        assertTrue(!model.authUiState.value.isStarting)
+        collection.value = CollectionState(CollectionStatus.RUNNING)
+        currentConnection = ConnectionStatus.CONNECTED
+        advanceTimeBy(31_000)
+        runCurrent()
+        coVerify(exactly = 0) { authentication.startAuthentication(any(), any()) }
+        assertNull(model.errorMessage.value)
+        collection.value = CollectionState(CollectionStatus.STOPPED)
+        runCurrent()
+        completeServiceStop(stopIntent)
+        runCurrent()
+        assertTrue(model.authUiState.value.authMessage.contains("上传已停止"))
+        assertEquals("STOPPED", model.collectionStatus.value)
+        model.startAuthentication()
+        runCurrent()
+        assertEquals(DataCollectionService.ACTION_START_COLLECTION, shadowOf(application).nextStartedService.action)
+        assertTrue(model.authUiState.value.isStarting)
+        store.clear()
+        runCurrent()
+    }
+
+    @Test
+    fun disablingSensorSwitchDuringCollectionStopsServiceAndAllThreeSensors() = runTest(dispatcher) {
+        consent.value = ConsentState.GRANTED
+        collection.value = CollectionState(CollectionStatus.RUNNING)
+        val model = createModel()
+        runCurrent()
+        model.setAllSensorsEnabled(false)
+        runCurrent()
+        assertTrue(!model.sensorCollectionSettings.value.anyEnabled)
+        val stopIntent = shadowOf(application).nextStartedService
+        assertEquals(DataCollectionService.ACTION_STOP_COLLECTION, stopIntent.action)
+        verify { upload.pauseUpload("authentication_stopped") }
+        collection.value = CollectionState(CollectionStatus.STOPPED)
+        completeServiceStop(stopIntent)
+        runCurrent()
+        model.setAllSensorsEnabled(true)
+        runCurrent()
+        assertTrue(model.sensorCollectionSettings.value.accelerometerEnabled)
+        assertTrue(model.sensorCollectionSettings.value.gyroscopeEnabled)
+        assertTrue(model.sensorCollectionSettings.value.magnetometerEnabled)
+        assertNull(shadowOf(application).nextStartedService)
         store.clear()
         runCurrent()
     }
@@ -389,6 +503,12 @@ class MainViewModelConsentTest {
         runCurrent()
     }
 
+    private fun completeServiceStop(intent: Intent) {
+        val requestId = intent.getLongExtra(DataCollectionService.EXTRA_STOP_REQUEST_ID, 0)
+        assertTrue(requestId > 0)
+        DataCollectionService.completeStopRequest(requestId)
+    }
+
     private fun createModel(): MainViewModel {
         every { upload.authResultFlow } returns MutableSharedFlow()
         every { upload.getUploadStatus() } answers {
@@ -408,8 +528,8 @@ class MainViewModelConsentTest {
         every { queue.uploadProgress } returns progress
         coEvery { queue.getQueueStatistics() } returns QueueStatisticsDetail()
         val model = MainViewModel(
-            application, upload, network, mockk(relaxed = true), mockk(relaxed = true),
-            mockk(relaxed = true), mockk(relaxed = true), mockk(relaxed = true),
+            application, upload, network, mockk(relaxed = true),
+            mockk(relaxed = true), mockk(relaxed = true),
             queue, mockk(relaxed = true), privacy, monitor, manager,
             mockk(relaxed = true), AppSettingsRepository(application),
             mockk<AuthHistoryRepository>(relaxed = true).also {

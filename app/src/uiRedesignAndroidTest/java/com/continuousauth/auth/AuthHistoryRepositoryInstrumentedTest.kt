@@ -44,15 +44,20 @@ class AuthHistoryRepositoryInstrumentedTest {
         assertEquals(1, recreated.entries.value.count { !it.accepted })
     }
 
-    @Test fun expiredAndFutureEventsCannotEnterTheSevenDayHistory() = runBlocking {
+    @Test fun historyRetainsThirtyDaysAndRejectsExpiredOrFutureEvents() = runBlocking {
         val history = repository()
-        assertFalse(history.record(entry("expired", now - AuthHistoryRepository.RETENTION_MS - 1), now))
+        val thirtyDays = 30 * 24 * 60 * 60 * 1_000L
+        assertFalse(history.record(entry("expired", now - thirtyDays - 1), now))
         assertFalse(history.record(entry("future", now + 1), now))
         assertFalse(history.record(entry("", now), now))
-        assertTrue(history.record(entry("boundary", now - AuthHistoryRepository.RETENTION_MS), now))
+        assertTrue(history.record(entry("boundary", now - thirtyDays), now))
+        assertTrue(history.record(entry("older-than-a-week", now - 8 * 24 * 60 * 60 * 1_000L), now))
         assertTrue(history.record(entry("recent", now), now))
         history.refresh(now + 1)
-        assertEquals(listOf("recent"), history.entries.value.map { it.id })
+        assertEquals(listOf("older-than-a-week", "recent"), history.entries.value.map { it.id })
+        val recreated = repository()
+        recreated.refresh(now + 1)
+        assertEquals(history.entries.value, recreated.entries.value)
     }
 
     @Test fun deletionClearsBothPublishedHistoryAndPersistentStorage() = runBlocking {

@@ -5,10 +5,9 @@ import android.content.Intent
 import android.net.Uri
 import android.provider.Settings
 import android.widget.Toast
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.selection.toggleable
@@ -29,21 +28,20 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
-import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.continuousauth.auth.AuthHistoryRepository
 import com.continuousauth.network.ServerEndpointNormalizer
 import com.continuousauth.privacy.ConsentState
 import com.continuousauth.privacy.DeletionState
 import com.continuousauth.settings.ProtectionMode
+import com.continuousauth.storage.FileQueueManager
 import com.continuousauth.ui.MainViewModel
 import com.continuousauth.ui.compose.components.ExpandableSection
 import com.continuousauth.ui.compose.components.PrivacyNoticeContent
-import com.continuousauth.ui.viewmodels.DetailedInfoViewModel
 import com.continuousauth.utils.BackgroundExecutionHelper
-import kotlinx.coroutines.launch
 import java.net.URI
 
 /** All preferences live here; each section starts collapsed. */
@@ -51,11 +49,12 @@ import java.net.URI
 fun ServerConfigScreen(
     viewModel: MainViewModel,
     onRequestConsent: () -> Unit,
-    detailViewModel: DetailedInfoViewModel = hiltViewModel()
+    protectionRequest: Int = 0
 ) {
     val context = LocalContext.current
     val focusManager = LocalFocusManager.current
-    val scope = rememberCoroutineScope()
+    val listState = rememberLazyListState()
+    var handledProtectionRequest by rememberSaveable { mutableIntStateOf(0) }
     val consent by viewModel.consentState.observeAsState(ConsentState.UNKNOWN)
     val deletion by viewModel.deletionState.observeAsState(DeletionState.IDLE)
     val protectionMode by viewModel.protectionMode.collectAsStateWithLifecycle()
@@ -65,14 +64,10 @@ fun ServerConfigScreen(
     val smartTransmission by viewModel.smartTransmissionEnabled.observeAsState(initialSmartTransmission)
     val isUploading by viewModel.isEncryptedUploading.observeAsState(false)
     val collectionStatus by viewModel.collectionStatus.observeAsState("")
-    val debugEnabled by viewModel.debugModeEnabled.observeAsState(false)
-    val visualizationEnabled by viewModel.visualizationEnabled.observeAsState(false)
     val serverTestResult by viewModel.serverTestResult.observeAsState(null)
     val lifecycleOwner = LocalLifecycleOwner.current
     var systemAccess by remember { mutableStateOf(readSystemAccess(context, viewModel)) }
     var confirmation by rememberSaveable { mutableStateOf<String?>(null) }
-    var maintenanceBusy by remember { mutableStateOf(false) }
-    var preparedExportPath by rememberSaveable { mutableStateOf<String?>(null) }
     val deleting = deletion == DeletionState.IN_PROGRESS
     val collectionChanging = collectionStatus == "STARTING" || collectionStatus == "STOPPING"
     val canEditServer = !isUploading && !collectionChanging
@@ -81,25 +76,7 @@ fun ServerConfigScreen(
     var serverPort by rememberSaveable { mutableStateOf(savedServer.port.toString()) }
     var serverValidation by rememberSaveable { mutableStateOf<String?>(null) }
     var serverFeedback by rememberSaveable { mutableStateOf<String?>(null) }
-    var retentionInput by rememberSaveable { mutableStateOf(viewModel.getDataRetentionDays().toString()) }
-    var retentionError by rememberSaveable { mutableStateOf<String?>(null) }
-    var retentionSaved by rememberSaveable { mutableStateOf(false) }
     val testing = serverTestResult?.startsWith("正在测试") == true
-    val sensorCount = listOf(sensors.accelerometerEnabled, sensors.gyroscopeEnabled, sensors.magnetometerEnabled).count { it }
-    val saveExport: (Uri?) -> Unit = { destination ->
-        val path = preparedExportPath
-        preparedExportPath = null
-        scope.launch {
-            maintenanceBusy = true
-            try {
-                if (destination != null && path != null) detailViewModel.savePreparedExport(path, destination)
-                else detailViewModel.cancelPreparedExport(path)
-            } finally { maintenanceBusy = false }
-        }
-    }
-    val dataExportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/zip"), saveExport)
-    val logExportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/plain"), saveExport)
-
     DisposableEffect(context, lifecycleOwner, viewModel) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) systemAccess = readSystemAccess(context, viewModel)
@@ -109,6 +86,13 @@ fun ServerConfigScreen(
     }
     LaunchedEffect(serverTestResult) {
         serverTestResult?.let { serverFeedback = it }
+    }
+
+    LaunchedEffect(protectionRequest) {
+        if (protectionRequest > handledProtectionRequest) {
+            listState.scrollToItem(2)
+            handledProtectionRequest = protectionRequest
+        }
     }
 
     fun saveServer(test: Boolean) {
@@ -126,56 +110,37 @@ fun ServerConfigScreen(
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
         LazyColumn(
             modifier = Modifier.widthIn(max = 800.dp).fillMaxSize().imePadding().testTag("settings_screen"),
+            state = listState,
             contentPadding = PaddingValues(16.dp, 20.dp, 16.dp, 32.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             item(key = "settings_header", contentType = "heading") {
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text("按需调整，安心使用", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-                    Text("点击栏目展开设置。你的选择会自动保留；服务器和保存天数需点击保存。", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("点击栏目展开设置。你的选择会自动保留；服务器地址需点击保存。", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
 
             item(key = "consent", contentType = "settings") {
-                ExpandableSection("consent", "知情同意", consentLabel(consent), Icons.Default.PrivacyTip) {
-                    Text(consentLabel(consent), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-                    PrivacyNoticeContent()
-                    if (consent == ConsentState.GRANTED) {
-                        OutlinedButton(onClick = { confirmation = "withdraw" }, enabled = !deleting, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag("withdraw_consent")) {
-                            Text(if (deleting) "正在停止采集并删除…" else "撤回同意并删除数据")
-                        }
-                    } else {
-                        Button(onClick = onRequestConsent, enabled = !deleting, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag("review_consent")) {
-                            Text("查看并决定是否同意")
-                        }
-                    }
-                    DeletionFeedback(deletion)
-                    if (deletion == DeletionState.PARTIAL_SUCCESS) {
-                        OutlinedButton(onClick = { viewModel.retryPendingDeletionRequests() }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("重试服务器删除请求") }
-                    }
-                    if (deletion == DeletionState.FAILED) {
-                        OutlinedButton(onClick = { confirmation = "withdraw" }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("重试撤回和删除") }
-                    }
-                }
-            }
-
-            item(key = "sensors", contentType = "settings") {
-                ExpandableSection("sensors", "数据采集设置", "已允许 $sensorCount 种传感器", Icons.Default.Sensors) {
-                    HelpText("通过手机的动作了解使用习惯。关闭部分传感器可能影响认证结果；关闭全部会停止采集。")
-                    PreferenceSwitch("加速度计", "感知手机移动、拿起和放下", sensors.accelerometerEnabled, "sensor_accelerometer", !deleting) { viewModel.setSensorCollectionEnabled("accelerometer", it) }
-                    PreferenceSwitch("陀螺仪", "感知手机转动和握持方向的变化", sensors.gyroscopeEnabled, "sensor_gyroscope", !deleting) { viewModel.setSensorCollectionEnabled("gyroscope", it) }
-                    PreferenceSwitch("磁力计", "感知手机周围磁场的变化", sensors.magnetometerEnabled, "sensor_magnetometer", !deleting) { viewModel.setSensorCollectionEnabled("magnetometer", it) }
-                    if (sensorCount == 0) Text("当前未允许采集传感器数据。开始认证前，请至少打开一项。", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium)
+                ExpandableSection("consent", "数据采集与知情同意", consentLabel(consent), Icons.Default.PrivacyTip) {
+                    CollectionConsentSettings(
+                        consent = consent,
+                        sensorsEnabled = sensors.allEnabled,
+                        deletion = deletion,
+                        onSensorsChanged = viewModel::setAllSensorsEnabled,
+                        onReviewConsent = onRequestConsent,
+                        onWithdrawConsent = { confirmation = "withdraw" },
+                        onRetryServerDeletion = viewModel::retryPendingDeletionRequests
+                    )
                 }
             }
 
             item(key = "protection", contentType = "settings") {
-                ExpandableSection("protection", "防护设置", protectionSummary(protectionMode, systemAccess.overlayAllowed), Icons.Default.Shield) {
-                    HelpText("先选择提醒方式，再到“认证与分析”点击开始认证。这里的设置不会自动开始认证。")
+                ExpandableSection("protection", "防护设置", protectionSummary(protectionMode, systemAccess.overlayAllowed), Icons.Default.Shield, expandRequest = protectionRequest) {
+                    HelpText("先选择提醒方式，再到“偷用防护”点击启用认证。这里的设置不会自动启用认证。")
                     Column(Modifier.selectableGroup()) {
-                        ProtectionChoice(ProtectionMode.OFF, protectionMode, "关闭", "不启用持续认证；正在进行的认证会停止。", !deleting, viewModel::setProtectionMode)
-                        ProtectionChoice(ProtectionMode.MONITOR_ONLY, protectionMode, "仅监测（默认）", "开始认证后，仅记录结果，不弹窗提醒。", !deleting, viewModel::setProtectionMode)
-                        ProtectionChoice(ProtectionMode.ALERT, protectionMode, "即时警示", "开始认证后，认证不通过时通过系统弹窗提醒。", !deleting, viewModel::setProtectionMode)
+                        ProtectionChoice(ProtectionMode.MONITOR_ONLY, protectionMode, "仅监测（默认）", "启用认证后，仅记录结果，不弹窗提醒。", !deleting, viewModel::setProtectionMode)
+                        ProtectionChoice(ProtectionMode.ALERT, protectionMode, "即时警示", "启用认证后，认证不通过时通过系统弹窗提醒。", !deleting, viewModel::setProtectionMode)
                     }
                     if (protectionMode == ProtectionMode.ALERT) {
                         Text(if (systemAccess.overlayAllowed) "已允许系统弹窗" else "尚未允许系统弹窗，目前无法在其他应用上方提醒你。", style = MaterialTheme.typography.bodyMedium, color = if (systemAccess.overlayAllowed) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error)
@@ -211,16 +176,6 @@ fun ServerConfigScreen(
                 ExpandableSection("transmission", "传输策略", if (wifiOnly) "仅通过 Wi-Fi 上传" else "Wi-Fi 和移动网络均可上传（默认）", Icons.Default.Wifi) {
                     PreferenceSwitch("仅通过 Wi-Fi 上传", "默认关闭。打开后，在没有 Wi-Fi 时暂停上传，认证结果可能延后。", wifiOnly, "wifi_only", !deleting, viewModel::setUploadPolicyWiFiOnly)
                     PreferenceSwitch("智能传输", "仅在凌晨、锁屏且电量高于 60% 时上传，其余时间先保存在本机（最多 3 GB）。开启后可能无法及时得到认证结果。", smartTransmission, "smart_transmission", !deleting, viewModel::setSmartTransmissionEnabled)
-                    HorizontalDivider()
-                    Text("单独采集与上传", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-                    HelpText("保留单独采集传感器数据并上传的功能。日常使用请在“认证与分析”开始认证。")
-                    InfoRow("采集与上传", when { collectionChanging -> "正在处理，请稍候"; isUploading -> "正在运行"; else -> "已停止" })
-                    OutlinedButton(
-                        onClick = { if (isUploading) viewModel.stopEncryptedUpload() else viewModel.startEncryptedUpload() },
-                        enabled = !deleting && !collectionChanging && (isUploading || (consent == ConsentState.GRANTED && sensorCount > 0)),
-                        modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag("collection_upload_toggle")
-                    ) { Text(if (isUploading) "停止采集与上传" else "开始采集与上传") }
-                    if (consent != ConsentState.GRANTED) HelpText("请先在“知情同意”中阅读并同意数据使用说明。")
                 }
             }
 
@@ -265,32 +220,11 @@ fun ServerConfigScreen(
             }
 
             item(key = "storage", contentType = "settings") {
-                ExpandableSection("storage", "数据与存储", "本机认证记录保留最近 7 天", Icons.Default.Storage) {
+                ExpandableSection("storage", "数据与存储", "认证记录 ${AuthHistoryRepository.RETENTION_DAYS} 天 · 传感器缓存 ${FileQueueManager.RETENTION_DAYS} 天", Icons.Default.Storage) {
                     val queueStats by viewModel.fileQueueStats.observeAsState(null)
-                    InfoRow("认证记录", "自动保留最近 7 天")
-                    HelpText("下面的保存期限只影响传感器缓存，不改变认证记录的保存时间。")
-                    OutlinedTextField(
-                        value = retentionInput,
-                        onValueChange = { retentionInput = it; retentionError = null; retentionSaved = false },
-                        label = { Text("传感器缓存保存天数") },
-                        supportingText = { Text(retentionError ?: "可设置 1 至 365 天") },
-                        isError = retentionError != null,
-                        singleLine = true,
-                        enabled = !deleting,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Done),
-                        modifier = Modifier.fillMaxWidth().testTag("retention_days")
-                    )
-                    Button(onClick = {
-                        val days = retentionInput.toIntOrNull()
-                        if (days == null || days !in 1..365) retentionError = "请输入 1 至 365 之间的整数"
-                        else {
-                            viewModel.setDataRetentionDays(days)
-                            retentionInput = days.toString()
-                            retentionSaved = true
-                            focusManager.clearFocus()
-                        }
-                    }, enabled = !deleting, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("保存天数") }
-                    if (retentionSaved) Text("保存期限已更新", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary)
+                    InfoRow("认证记录保存期限", "固定 ${AuthHistoryRepository.RETENTION_DAYS} 天")
+                    InfoRow("传感器缓存保存期限", "固定 ${FileQueueManager.RETENTION_DAYS} 天")
+                    HelpText("过期数据会自动清理，保存期限无需设置。传感器缓存上传确认后会提前删除，空间不足时也可能清理较早的数据。")
                     HorizontalDivider()
                     InfoRow("待上传数据", "${queueStats?.pendingPackets ?: 0} 个数据包")
                     InfoRow("本机缓存占用", formatStorageBytes(queueStats?.totalSizeBytes ?: 0L))
@@ -299,59 +233,14 @@ fun ServerConfigScreen(
                     if (isUploading || collectionChanging) HelpText("请先停止采集与上传，再清理缓存。")
                 }
             }
-
-            item(key = "maintenance", contentType = "settings") {
-                ExpandableSection("maintenance", "维护工具", "排查问题时使用", Icons.Default.Build) {
-                    val maintenanceMessage by detailViewModel.maintenanceMessage.collectAsStateWithLifecycle()
-                    HelpText("这些功能用于排查问题。导出时可通过系统选择保存位置；导出的文件可能包含使用记录，请自行保管和删除。")
-                    PreferenceSwitch("调试信息", "显示更详细的运行信息，供排查问题使用", debugEnabled, "debug_mode", !deleting) { if (it != debugEnabled) viewModel.toggleDebugMode() }
-                    PreferenceSwitch("数据可视化", "在传感器数据页展开曲线，了解最近的动作变化", visualizationEnabled, "visualization", !deleting) { if (it != visualizationEnabled) viewModel.toggleVisualization() }
-                    OutlinedButton(onClick = {
-                        scope.launch {
-                            maintenanceBusy = true
-                            try {
-                                detailViewModel.preparePendingDataExport()?.let { file ->
-                                    preparedExportPath = file.absolutePath
-                                    try { dataExportLauncher.launch(file.name) }
-                                    catch (_: Exception) {
-                                        detailViewModel.cancelPreparedExport(preparedExportPath)
-                                        preparedExportPath = null
-                                        Toast.makeText(context, "无法打开系统文件保存界面", Toast.LENGTH_LONG).show()
-                                    }
-                                }
-                            } finally { maintenanceBusy = false }
-                        }
-                    }, enabled = !maintenanceBusy && !deleting, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("导出待上传数据") }
-                    OutlinedButton(onClick = {
-                        scope.launch {
-                            maintenanceBusy = true
-                            try {
-                                detailViewModel.prepareDebugLogExport()?.let { file ->
-                                    preparedExportPath = file.absolutePath
-                                    try { logExportLauncher.launch(file.name) }
-                                    catch (_: Exception) {
-                                        detailViewModel.cancelPreparedExport(preparedExportPath)
-                                        preparedExportPath = null
-                                        Toast.makeText(context, "无法打开系统文件保存界面", Toast.LENGTH_LONG).show()
-                                    }
-                                }
-                            } finally { maintenanceBusy = false }
-                        }
-                    }, enabled = !maintenanceBusy && !deleting, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("导出运行日志") }
-                    OutlinedButton(onClick = { confirmation = "rotate_key" }, enabled = !maintenanceBusy && !deleting && !isUploading && !collectionChanging, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("更新密钥维护标记") }
-                    if (maintenanceBusy) Text("正在处理，请稍候…", style = MaterialTheme.typography.bodyMedium)
-                    maintenanceMessage?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
-                }
-            }
         }
     }
 
     confirmation?.let { action ->
-        val title = when (action) { "withdraw" -> "撤回同意并删除数据？"; "clear_queue" -> "清理本机传感器缓存？"; else -> "更新密钥维护标记？" }
+        val title = if (action == "withdraw") "撤回同意并删除数据？" else "清理本机传感器缓存？"
         val message = when (action) {
             "withdraw" -> "采集、上传和认证会停止，本应用内的传感器数据和认证记录将被删除，本机删除无法恢复。当前服务器尚未提供自动删除接口，已上传的数据需联系服务器管理方删除，这里会显示为待处理。你手动导出的副本需自行删除。"
-            "clear_queue" -> "这会删除本机待上传的传感器数据，删除后无法恢复。最近 7 天的认证结果仍可查看。"
-            else -> "当前版本使用固定密钥。此操作只更新时间和维护计数，不会更换实际加密密钥。仅在维护人员建议时使用。"
+            else -> "这会删除本机待上传的传感器数据，删除后无法恢复。最近 ${AuthHistoryRepository.RETENTION_DAYS} 天的认证结果仍可查看。"
         }
         AlertDialog(
             onDismissRequest = { confirmation = null },
@@ -363,12 +252,54 @@ fun ServerConfigScreen(
                     when (action) {
                         "withdraw" -> viewModel.withdrawConsentAndDeleteData()
                         "clear_queue" -> viewModel.clearFileQueue()
-                        else -> scope.launch { maintenanceBusy = true; try { detailViewModel.forceKeyRotation() } finally { maintenanceBusy = false } }
                     }
-                }) { Text(if (action == "rotate_key") "确认更新" else "确认删除") }
+                }) { Text("确认删除") }
             },
             dismissButton = { TextButton(onClick = { confirmation = null }) { Text("取消") } }
         )
+    }
+}
+
+@Composable
+internal fun CollectionConsentSettings(
+    consent: ConsentState,
+    sensorsEnabled: Boolean,
+    deletion: DeletionState,
+    onSensorsChanged: (Boolean) -> Unit,
+    onReviewConsent: () -> Unit,
+    onWithdrawConsent: () -> Unit,
+    onRetryServerDeletion: () -> Unit
+) {
+    val deleting = deletion == DeletionState.IN_PROGRESS
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        PreferenceSwitch(
+            "采集传感器数据",
+            "统一控制加速度计、陀螺仪和磁力计。关闭后会停止采集与认证。",
+            sensorsEnabled,
+            "sensor_collection",
+            !deleting,
+            onSensorsChanged
+        )
+        if (!sensorsEnabled) HelpText("传感器采集已关闭。启用认证前，请先打开此开关。")
+        Text(consentLabel(consent), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+        if (consent == ConsentState.GRANTED) {
+            OutlinedButton(onClick = onWithdrawConsent, enabled = !deleting, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag("withdraw_consent")) {
+                Text(if (deleting) "正在停止采集并删除…" else "撤回同意并删除数据")
+            }
+        } else {
+            Button(onClick = onReviewConsent, enabled = !deleting, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag("review_consent")) {
+                Text("查看并决定是否同意")
+            }
+        }
+        DeletionFeedback(deletion)
+        if (deletion == DeletionState.PARTIAL_SUCCESS) {
+            OutlinedButton(onClick = onRetryServerDeletion, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("重试服务器删除请求") }
+        }
+        if (deletion == DeletionState.FAILED) {
+            OutlinedButton(onClick = onWithdrawConsent, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("重试撤回和删除") }
+        }
+        HorizontalDivider()
+        PrivacyNoticeContent()
     }
 }
 
@@ -425,8 +356,7 @@ private fun consentLabel(state: ConsentState): String = when (state) {
 }
 
 private fun protectionSummary(mode: ProtectionMode, overlayAllowed: Boolean): String = when (mode) {
-    ProtectionMode.OFF -> "已关闭持续认证"
-    ProtectionMode.MONITOR_ONLY -> "仅监测：记录结果，不弹窗"
+    ProtectionMode.OFF, ProtectionMode.MONITOR_ONLY -> "仅监测：记录结果，不弹窗"
     ProtectionMode.ALERT -> if (overlayAllowed) "即时警示：不通过时弹窗提醒" else "即时警示：尚需允许系统弹窗"
 }
 

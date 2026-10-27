@@ -39,7 +39,7 @@ class SystemMonitorTransmissionTest {
             true, false, ConnectionStatus.DISCONNECTED, 0L, 4,
             ConnectionStats(ConnectionStatus.DISCONNECTED), QueueStats(pendingPackets = 4)
         )
-        monitor = SystemMonitor(context, uploader, upload, mockk(relaxed = true),
+        monitor = SystemMonitor(context, uploader, upload,
             mockk(relaxed = true), mockk(relaxed = true), mockk(relaxed = true))
     }
 

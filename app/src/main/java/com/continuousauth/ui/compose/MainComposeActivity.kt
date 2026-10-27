@@ -46,10 +46,12 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.Lifecycle
 import androidx.navigation.compose.NavHost
+import androidx.navigation.NavHostController
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
@@ -92,7 +94,6 @@ class MainComposeActivity : FragmentActivity() {
     private val usageStatsPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) {
-        viewModel.checkUsageStatsPermission()
         completePermissionGuidance(PermissionGuidanceStep.USAGE_STATS)
     }
 
@@ -141,7 +142,6 @@ class MainComposeActivity : FragmentActivity() {
     override fun onPostResume() {
         super.onPostResume()
         attachPermissionDialogListeners()
-        viewModel.checkUsageStatsPermission()
         checkPermissionsAndGuidance()
     }
 
@@ -158,13 +158,10 @@ class MainComposeActivity : FragmentActivity() {
     fun MainApp(viewModel: MainViewModel, sensorViewModel: SensorDataViewModel) {
         val navController = rememberNavController()
         val currentRoute = navController.currentBackStackEntryAsState().value?.destination?.route
+        var protectionRequest by rememberSaveable { mutableStateOf(0) }
         LaunchedEffect(openAuthenticationRequest) {
             if (openAuthenticationRequest > 0) {
-                navController.navigate(Screen.Privacy.route) {
-                    popUpTo(navController.graph.startDestinationId) { saveState = true }
-                    launchSingleTop = true
-                    restoreState = true
-                }
+                navController.navigateToTab(Screen.Privacy.route)
             }
         }
         val context = LocalContext.current
@@ -222,15 +219,7 @@ class MainComposeActivity : FragmentActivity() {
                 bottomBar = {
                     AnimatedBottomBar(
                         currentRoute = currentRoute,
-                        onNavigate = { route ->
-                            navController.navigate(route) {
-                                popUpTo(navController.graph.startDestinationId) {
-                                    saveState = true
-                                }
-                                launchSingleTop = true
-                                restoreState = true
-                            }
-                        }
+                        onNavigate = { navController.navigateToTab(it) }
                     )
                 },
                 containerColor = MaterialTheme.colorScheme.background
@@ -250,7 +239,8 @@ class MainComposeActivity : FragmentActivity() {
                         SensorsScreen(viewModel, sensorViewModel)
                     }
                     composable(Screen.Server.route) {
-                        ServerConfigScreen(viewModel, onRequestConsent = { showPrivacyDialog = true })
+                        ServerConfigScreen(viewModel, onRequestConsent = { showPrivacyDialog = true },
+                            protectionRequest = protectionRequest)
                     }
                     composable(Screen.Details.route) {
                         DetailedInfoScreen(
@@ -264,11 +254,11 @@ class MainComposeActivity : FragmentActivity() {
                             onNavigateBack = { navController.popBackStack() },
                             viewModel = viewModel,
                             onNavigateSettings = {
-                                navController.navigate(Screen.Server.route) {
-                                    launchSingleTop = true
-                                }
+                                protectionRequest++
+                                navController.navigateToTab(Screen.Server.route)
                             },
-                            onReviewConsent = { showPrivacyDialog = true }
+                            onReviewConsent = { showPrivacyDialog = true },
+                            onEnableUsageAccess = { navController.navigateToTab(Screen.Server.route) }
                         )
                     }
                 }
@@ -291,6 +281,7 @@ class MainComposeActivity : FragmentActivity() {
                 val selected = currentRoute == screen.route
                 val screenTitle = getScreenTitle(context, screen)
                 NavigationBarItem(
+                    modifier = Modifier.testTag("navigation_${screen.route}"),
                     selected = selected,
                     onClick = { onNavigate(screen.route) },
                     icon = {
@@ -315,9 +306,23 @@ class MainComposeActivity : FragmentActivity() {
             Screen.Sensors -> "传感器数据"
             Screen.Server -> "设置"
             Screen.Details -> "详细信息"
-            Screen.Privacy -> "认证与分析"
+            Screen.Privacy -> "偷用防护"
         }
     }
+
+    /** Use the same saved tab stacks for shortcuts and the bottom navigation. */
+    private fun NavHostController.navigateToTab(route: String) {
+        if (currentDestination?.route == route) return
+        // Home already remains at the bottom of the active stack. Restoring a saved
+        // stack under its ID can otherwise reopen Settings after the shortcut is used.
+        if (route == Screen.Privacy.route && popBackStack(route, inclusive = false, saveState = true)) return
+        navigate(route) {
+            popUpTo(graph.startDestinationId) { saveState = true }
+            launchSingleTop = true
+            restoreState = route != Screen.Privacy.route
+        }
+    }
+
     private fun showNotificationPermissionDialog() {
         NotificationPermissionDialog(::onNotificationGuidanceResult)
             .show(supportFragmentManager, NOTIFICATION_DIALOG_TAG)

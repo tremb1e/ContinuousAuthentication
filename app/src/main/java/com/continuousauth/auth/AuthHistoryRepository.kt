@@ -22,7 +22,7 @@ data class AuthHistoryEntry(
     val appName: String
 )
 
-/** A separate local database keeps the seven-day history across service/activity restarts. */
+/** A separate local database keeps the thirty-day history across service/activity restarts. */
 @Singleton
 class AuthHistoryRepository internal constructor(context: Context, databaseName: String) {
     @Inject constructor(@ApplicationContext context: Context) : this(context, DATABASE_NAME)
@@ -137,6 +137,7 @@ class AuthHistoryRepository internal constructor(context: Context, databaseName:
 
     companion object {
         const val DATABASE_NAME = "auth_history.db"
-        const val RETENTION_MS = 7 * 24 * 60 * 60 * 1_000L
+        const val RETENTION_DAYS = 30
+        const val RETENTION_MS = RETENTION_DAYS * 24 * 60 * 60 * 1_000L
     }
 }

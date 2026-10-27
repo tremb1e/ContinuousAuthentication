@@ -128,7 +128,7 @@ private fun SensorOverview(viewModel: MainViewModel) {
             Icon(Icons.Default.Sensors, null, Modifier.size(32.dp), tint = MaterialTheme.colorScheme.onPrimaryContainer)
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text(if (running) "正在感知手机动作" else "当前未采集数据", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                Text(if (running) "数值会随手机动作变化，这是正常现象。" else "在“认证与分析”开始认证后，这里会显示实时数据。",
+                Text(if (running) "数值会随手机动作变化，这是正常现象。" else "在“偷用防护”启用认证后，这里会显示实时数据。",
                     style = MaterialTheme.typography.bodyMedium)
                 Text(if (uploading) "采集与上传服务已开启" else "采集与上传服务未开启", style = MaterialTheme.typography.bodySmall)
             }

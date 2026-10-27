@@ -177,7 +177,7 @@ class UploadProgressTest {
 
     private fun packet(id: String, sequence: Long) = BatchMetadata(
         packetId = id, filePath = "/queue/$id.dat", status = BatchStatus.UPLOADED,
-        createdTime = 1_000, fileSize = 512, sampleCount = 300, transmissionMode = "STANDARD",
+        createdTime = System.currentTimeMillis(), fileSize = 512, sampleCount = 300, transmissionMode = "STANDARD",
         baseWallMs = 1_000, deviceUptimeNs = 1_000_000, deviceId = "test-device",
         sequenceNumber = sequence
     )
