@@ -1,6 +1,7 @@
 package com.continuousauth.versioning
 
 import android.content.Context
+import com.continuousauth.BuildConfig
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
@@ -22,8 +23,8 @@ class VersionManager @Inject constructor(
 ) {
     companion object {
         // 当前版本常量
-        const val CURRENT_APP_VERSION_CODE = 1
-        const val CURRENT_APP_VERSION_NAME = "1.0.0"
+        const val CURRENT_APP_VERSION_CODE = BuildConfig.VERSION_CODE
+        const val CURRENT_APP_VERSION_NAME = BuildConfig.VERSION_NAME
         const val CURRENT_SCHEMA_VERSION = 1
         
         // DataStore keys
@@ -58,12 +59,18 @@ class VersionManager @Inject constructor(
             performSchemaVersionUpgrade(storedSchemaVersion, CURRENT_SCHEMA_VERSION)
         }
         
-        // 更新存储的版本信息
-        context.dataStore.edit { preferences ->
-            preferences[STORED_APP_VERSION_CODE] = CURRENT_APP_VERSION_CODE
-            preferences[STORED_APP_VERSION_NAME] = CURRENT_APP_VERSION_NAME
-            preferences[STORED_SCHEMA_VERSION] = CURRENT_SCHEMA_VERSION
-            preferences[LAST_UPGRADE_TIME] = System.currentTimeMillis().toString()
+        // A routine check must preserve the upgrade date and any newer installed schema.
+        if (upgrades.isNotEmpty()) {
+            context.dataStore.edit { preferences ->
+                if (storedAppVersionCode < CURRENT_APP_VERSION_CODE) {
+                    preferences[STORED_APP_VERSION_CODE] = CURRENT_APP_VERSION_CODE
+                    preferences[STORED_APP_VERSION_NAME] = CURRENT_APP_VERSION_NAME
+                }
+                if (storedSchemaVersion < CURRENT_SCHEMA_VERSION) {
+                    preferences[STORED_SCHEMA_VERSION] = CURRENT_SCHEMA_VERSION
+                }
+                preferences[LAST_UPGRADE_TIME] = System.currentTimeMillis().toString()
+            }
         }
         
         return UpgradeResult(
@@ -177,7 +184,7 @@ class VersionManager @Inject constructor(
      */
     fun isDataPacketSchemaCompatible(packetSchemaVersion: Int): Boolean {
         // 目前只支持当前版本，未来可以支持向后兼容
-        return packetSchemaVersion <= CURRENT_SCHEMA_VERSION
+        return packetSchemaVersion in 1..CURRENT_SCHEMA_VERSION
     }
 }
 

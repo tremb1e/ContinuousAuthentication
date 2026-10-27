@@ -15,8 +15,8 @@ android {
         applicationId = "com.continuousauth"
         minSdk = 30  // Compatible with Android 11+
         targetSdk = 36
-        versionCode = 4
-        versionName = "1.1.0"
+        versionCode = 5
+        versionName = "1.1.1"
 
         // MMKV 2.x provides 64-bit libraries; keep every advertised ABI runnable.
         ndk {
@@ -80,8 +80,8 @@ android {
             proto.srcDir("src/main/proto")
         }
         getByName("androidTest") {
-            // The legacy suite still references removed transmission-mode APIs.
-            // Select the current SQLite regression suite explicitly on a connected device.
+            // All maintained device regressions run by default. The two properties
+            // remain available for focused local runs, never to hide broken tests.
             if (providers.gradleProperty("uiRedesignTestsOnly").orNull == "true") {
                 java.setSrcDirs(["src/uiRedesignAndroidTest/java", "src/backgroundUploadAndroidTest/java"])
             } else if (providers.gradleProperty("backgroundUploadTestsOnly").orNull == "true") {
@@ -129,14 +129,14 @@ dependencies {
     implementation(libs.androidx.constraintlayout)
     
     // Jetpack Compose
-    implementation(platform("androidx.compose:compose-bom:2024.02.00"))
+    implementation(platform("androidx.compose:compose-bom:2025.06.01"))
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-graphics")
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.compose.runtime:runtime-livedata")
-    implementation("androidx.navigation:navigation-compose:2.7.7")
+    implementation("androidx.navigation:navigation-compose:${libs.versions.navigation.get()}")
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
 
@@ -175,7 +175,7 @@ dependencies {
     // Jetpack ViewModel and LiveData
     implementation(libs.androidx.lifecycle.viewmodel.ktx)
     implementation(libs.androidx.lifecycle.livedata.ktx)
-    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.7.0")
+    implementation("androidx.lifecycle:lifecycle-runtime-compose:${libs.versions.lifecycle.get()}")
 
     // Navigation组件
     implementation(libs.androidx.navigation.fragment.ktx)
@@ -183,9 +183,6 @@ dependencies {
 
     // 权限处理
     implementation(libs.androidx.fragment.ktx)
-    
-    // 图表库 - MPAndroidChart
-    implementation("com.github.PhilJay:MPAndroidChart:v3.1.0")
     
     // 压缩库 - LZ4
     implementation("org.lz4:lz4-java:1.8.0")
@@ -196,7 +193,8 @@ dependencies {
     testImplementation(libs.robolectric)
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation("io.mockk:mockk:1.13.11")
-    androidTestImplementation(platform("androidx.compose:compose-bom:2024.02.00"))
+    testImplementation("io.grpc:grpc-inprocess:${libs.versions.grpc.get()}")
+    androidTestImplementation(platform("androidx.compose:compose-bom:2025.06.01"))
     androidTestImplementation("androidx.compose.ui:ui-test-junit4")
     androidTestImplementation(libs.androidx.test.ext.junit)
     androidTestImplementation(libs.androidx.test.espresso.core)

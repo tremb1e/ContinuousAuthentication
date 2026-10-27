@@ -40,6 +40,84 @@ import org.robolectric.annotation.Config
 @Config(sdk = [30], application = Application::class)
 class UploadManagerTest {
     @Test
+    fun serverChangeImmediatelyBlocksOldEndpointBeforeAsyncReconnect() = runTest {
+        withManager {
+            connected = true
+            manager.start(ENDPOINT)
+            runCurrent()
+            manager.updateServerEndpoint("https://new-server.example:443")
+
+            assertEquals(ConnectionStatus.CONNECTING, manager.getUploadStatus().connectionStatus)
+            assertFalse(manager.sendDataPacket(packet("during-switch")))
+            assertFalse(manager.retryPacket(packet("during-switch")).success)
+            assertEquals(null, manager.startAuthentication("device", "session"))
+            coVerify(exactly = 0) { uploader.startAuthentication(any(), any()) }
+            coVerify(exactly = 0) { uploader.sendDataPacket(any()) }
+            runCurrent()
+        }
+    }
+
+    @Test
+    fun temporaryDiskReadFailureKeepsPacketAndRetriesItLater() = runTest {
+        withManager {
+            connected = true
+            val packet = addPacket("retry-read", inMemory = false)
+            coEvery { files.readDataPacket("retry-read") } returns Result.failure(java.io.IOException("temporarily busy"))
+            manager.start(ENDPOINT)
+            runCurrent()
+            assertTrue(disk.containsKey("retry-read"))
+            assertTrue(sent.isEmpty())
+            coVerify(exactly = 0) { files.deleteDataPacket("retry-read") }
+            coVerify(exactly = 0) { files.updateFailedStatus("retry-read", any()) }
+
+            coEvery { files.readDataPacket("retry-read") } returns Result.success(packet.toByteArray())
+            advanceTimeBy(1_000)
+            runCurrent()
+            assertEquals(listOf("retry-read"), sent)
+        }
+    }
+
+    @Test
+    fun malformedDiskPacketIsQuarantinedWithoutDeletingDiagnosticCopy() = runTest {
+        withManager {
+            connected = true
+            addPacket("malformed", inMemory = false)
+            coEvery { files.readDataPacket("malformed") } returns Result.success(byteArrayOf(-1, -1, -1))
+            manager.start(ENDPOINT)
+            runCurrent()
+
+            assertTrue(disk.containsKey("malformed"))
+            assertTrue(sent.isEmpty())
+            coVerify(exactly = 1) { files.markPacketCorrupt("malformed", "PARSE_FAILED") }
+            coVerify(exactly = 0) { files.deleteDataPacket("malformed") }
+        }
+    }
+
+    @Test
+    fun savedServerChangeReconnectsRunningManagerWithoutDroppingQueuedPackets() = runTest {
+        withManager {
+            manager.setOfflineMode(true)
+            addPacket("pending-during-address-change")
+            manager.start(ENDPOINT)
+            runCurrent()
+            val updated = "https://new-server.example:443"
+
+            manager.updateServerEndpoint(updated)
+            runCurrent()
+            assertTrue(disk.containsKey("pending-during-address-change"))
+            assertTrue(sent.isEmpty())
+
+            manager.setOfflineMode(false)
+            advanceTimeBy(10_000)
+            runCurrent()
+
+            coVerify(exactly = 0) { uploader.connect(ENDPOINT) }
+            coVerify(exactly = 1) { uploader.connect(updated) }
+            assertEquals(listOf("pending-during-address-change"), sent)
+        }
+    }
+
+    @Test
     fun offlineStartupKeepsQueueAndUploadsAfterOfflineModeIsDisabled() = runTest {
         withManager {
             addPacket("offline-packet")
@@ -409,6 +487,7 @@ class UploadManagerTest {
         var wifi = true
         var failuresBeforeConnect = 0
         var connectAttempts = 0
+        private var connectedEndpoint = ENDPOINT
         private val uploadTimes = mutableMapOf<String, Long>()
         private val buffer = mockk<InMemoryBuffer>(relaxed = true)
         private val detector = mockk<NetworkEnvironmentDetector>()
@@ -416,7 +495,7 @@ class UploadManagerTest {
 
         init {
             every { uploader.getConnectionStatus() } answers {
-                ConnectionStatusDetail(if (connected) "CONNECTED" else "DISCONNECTED", ENDPOINT, 0)
+                ConnectionStatusDetail(if (connected) "CONNECTED" else "DISCONNECTED", connectedEndpoint, 0)
             }
             every { uploader.getConnectionStats() } answers {
                 ConnectionStats(if (connected) ConnectionStatus.CONNECTED else ConnectionStatus.DISCONNECTED)
@@ -424,6 +503,7 @@ class UploadManagerTest {
             every { uploader.getServerDirectiveFlow() } returns directives.receiveAsFlow()
             coEvery { uploader.connect(any()) } answers {
                 connectAttempts++
+                connectedEndpoint = firstArg()
                 connected = connectAttempts > failuresBeforeConnect
                 connected
             }

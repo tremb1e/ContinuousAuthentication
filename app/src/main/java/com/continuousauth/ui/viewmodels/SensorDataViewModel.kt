@@ -13,6 +13,9 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.flowOn
 import android.os.SystemClock
 import javax.inject.Inject
 import com.continuousauth.model.SensorType
@@ -30,7 +33,7 @@ class SensorDataViewModel @Inject constructor(
         val x: Float = 0f,
         val y: Float = 0f,
         val z: Float = 0f,
-        val timestamp: Long = System.currentTimeMillis()
+        val timestamp: Long = 0L
     )
     
     data class RecentApp(
@@ -71,7 +74,7 @@ class SensorDataViewModel @Inject constructor(
     private val _chartMagnetometerData = MutableStateFlow(SensorData())
     val chartMagnetometerData: StateFlow<SensorData> = _chartMagnetometerData.asStateFlow()
     
-    private var isChartActive = false
+    @Volatile private var isChartActive = false
     
     /**
      * 订阅服务提供的预览；采集生命周期只由前台服务管理。
@@ -79,9 +82,13 @@ class SensorDataViewModel @Inject constructor(
     fun startSensorCollection() {
         if (sensorCollectionJob?.isActive == true) return
 
-        sensorCollectionJob = viewModelScope.launch {
+        sensorCollectionJob = viewModelScope.launch(Dispatchers.Default) {
+                var hasSample = false
                 sensorCollector.getPreviewDataFlow().collect { sample ->
-                    _sensorsActive.value = true
+                    if (!hasSample) {
+                        _sensorsActive.postValue(true)
+                        hasSample = true
+                    }
                     val sensorData = SensorData(
                         x = sample.x,
                         y = sample.y,
@@ -113,11 +120,15 @@ class SensorDataViewModel @Inject constructor(
                 }
         }
         appDetectionJob = viewModelScope.launch {
-            foregroundAppDetector.recentApps.collect { apps ->
-                _recentApps.value = apps.map { app ->
-                    RecentApp(app.packageName, foregroundAppDetector.getAppName(app.packageName), app.timestamp)
+            foregroundAppDetector.recentApps.map { apps ->
+                val knownNames = _recentApps.value.associate { it.packageName to it.appName }
+                apps.map { app ->
+                    val name = knownNames[app.packageName] ?: runCatching {
+                        foregroundAppDetector.getAppName(app.packageName)
+                    }.getOrDefault(app.packageName)
+                    RecentApp(app.packageName, name, app.timestamp)
                 }
-            }
+            }.flowOn(Dispatchers.IO).collect { apps -> _recentApps.value = apps }
         }
     }
 
@@ -132,7 +143,7 @@ class SensorDataViewModel @Inject constructor(
         sensorCollectionJob = null
         appDetectionJob = null
         
-        _sensorsActive.value = false
+        _sensorsActive.postValue(false)
     }
     
     /**

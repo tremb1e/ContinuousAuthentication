@@ -3,6 +3,11 @@ package com.continuousauth.ui
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.test.SemanticsNodeInteraction
+import androidx.compose.ui.test.hasTestTag
+import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.performScrollToNode
+import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.isDialog
@@ -44,7 +49,7 @@ class AuthenticationScreenTest {
     @Test
     fun monitorModeShowsPassiveFailureWithoutModal() {
         show(state = failedState(), mode = ProtectionMode.MONITOR_ONLY)
-        compose.onNodeWithTag("authentication_warning").performScrollTo().assertIsDisplayed()
+        scrollToTag("authentication_warning").assertIsDisplayed()
         compose.onNodeWithText("当前为仅监测模式，不会弹窗或限制使用。").assertExists()
         compose.onAllNodes(isDialog()).assertCountEquals(0)
     }
@@ -52,7 +57,7 @@ class AuthenticationScreenTest {
     @Test
     fun alertModeShowsRecentFailureAndPermissionExplanation() {
         show(state = failedState(), mode = ProtectionMode.ALERT)
-        compose.onNodeWithTag("authentication_warning").performScrollTo().assertIsDisplayed()
+        scrollToTag("authentication_warning").assertIsDisplayed()
         compose.onNodeWithText("当前为即时警示模式。系统弹窗需要在设置中允许显示在其他应用上层。").assertExists()
     }
 
@@ -62,7 +67,7 @@ class AuthenticationScreenTest {
         show(onStart = { started++ })
         compose.onNodeWithTag("authentication_action").performClick()
         assertEquals(1, started)
-        compose.onNodeWithTag("history_total", useUnmergedTree = true).performScrollTo().assertIsDisplayed()
+        scrollToTag("history_total", useUnmergedTree = true).assertIsDisplayed()
         compose.onNodeWithText("暂无认证记录").assertExists()
         compose.onNodeWithText("这个时段没有收到认证结果，不代表全部通过。").assertExists()
     }
@@ -70,7 +75,7 @@ class AuthenticationScreenTest {
     @Test
     fun allPassedIsDifferentFromNoData() {
         show(history = listOf(AuthHistoryEntry("pass", now, true, "sample.app", "示例应用")))
-        compose.onNodeWithTag("history_total", useUnmergedTree = true).performScrollTo()
+        scrollToTag("history_total", useUnmergedTree = true)
         compose.onNodeWithText("0 次不通过").assertExists()
         compose.onNodeWithText("共收到 1 次结果 · 1 次通过").assertExists()
         compose.onNodeWithText("暂无认证记录").assertDoesNotExist()
@@ -111,14 +116,17 @@ class AuthenticationScreenTest {
         val yesterdayTime = today.minusDays(1).atTime(8, 0).atZone(zone).toInstant().toEpochMilli()
         show(history = listOf(AuthHistoryEntry("today", now, false, "app.today", "今日应用"),
             AuthHistoryEntry("yesterday", yesterdayTime, false, "app.yesterday", "昨日应用")))
-        compose.onNodeWithTag("history_period_WEEK").performScrollTo().performClick()
+        scrollToTag("history_period_WEEK").performClick()
+        awaitHistory()
         compose.onNodeWithText("2 次不通过").assertExists()
         val yesterdayStart = today.minusDays(1).atStartOfDay(zone).toInstant().toEpochMilli()
-        compose.onNodeWithTag("history_bar_$yesterdayStart").performScrollTo().performClick()
-        compose.onNodeWithTag("history_selected_bucket").performScrollTo().assertIsDisplayed()
+        scrollToTag("history_bar_$yesterdayStart").performClick()
+        awaitHistory()
+        scrollToTag("history_selected_bucket").assertIsDisplayed()
         compose.onNodeWithText("昨日应用").assertExists()
         compose.onNodeWithText("今日应用").assertDoesNotExist()
-        compose.onNodeWithText("查看整个时段").performScrollTo().assertIsDisplayed().performClick()
+        scrollToText("查看整个时段").assertIsDisplayed().performClick()
+        awaitHistory()
         compose.onNodeWithTag("history_selected_bucket").assertDoesNotExist()
         compose.onNodeWithText("今日应用").assertExists()
     }
@@ -126,10 +134,10 @@ class AuthenticationScreenTest {
     @Test
     fun customRangeCanBeOpenedCancelledAndConfirmed() {
         show()
-        compose.onNodeWithTag("history_period_CUSTOM").performScrollTo().performClick()
+        scrollToTag("history_period_CUSTOM").performClick()
         compose.onNodeWithText("选择最近 7 天内的日期").assertIsDisplayed()
         compose.onNodeWithText("取消").performClick()
-        compose.onNodeWithTag("history_period_CUSTOM").performScrollTo().performClick()
+        scrollToTag("history_period_CUSTOM").performClick()
         compose.onNodeWithText("完成").performClick()
         compose.onNodeWithText("选择最近 7 天内的日期").assertDoesNotExist()
         compose.onNodeWithTag("history_date_range").assertExists()
@@ -142,13 +150,16 @@ class AuthenticationScreenTest {
         show(history = listOf(AuthHistoryEntry("yesterday", yesterday, false, "app.yesterday", "昨日应用"),
             AuthHistoryEntry("morning", earlierToday, false, "app.morning", "早间应用"),
             AuthHistoryEntry("afternoon", now, false, "app.afternoon", "午后应用")))
-        compose.onNodeWithTag("history_period_YESTERDAY").performScrollTo().performClick()
+        scrollToTag("history_period_YESTERDAY").performClick()
+        awaitHistory()
         compose.onNodeWithText("1 次不通过").assertExists()
         compose.onNodeWithText("昨日应用").assertExists()
         compose.onNodeWithText("早间应用").assertDoesNotExist()
-        compose.onNodeWithTag("history_period_TODAY").performScrollTo().performClick()
+        scrollToTag("history_period_TODAY").performClick()
+        awaitHistory()
         val hourStart = today.atTime(14, 0).atZone(zone).toInstant().toEpochMilli()
-        compose.onNodeWithTag("history_bar_$hourStart").performScrollTo().performClick()
+        scrollToTag("history_bar_$hourStart").performClick()
+        awaitHistory()
         compose.onNodeWithText("午后应用").assertExists()
         compose.onNodeWithText("早间应用").assertDoesNotExist()
     }
@@ -160,11 +171,13 @@ class AuthenticationScreenTest {
         }
         show(history = entries)
         compose.onNodeWithTag("section_content_failure_events").assertDoesNotExist()
-        compose.onNodeWithTag("section_failure_events").performScrollTo().performClick()
+        scrollToTag("section_failure_events").performClick()
         compose.onAllNodesWithText("示例应用").assertCountEquals(21)
-        compose.onNodeWithText("再显示 1 条记录").performScrollTo().performClick()
-        compose.onAllNodesWithText("示例应用").assertCountEquals(22)
+        scrollToText("下一页").performClick()
+        compose.onAllNodesWithText("示例应用").assertCountEquals(2)
         compose.onNodeWithText(formatAuthHistoryTime(entries.last().timestampMs)).assertExists()
+        scrollToText("上一页").performClick()
+        compose.onAllNodesWithText("示例应用").assertCountEquals(21)
     }
 
     @Test
@@ -172,11 +185,33 @@ class AuthenticationScreenTest {
         var permissionOpened = 0
         show(fontScale = 2f, usageAccess = false, onUsage = { permissionOpened++ },
             history = listOf(AuthHistoryEntry("unknown", now, false, "", "")))
-        compose.onNodeWithTag("authentication_action").performScrollTo().assertIsDisplayed()
-        compose.onNodeWithTag("history_period_WEEK").performScrollTo().assertIsDisplayed()
-        compose.onNodeWithText("未识别的应用").performScrollTo().assertIsDisplayed()
-        compose.onNodeWithText("了解并开启应用识别").performScrollTo().performClick()
+        scrollToTag("authentication_action").assertIsDisplayed()
+        scrollToTag("history_period_WEEK").assertIsDisplayed()
+        scrollToText("未识别的应用").assertIsDisplayed()
+        scrollToText("了解并开启应用识别").performClick()
         assertEquals(1, permissionOpened)
+    }
+
+    private fun awaitHistory() {
+        compose.waitUntil(10_000) {
+            compose.onAllNodesWithTag("history_loading").fetchSemanticsNodes().isEmpty() &&
+                compose.onAllNodesWithText("正在整理记录…").fetchSemanticsNodes().isEmpty()
+        }
+        compose.waitForIdle()
+    }
+
+    private fun scrollToTag(tag: String, useUnmergedTree: Boolean = false): SemanticsNodeInteraction {
+        if (tag.startsWith("history_") || tag.contains("failure_events")) {
+            compose.onNodeWithTag("authentication_screen", useUnmergedTree = true).performScrollToNode(hasTestTag("history_total"))
+            awaitHistory()
+        }
+        compose.onNodeWithTag("authentication_screen", useUnmergedTree = true).performScrollToNode(hasTestTag(tag))
+        return compose.onNodeWithTag(tag, useUnmergedTree).performScrollTo()
+    }
+
+    private fun scrollToText(text: String): SemanticsNodeInteraction {
+        compose.onNodeWithTag("authentication_screen", useUnmergedTree = true).performScrollToNode(hasText(text))
+        return compose.onNodeWithText(text).performScrollTo()
     }
 
     private fun failedState() = ContinuousAuthUiState(authActive = true, lastDecision = AuthDecision.ABNORMAL,

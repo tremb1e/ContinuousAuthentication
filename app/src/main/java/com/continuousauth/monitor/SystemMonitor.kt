@@ -201,7 +201,6 @@ class SystemMonitor @Inject constructor(
     
     private val sensorManager = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
     private val batteryManager = context.getSystemService(Context.BATTERY_SERVICE) as BatteryManager
-    private val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
     
     /**
      * 启动监控
@@ -547,19 +546,8 @@ class SystemMonitor @Inject constructor(
      * 获取本App的内存信息
      */
     private fun getMemoryInfo(): MemoryInfo {
-        // 获取本应用的内存信息
-        val pid = android.os.Process.myPid()
-        val processMemInfo = activityManager.getProcessMemoryInfo(intArrayOf(pid))[0]
-        
-        // 获取本应用使用的内存（单位：KB）
-        val appUsedKB = processMemInfo.totalPss
-        val appUsedMB = appUsedKB / 1024
-        
-        // 获取系统总内存信息
-        val systemMemInfo = ActivityManager.MemoryInfo()
-        activityManager.getMemoryInfo(systemMemInfo)
-        val systemTotalMB = (systemMemInfo.totalMem / (1024 * 1024)).toInt()
-        
+        // The displayed value is Java heap usage. PSS/Binder sampling here was unused
+        // and forced an expensive process scan every second on every screen.
         // 获取应用的内存限制
         val runtime = Runtime.getRuntime()
         val maxHeapMB = (runtime.maxMemory() / (1024 * 1024)).toInt()

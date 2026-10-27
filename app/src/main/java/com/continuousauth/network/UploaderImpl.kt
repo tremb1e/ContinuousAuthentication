@@ -9,6 +9,7 @@ import com.continuousauth.storage.FileQueueManager
 import io.grpc.*
 import io.grpc.okhttp.OkHttpChannelBuilder
 import io.grpc.stub.StreamObserver
+import io.grpc.stub.ClientCalls
 import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -21,6 +22,7 @@ import java.util.concurrent.atomic.AtomicReference
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 
 /**
  * 待确认数据包
@@ -36,17 +38,24 @@ data class PendingAck(
  * 采用双向流RPC进行数据传输和指令接收
  */
 @Singleton
-class UploaderImpl @Inject constructor(
+class UploaderImpl internal constructor(
     private val tlsSecurityManager: TlsSecurityManager,
     private val policyManager: PolicyManager,
-    private val tlsInspector: GrpcTlsInspector,
     private val inMemoryBuffer: InMemoryBuffer,
-    private val fileQueueManager: FileQueueManager
+    private val fileQueueManager: FileQueueManager,
+    private val channelFactory: ((ServerEndpoint, Set<String>) -> ManagedChannel)?
 ) : Uploader {
+    @Inject constructor(
+        tlsSecurityManager: TlsSecurityManager,
+        policyManager: PolicyManager,
+        inMemoryBuffer: InMemoryBuffer,
+        fileQueueManager: FileQueueManager
+    ) : this(tlsSecurityManager, policyManager, inMemoryBuffer, fileQueueManager, null)
+
 
     companion object {
         private const val TAG = "Uploader"
-        private const val CONNECTION_TIMEOUT_SECONDS = 30L
+        private const val CONNECTION_TIMEOUT_SECONDS = 20L
         private const val KEEPALIVE_TIME_SECONDS = 30L
         private const val KEEPALIVE_TIMEOUT_SECONDS = 5L
         private const val MAX_RETRY_ATTEMPTS = 3
@@ -90,219 +99,129 @@ class UploaderImpl @Inject constructor(
     private var reconnectJob: Job? = null
     private var currentEndpoint: String = ""
 
-    private data class ParsedEndpoint(
-        val host: String,
-        val port: Int,
-        val useTls: Boolean,
-        val scheme: String,
-        val endpoint: String,
-        val strictTlsIngress: Boolean
-    )
-
-    private fun parseEndpoint(endpoint: String): ParsedEndpoint {
-        val normalized = ServerEndpointNormalizer.normalize(endpoint)
-
-        return ParsedEndpoint(
-            host = normalized.host,
-            port = normalized.port,
-            useTls = normalized.useTls,
-            scheme = normalized.scheme,
-            endpoint = normalized.endpoint,
-            strictTlsIngress = normalized.isPublicTlsIngress
-        )
-    }
-
-    private fun isHttpFallbackError(t: Throwable): Boolean {
-        val msg = t.message?.lowercase() ?: return false
-        return msg.contains("invalid content-type") ||
-            msg.contains("http status code 404") ||
-            msg.contains("application/json")
-    }
-
-    /**
-     * 等待通道进入READY状态，避免握手失败后仍然误判为已连接。
-     */
-    private suspend fun ManagedChannel.awaitReady(timeoutMs: Long): Boolean = withTimeoutOrNull(timeoutMs) {
-        var state = getState(true)
-        while (state != ConnectivityState.READY) {
-            if (state == ConnectivityState.SHUTDOWN) return@withTimeoutOrNull false
-            state = suspendCancellableCoroutine { cont ->
-                notifyWhenStateChanged(state) {
-                    cont.resume(getState(false))
-                }
-            }.let { next ->
-                if (next == ConnectivityState.TRANSIENT_FAILURE) getState(true) else next
-            }
-        }
-        true
-    } ?: false
-
-    private fun buildChannel(
-        host: String,
-        port: Int,
-        useTls: Boolean,
-        pinnedCertificates: Set<String>
-    ): ManagedChannel {
+    private fun buildChannel(endpoint: ServerEndpoint, pinnedCertificates: Set<String>): ManagedChannel {
+        channelFactory?.let { return it(endpoint, pinnedCertificates) }
         val baseBuilder = OkHttpChannelBuilder
-            .forAddress(host, port)
+            .forAddress(endpoint.host, endpoint.port)
             .keepAliveTime(KEEPALIVE_TIME_SECONDS, TimeUnit.SECONDS)
             .keepAliveTimeout(KEEPALIVE_TIMEOUT_SECONDS, TimeUnit.SECONDS)
             .keepAliveWithoutCalls(true)
             .maxInboundMessageSize(4 * 1024 * 1024) // 4MB
 
-        return if (useTls) {
+        return if (endpoint.useTls) {
             tlsSecurityManager.configureTlsForChannelBuilder(
                 baseBuilder,
                 pinnedCertificates,
-                host
+                endpoint.host
             ).build()
         } else {
             baseBuilder.usePlaintext().build()
         }
     }
 
-    override suspend fun connect(serverEndpoint: String): Boolean = connectionMutex.withLock {
-        if (connectionStatus.get() == ConnectionStatus.CONNECTED) {
-            Log.w(TAG, "已经连接到服务器")
-            return true
-        }
-
-        currentEndpoint = serverEndpoint
-        reconnectAllowed = true
-        connectionGeneration.incrementAndGet()
-        connectionStatus.set(ConnectionStatus.CONNECTING)
-
-        val attemptTimestamp = System.currentTimeMillis()
-
-        return try {
-            val parsed = parseEndpoint(serverEndpoint)
-            currentEndpoint = parsed.endpoint
-            val policyConfig = policyManager.getCurrentPolicyConfiguration()
-            val pinnedCertificates = policyConfig.securityConfig.pinnedCertificates
-
-            val tlsProbe = if (parsed.useTls) {
-                runCatching { tlsInspector.check(parsed.host, parsed.port) }
-                    .onFailure { Log.w(TAG, "TLS 握手探测失败，假定可回退到 h2c: ${it.message}") }
-                    .getOrNull()
-            } else {
-                null
+    /** Verify the actual RPC before declaring a connection. HTTP/2 READY alone can be a web proxy. */
+    override suspend fun connect(serverEndpoint: String): Boolean = withContext(Dispatchers.IO) {
+        connectionMutex.withLock {
+            val endpoint = try {
+                ServerEndpointNormalizer.normalize(serverEndpoint)
+            } catch (e: IllegalArgumentException) {
+                if (!isConnected()) handleConnectionError("服务器地址或端口无效，请检查设置")
+                return@withLock false
             }
+            if (isConnected() && currentEndpoint == endpoint.endpoint) return@withLock true
 
-            val tlsSupported = tlsProbe?.supportsTls12OrHigher == true
-            var useTls = parsed.useTls && (tlsSupported || parsed.strictTlsIngress)
-            var downgraded = parsed.useTls && !useTls
-            var lastError: String? = null
-            var finalTls = useTls
-
-            if (parsed.useTls && !tlsSupported) {
-                val probeReason = tlsProbe?.errorMessage ?: "TLS未就绪或证书未部署"
-                if (parsed.strictTlsIngress) {
-                    Log.w(TAG, "公网443入口 TLS 探测失败，仍按 TLS gRPC 尝试且不回退明文 ($probeReason)")
-                } else {
-                    Log.i(TAG, "未检测到可用的 TLS 1.2/1.3 证书，优先使用 h2c 明文模式 ($probeReason)")
+            val generation = connectionGeneration.incrementAndGet()
+            currentEndpoint = endpoint.endpoint
+            reconnectAllowed = true
+            connectionStatus.set(ConnectionStatus.CONNECTING)
+            connectedSince = null
+            requestObserver = null
+            stub = null
+            channel?.shutdownNow()
+            channel = null
+            pendingAcks.clear()
+            val attemptedAt = System.currentTimeMillis()
+            try {
+                val pins = policyManager.getCurrentPolicyConfiguration().securityConfig.pinnedCertificates
+                val newChannel = buildChannel(endpoint, pins).also { channel = it }
+                probeHeartbeat(newChannel)
+                currentCoroutineContext().ensureActive()
+                stub = SensorDataServiceGrpc.newStub(newChannel)
+                check(establishBidirectionalStream(generation) &&
+                    connectionStatus.compareAndSet(ConnectionStatus.CONNECTING, ConnectionStatus.CONNECTED)) {
+                    "认证数据连接未能建立"
                 }
-            }
-
-            suspend fun buildAndStream(tls: Boolean, port: Int): Boolean {
-                return try {
-                    val generation = connectionGeneration.incrementAndGet()
-                    connectionStatus.set(ConnectionStatus.CONNECTING)
-                    channel?.shutdownNow()
-                    val builtChannel = buildChannel(
-                        host = parsed.host,
-                        port = port,
-                        useTls = tls,
-                        pinnedCertificates = pinnedCertificates
-                    ).also { channel = it }
-
-                    val ready = builtChannel.awaitReady(TimeUnit.SECONDS.toMillis(CONNECTION_TIMEOUT_SECONDS))
-                    if (!ready) {
-                        lastError = "通道未就绪或TLS握手失败"
-                        Log.w(TAG, "gRPC 通道未就绪，${if (tls) "TLS" else "明文"}模式等待超时")
-                        builtChannel.shutdownNow()
-                        return false
-                    }
-
-                    stub = SensorDataServiceGrpc.newStub(builtChannel)
-                    val ok = establishBidirectionalStream(generation) &&
-                        connectionStatus.compareAndSet(ConnectionStatus.CONNECTING, ConnectionStatus.CONNECTED)
-                    if (ok) {
-                        finalTls = tls
-                    }
-                    ok
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    lastError = e.message
-                    Log.e(TAG, "建立${if (tls) "TLS" else "明文"}通道失败", e)
-                    false
-                }
-            }
-
-            var connected = buildAndStream(useTls, parsed.port)
-            if (!connected && useTls && !parsed.strictTlsIngress) {
-                Log.w(TAG, "TLS 握手/流建立失败，回退到明文 h2c")
-                downgraded = true
-                connected = buildAndStream(false, parsed.port)
-            } else if (!connected && useTls && parsed.strictTlsIngress) {
-                Log.w(TAG, "公网443 TLS gRPC 入口连接失败，不回退明文或其它端口")
-            }
-
-            if (connected) {
                 connectedSince = System.currentTimeMillis()
-                updateTransportState(
-                    TransportState(
-                        mode = if (finalTls) TransportMode.HTTPS else TransportMode.HTTP,
-                        tlsVersion = if (finalTls) tlsProbe?.tlsVersion else null,
-                        negotiatedProtocol = if (finalTls) (tlsProbe?.negotiatedProtocol ?: "h2") else "h2c",
-                        tlsCapable = tlsProbe?.supportsTls12OrHigher ?: false,
-                        preferredScheme = parsed.scheme,
-                        downgradedToCleartext = downgraded,
-                        lastResultSuccess = true,
-                        lastAttemptMs = attemptTimestamp
-                    )
-                )
-                Log.i(TAG, "成功连接到服务器: ${parsed.endpoint} (tls=${finalTls})")
+                lastErrorMessage = null
+                updateTransportState(TransportState(
+                    mode = if (endpoint.useTls) TransportMode.HTTPS else TransportMode.HTTP,
+                    negotiatedProtocol = if (endpoint.useTls) "h2" else "h2c",
+                    tlsCapable = endpoint.useTls,
+                    preferredScheme = endpoint.scheme,
+                    lastResultSuccess = true,
+                    lastAttemptMs = attemptedAt
+                ))
                 true
-            } else {
-                handleConnectionError(lastError ?: "双向流建立失败")
-                updateTransportState(
-                    TransportState(
-                        mode = if (downgraded || (!useTls && !parsed.strictTlsIngress)) TransportMode.HTTP else TransportMode.HTTPS,
-                        tlsVersion = tlsProbe?.tlsVersion,
-                        negotiatedProtocol = tlsProbe?.negotiatedProtocol,
-                        tlsCapable = tlsProbe?.supportsTls12OrHigher ?: false,
-                        preferredScheme = parsed.scheme,
-                        downgradedToCleartext = downgraded,
-                        lastResultSuccess = false,
-                        lastError = lastError,
-                        lastAttemptMs = attemptTimestamp
-                    )
-                )
-                try {
-                    channel?.shutdownNow()
-                } catch (_: Exception) {
-                }
+            } catch (e: CancellationException) {
+                reconnectAllowed = false
+                connectionGeneration.incrementAndGet()
+                channel?.shutdownNow()
+                channel = null
+                requestObserver = null
+                stub = null
+                connectionStatus.set(ConnectionStatus.DISCONNECTED)
+                throw e
+            } catch (e: Exception) {
+                connectionGeneration.incrementAndGet()
+                channel?.shutdownNow()
+                channel = null
+                requestObserver = null
+                stub = null
+                val message = describeConnectionFailure(e)
+                handleConnectionError(message)
+                updateTransportState(TransportState(
+                    mode = if (endpoint.useTls) TransportMode.HTTPS else TransportMode.HTTP,
+                    preferredScheme = endpoint.scheme,
+                    lastResultSuccess = false,
+                    lastError = message,
+                    lastAttemptMs = attemptedAt
+                ))
                 false
             }
-        } catch (e: CancellationException) {
-            connectionGeneration.incrementAndGet()
-            channel?.shutdownNow()
-            requestObserver = null
-            connectionStatus.set(ConnectionStatus.DISCONNECTED)
-            throw e
-        } catch (e: Exception) {
-            Log.e(TAG, "连接服务器失败: $serverEndpoint", e)
-            handleConnectionError("连接异常: ${e.message}")
-            updateTransportState(
-                transportState.get().copy(
-                    lastResultSuccess = false,
-                    lastError = e.message,
-                    lastAttemptMs = attemptTimestamp
-                )
-            )
-            false
         }
+    }
+
+    private suspend fun probeHeartbeat(channel: ManagedChannel): HeartbeatAck {
+        val request = Heartbeat.newBuilder().setClientTimestamp(System.currentTimeMillis()).build()
+        val ack = unaryCall(channel, SensorDataServiceGrpc.getSendHeartbeatMethod(), request)
+        check(ack.serverTimestamp > 0L && ack.clientTimestampEcho == request.clientTimestamp) {
+            "服务器返回了无效的连接检测结果"
+        }
+        return ack
+    }
+
+    /** Cancellation must cancel the RPC too; a blocking stub keeps authentication alive after Stop. */
+    private suspend fun <Req : Any, Resp : Any> unaryCall(
+        channel: ManagedChannel,
+        method: MethodDescriptor<Req, Resp>,
+        request: Req
+    ): Resp = suspendCancellableCoroutine { continuation ->
+        val call = channel.newCall(method, CallOptions.DEFAULT
+            .withDeadlineAfter(CONNECTION_TIMEOUT_SECONDS, TimeUnit.SECONDS))
+        continuation.invokeOnCancellation { call.cancel("操作已取消", null) }
+        ClientCalls.asyncUnaryCall(call, request, object : StreamObserver<Resp> {
+            private var response: Resp? = null
+            override fun onNext(value: Resp) { response = value }
+            override fun onError(error: Throwable) {
+                if (continuation.isActive) continuation.resumeWithException(error)
+            }
+            override fun onCompleted() {
+                if (!continuation.isActive) return
+                val value = response
+                if (value != null) continuation.resume(value)
+                else continuation.resumeWithException(IllegalStateException("服务器未返回连接检测结果"))
+            }
+        })
     }
 
     override suspend fun sendDataPacket(dataPacket: DataPacket): Boolean {
@@ -344,15 +263,14 @@ class UploaderImpl @Inject constructor(
 
     override suspend fun sendHeartbeat(heartbeat: Heartbeat): HeartbeatAck? = withContext(Dispatchers.IO) {
         val ch = channel ?: return@withContext null
-        return@withContext try {
-            val blockingStub = SensorDataServiceGrpc.newBlockingStub(ch)
-                .withDeadlineAfter(CONNECTION_TIMEOUT_SECONDS, TimeUnit.SECONDS)
-            val ack = blockingStub.sendHeartbeat(heartbeat)
-            lastAckLatency = System.currentTimeMillis() - heartbeat.clientTimestamp
-            Log.v(TAG, "心跳响应成功，服务器时间戳=${ack.serverTimestamp}")
-            ack
+        try {
+            unaryCall(ch, SensorDataServiceGrpc.getSendHeartbeatMethod(), heartbeat).also {
+                lastAckLatency = System.currentTimeMillis() - heartbeat.clientTimestamp
+            }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
-            Log.e(TAG, "发送心跳失败", e)
+            Log.w(TAG, "发送心跳失败", e)
             null
         }
     }
@@ -361,42 +279,44 @@ class UploaderImpl @Inject constructor(
         return serverDirectiveChannel.receiveAsFlow()
     }
 
-    override suspend fun disconnect(): Unit = connectionMutex.withLock {
+    override suspend fun disconnect(): Unit = withContext(Dispatchers.IO) {
+        // Cancel a reconnect's pending heartbeat before waiting for its connection mutex.
         reconnectAllowed = false
-        connectionGeneration.incrementAndGet()
-        connectionStatus.set(ConnectionStatus.DISCONNECTED)
-        connectedSince = null
-
-        // 取消重连任务
         reconnectJob?.cancel()
+        connectionMutex.withLock {
+            reconnectAllowed = false
+            connectionGeneration.incrementAndGet()
+            connectionStatus.set(ConnectionStatus.DISCONNECTED)
+            connectedSince = null
 
-        // 关闭请求流
-        try {
-            synchronized(streamLock) { requestObserver?.onCompleted() }
-        } catch (e: Exception) {
-            Log.w(TAG, "关闭请求流异常", e)
-        }
-
-        // 关闭gRPC通道
-        channel?.let { ch ->
+            // 关闭请求流
             try {
-                ch.shutdown().awaitTermination(5, TimeUnit.SECONDS)
-                if (!ch.isTerminated) {
-                    ch.shutdownNow()
-                }
+                synchronized(streamLock) { requestObserver?.onCompleted() }
             } catch (e: Exception) {
-                Log.w(TAG, "关闭gRPC通道异常", e)
+                Log.w(TAG, "关闭请求流异常", e)
             }
-            Unit // 确保lambda有明确的返回值
+
+            // 关闭gRPC通道
+            channel?.let { ch ->
+                try {
+                    ch.shutdown().awaitTermination(5, TimeUnit.SECONDS)
+                    if (!ch.isTerminated) {
+                        ch.shutdownNow()
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "关闭gRPC通道异常", e)
+                }
+                Unit // 确保lambda有明确的返回值
+            }
+
+            // 清理资源
+            requestObserver = null
+            stub = null
+            channel = null
+            pendingAcks.clear()
+
+            Log.i(TAG, "已断开服务器连接")
         }
-
-        // 清理资源
-        requestObserver = null
-        stub = null
-        channel = null
-        pendingAcks.clear()
-
-        Log.i(TAG, "已断开服务器连接")
     }
 
     override fun isConnected(): Boolean {
@@ -440,16 +360,13 @@ class UploaderImpl @Inject constructor(
         return try {
             val responseObserver = object : StreamObserver<ServerDirective> {
                 override fun onNext(directive: ServerDirective) {
-                    handleServerDirective(directive)
+                    if (generation == connectionGeneration.get()) handleServerDirective(directive)
                 }
 
                 override fun onError(t: Throwable) {
                     if (generation != connectionGeneration.get()) return
                     Log.e(TAG, "服务器响应流错误", t)
-                    handleConnectionError("服务器响应流错误: ${t.message}")
-                    if (isHttpFallbackError(t)) {
-                        Log.w(TAG, "检测到可能连接到非 gRPC 入口，按归一化后的当前端点重连")
-                    }
+                    handleConnectionError(describeConnectionFailure(t))
                     startReconnect()
                 }
 
@@ -658,7 +575,7 @@ class UploaderImpl @Inject constructor(
         val discardedCount = bufferStatus.totalEnqueued - bufferStatus.totalDequeued
 
         // 获取磁盘队列统计信息
-        val queueStats = runBlocking { fileQueueManager.getQueueStatistics() }
+        val queueStats = fileQueueManager.queueStats.value
         val diskBatches = queueStats.pendingPackets
         return BufferStats(
            memorySamples = memorySamples,
@@ -729,10 +646,12 @@ class UploaderImpl @Inject constructor(
             }
             .build()
         return@withContext try {
-            SensorDataServiceGrpc.newBlockingStub(ch)
-                .withDeadlineAfter(20, java.util.concurrent.TimeUnit.SECONDS)
-                .startAuthentication(request)
+            unaryCall(ch, SensorDataServiceGrpc.getStartAuthenticationMethod(), request)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
+            lastErrorMessage = describeConnectionFailure(e)
+            lastErrorTimestamp = System.currentTimeMillis()
             Log.e(TAG, "开始认证会话失败", e)
             null
         }
@@ -768,57 +687,36 @@ class UploaderImpl @Inject constructor(
         useTls: Boolean,
         testGrpc: Boolean
     ): ServerTestResult = withContext(Dispatchers.IO) {
-        val scheme = if (useTls) "https" else "http"
-        val endpoint = "$scheme://$serverHost:$serverPort"
-        val alreadyConnected = connectionStatus.get() == ConnectionStatus.CONNECTED
-        val startTs = System.currentTimeMillis()
-
-        val reachable = if (alreadyConnected) {
-            true
-        } else {
-            connect(endpoint)
-        }
-
-        val latency = System.currentTimeMillis() - startTs
-        val transport = transportState.get()
-
-        if (!alreadyConnected && reachable) {
-            // 仅用于探测时断开连接，避免影响后续正式连接
-            disconnect()
-        }
-
-        if (reachable) {
+        // A separate channel always tests the requested endpoint and never closes an active upload.
+        var probeChannel: ManagedChannel? = null
+        val startedAt = System.currentTimeMillis()
+        try {
+            val endpoint = ServerEndpointNormalizer.normalize(
+                serverHost, serverPort, if (useTls) "https" else "http"
+            )
+            val pins = policyManager.getCurrentPolicyConfiguration().securityConfig.pinnedCertificates
+            probeChannel = buildChannel(endpoint, pins)
+            probeHeartbeat(probeChannel)
             ServerTestResult(
                 isReachable = true,
-                latencyMs = if (alreadyConnected) 0 else latency,
+                latencyMs = System.currentTimeMillis() - startedAt,
                 testType = ServerTestType.GRPC_TEST,
-                details = mapOf(
-                    "mode" to transport.mode.name,
-                    "tls" to (transport.tlsVersion ?: "none"),
-                    "protocol" to (transport.negotiatedProtocol ?: "h2c"),
-                    "downgraded" to transport.downgradedToCleartext.toString()
-                )
+                details = mapOf("endpoint" to endpoint.endpoint, "protocol" to if (endpoint.useTls) "h2" else "h2c")
             )
-        } else {
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
             ServerTestResult(
                 isReachable = false,
-                errorMessage = lastErrorMessage ?: "连接失败",
+                errorMessage = describeConnectionFailure(e),
                 testType = ServerTestType.GRPC_TEST
             )
+        } finally {
+            probeChannel?.shutdownNow()
         }
     }
 
-    override fun getTestResultDescription(result: ServerTestResult): String {
-        return buildString {
-            if (result.isReachable) {
-                append("✓ 服务器可达")
-                result.latencyMs?.let { append(" (延迟: ${it}ms)") }
-                result.statusCode?.let { append(" [HTTP: $it]") }
-            } else {
-                append("✗ 服务器不可达")
-                result.errorMessage?.let { append(" - $it") }
-            }
-            append(" [${result.testType}]")
-        }
-    }
+    override fun getTestResultDescription(result: ServerTestResult): String =
+        if (result.isReachable) "服务器连接正常" + (result.latencyMs?.let { "（${it}毫秒）" } ?: "")
+        else result.errorMessage ?: "暂时无法连接服务器，请稍后重试"
 }

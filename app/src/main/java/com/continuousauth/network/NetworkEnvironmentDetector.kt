@@ -40,11 +40,11 @@ class NetworkEnvironmentDetector @Inject constructor(
     private val detectorScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     
     // 网络状态变化流
-    private val _networkStateFlow = MutableSharedFlow<NetworkState>(replay = 1)
-    val networkStateFlow: SharedFlow<NetworkState> = _networkStateFlow.asSharedFlow()
+    private val _networkStateFlow = MutableStateFlow(NetworkState.UNKNOWN)
+    val networkStateFlow: SharedFlow<NetworkState> = _networkStateFlow.asStateFlow()
     
     // 当前网络状态
-    private var currentNetworkState = NetworkState.UNKNOWN
+    @Volatile private var currentNetworkState = NetworkState.UNKNOWN
     
     // 网络监听器
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
@@ -204,8 +204,9 @@ class NetworkEnvironmentDetector @Inject constructor(
         val networkCapabilities = connectivityManager.getNetworkCapabilities(activeNetwork)
         
         return networkCapabilities?.let {
-            it.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
-            it.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+            // Android's internet probe may be blocked while a private authentication server is reachable.
+            // Reachability is established by the actual RPC, not NET_CAPABILITY_VALIDATED.
+            it.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
         } ?: false
     }
     
@@ -325,8 +326,7 @@ class NetworkEnvironmentDetector @Inject constructor(
         return if (wifiOnly) {
             isWifiConnected()
         } else {
-            currentNetworkState != NetworkState.DISCONNECTED && 
-            currentNetworkState != NetworkState.UNKNOWN
+            isNetworkAvailable()
         }
     }
     

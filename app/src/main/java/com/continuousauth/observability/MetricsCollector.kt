@@ -225,7 +225,7 @@ class MetricsCollectorImpl @Inject constructor() : MetricsCollector {
         
         synchronized(valuesList) {
             val size = valuesList.size
-            val startIndex = maxOf(0, size - count)
+            val startIndex = maxOf(0, size - count.coerceAtLeast(0))
             return valuesList.subList(startIndex, size).toList()
         }
     }

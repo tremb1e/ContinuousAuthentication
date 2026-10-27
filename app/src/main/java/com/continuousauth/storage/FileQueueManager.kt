@@ -179,6 +179,9 @@ class FileQueueManager @Inject constructor(
             // 读取文件
             val file = File(metadata.filePath)
             if (!file.exists()) {
+                // A missing legacy cache file must not monopolize every retry batch forever.
+                batchMetadataDao.updateStatus(packetId, BatchStatus.CORRUPT)
+                updateQueueStats()
                 return@withContext Result.failure(
                     FileNotFoundException("文件不存在: ${metadata.filePath}")
                 )
@@ -192,6 +195,7 @@ class FileQueueManager @Inject constructor(
                 if (calculatedSha256 != metadata.sha256) {
                     // 标记为损坏
                     batchMetadataDao.updateStatus(packetId, BatchStatus.CORRUPT)
+                    updateQueueStats()
                     Log.e(TAG, "SHA256校验失败: $packetId, 期望: ${metadata.sha256}, 实际: $calculatedSha256")
                     return@withContext Result.failure(
                         Exception("SHA256校验失败，数据包已损坏")
@@ -201,42 +205,62 @@ class FileQueueManager @Inject constructor(
             
             Result.success(data)
             
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.e(TAG, "读取数据包失败: $packetId", e)
             Result.failure(e)
         }
     }
     
+    /** Retain damaged files for diagnosis but exclude them from automatic upload retries. */
+    suspend fun markPacketCorrupt(packetId: String, error: String): Unit = withContext(Dispatchers.IO) {
+        batchMetadataDao.updateStatus(packetId, BatchStatus.CORRUPT)
+        batchMetadataDao.updateRetryInfo(packetId, error)
+        updateQueueStats()
+    }
+
     /**
      * 删除数据包
      */
     suspend fun deleteDataPacket(packetId: String): Boolean = withContext(Dispatchers.IO) {
+        val deleted = deleteStoredPacket(packetId)
+        updateQueueStats()
+        deleted
+    }
+
+    /** A retention sweep must not rescan the entire directory after every removed packet. */
+    suspend fun deleteDataPackets(packetIds: List<String>): Boolean = withContext(Dispatchers.IO) {
         try {
-            // 从数据库获取元数据
-            val metadata = batchMetadataDao.getById(packetId) ?: return@withContext false
-            
-            // 删除文件
+            var allDeleted = true
+            for (packetId in packetIds) {
+                if (!deleteStoredPacket(packetId)) allDeleted = false
+            }
+            allDeleted
+        } finally {
+            updateQueueStats()
+        }
+    }
+
+    private suspend fun deleteStoredPacket(packetId: String): Boolean {
+        return try {
+            // ACK cleanup and retention may race; an already-deleted packet is a success.
+            val metadata = batchMetadataDao.getById(packetId) ?: return true
             val file = File(metadata.filePath)
             if (file.exists() && !file.delete()) {
                 Log.w(TAG, "数据包文件尚未删除，保留元数据以便重试: $packetId")
-                return@withContext false
+                return false
             }
-            
-            // 删除数据库记录
             batchMetadataDao.deleteById(packetId)
-            
-            // 更新统计
-            updateQueueStats()
-            
-            Log.i(TAG, "数据包已删除: $packetId")
             true
-            
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.e(TAG, "删除数据包失败: $packetId", e)
             false
         }
     }
-    
+
     /**
      * 更新数据包ACK状态
      * 记录服务器确认时间戳
@@ -354,7 +378,7 @@ class FileQueueManager @Inject constructor(
     suspend fun getPendingPackets(retryUploadedAfterMs: Long = 0L): List<BatchMetadata> = withContext(Dispatchers.IO) {
         try {
             val pending = batchMetadataDao.getPendingBatches(
-                listOf(BatchStatus.PENDING, BatchStatus.FAILED)
+                listOf(BatchStatus.PENDING, BatchStatus.UPLOADING, BatchStatus.FAILED)
             ).toMutableList()
 
             if (retryUploadedAfterMs > 0) {
@@ -480,26 +504,20 @@ class FileQueueManager @Inject constructor(
     /**
      * 获取队列中待处理的数据包数量
      */
-    fun getQueueSize(): Int {
-        return runBlocking {
-            try {
-                batchMetadataDao.getPendingBatches(
-                    listOf(BatchStatus.PENDING, BatchStatus.UPLOADING)
-                ).size
-            } catch (e: Exception) {
-                Log.e(TAG, "获取队列大小失败", e)
-                0
-            }
-        }
+    suspend fun getQueueSize(): Int = withContext(Dispatchers.IO) {
+        batchMetadataDao.getPendingBatches(
+            listOf(BatchStatus.PENDING, BatchStatus.UPLOADING, BatchStatus.UPLOADED, BatchStatus.FAILED)
+        ).size
     }
-    
+
     /**
      * 更新队列统计信息
      */
     private suspend fun updateQueueStats() = withContext(Dispatchers.IO) {
         try {
-            val totalSize = getQueueSizeBytes()
-            val fileCount = queueFiles().size
+            val files = queueFiles()
+            val totalSize = files.sumOf { it.length() }
+            val fileCount = files.size
             val statusCounts = batchMetadataDao.getStatusCounts()
             
             val pending = statusCounts.find { it.status == BatchStatus.PENDING }?.count ?: 0
@@ -510,7 +528,7 @@ class FileQueueManager @Inject constructor(
             val corrupted = statusCounts.find { it.status == BatchStatus.CORRUPT }?.count ?: 0
             val discarded = statusCounts.find { it.status == BatchStatus.DISCARDED }?.count ?: 0
             val total = pending + uploading + uploaded + failed + corrupted + pendingAck + discarded
-            val pendingTotal = pending + failed + pendingAck
+            val pendingTotal = pending + uploading + failed + pendingAck
             
             _queueStats.value = QueueStats(
                 totalSizeBytes = totalSize,
@@ -536,30 +554,22 @@ class FileQueueManager @Inject constructor(
      * 清空整个队列
      */
     suspend fun clearQueue() = withContext(Dispatchers.IO) {
-        try {
-            // 删除所有文件
-            queueFiles().forEach { it.delete() }
-            
-            // 清空数据库
-            batchMetadataDao.clearAll()
-            
-            // 更新统计
-            updateQueueStats()
-            
-            Log.i(TAG, "队列已清空")
-            
-        } catch (e: Exception) {
-            Log.e(TAG, "清空队列失败", e)
-        }
+        val failedFiles = queueFiles().filter { it.exists() && !it.delete() }
+        check(failedFiles.isEmpty()) { "部分本地文件无法删除，请稍后重试" }
+        // Keep metadata on failure so a later deletion can retry the remaining files.
+        batchMetadataDao.clearAll()
+        updateQueueStats()
+        Log.i(TAG, "队列已清空")
     }
-    
+
     /**
      * 获取队列统计详情
      */
     suspend fun getQueueStatistics(): QueueStatisticsDetail = withContext(Dispatchers.IO) {
         try {
-            val totalSize = getQueueSizeBytes()
-            val fileCount = queueFiles().size
+            val files = queueFiles()
+            val totalSize = files.sumOf { it.length() }
+            val fileCount = files.size
             val statusCounts = batchMetadataDao.getStatusCounts()
             
             val pending = statusCounts.find { it.status == BatchStatus.PENDING }?.count ?: 0
@@ -568,10 +578,11 @@ class FileQueueManager @Inject constructor(
             val failed = statusCounts.find { it.status == BatchStatus.FAILED }?.count ?: 0
             val corrupted = statusCounts.find { it.status == BatchStatus.CORRUPT }?.count ?: 0
             val discarded = statusCounts.find { it.status == BatchStatus.DISCARDED }?.count ?: 0
-            val total = pending + uploaded + failed + corrupted + pendingAck + discarded
+            val uploading = statusCounts.find { it.status == BatchStatus.UPLOADING }?.count ?: 0
+            val total = pending + uploading + uploaded + failed + corrupted + pendingAck + discarded
             
             QueueStatisticsDetail(
-                pendingPackets = pending + failed + pendingAck,
+                pendingPackets = pending + uploading + failed + pendingAck,
                 totalSent = uploaded.toLong(),
                 totalFailed = failed.toLong(),
                 totalDiscarded = discarded.toLong(),
@@ -594,22 +605,15 @@ class FileQueueManager @Inject constructor(
         try {
             // 获取所有待处理的批次
             val pendingBatches = batchMetadataDao.getPendingBatches(
-                listOf(BatchStatus.PENDING, BatchStatus.FAILED)
+                listOf(BatchStatus.PENDING, BatchStatus.UPLOADING, BatchStatus.UPLOADED, BatchStatus.FAILED)
             )
             
-            // 删除文件
             pendingBatches.forEach { batch ->
                 val file = File(batch.filePath)
-                if (file.exists()) {
-                    file.delete()
-                }
-            }
-            
-            // 更新数据库状态
-            pendingBatches.forEach { batch ->
+                check(!file.exists() || file.delete()) { "无法删除本地数据包: ${batch.packetId}" }
                 batchMetadataDao.updateStatus(batch.packetId, BatchStatus.DISCARDED)
             }
-            
+
             // 更新统计
             updateQueueStats()
             
@@ -617,6 +621,7 @@ class FileQueueManager @Inject constructor(
             
         } catch (e: Exception) {
             Log.e(TAG, "清空待处理数据包失败", e)
+            throw e
         }
     }
     
@@ -626,7 +631,7 @@ class FileQueueManager @Inject constructor(
     suspend fun exportEncryptedPendingData(): String = withContext(Dispatchers.IO) {
         try {
             val pendingBatches = batchMetadataDao.getPendingBatches(
-                listOf(BatchStatus.PENDING, BatchStatus.FAILED)
+                listOf(BatchStatus.PENDING, BatchStatus.UPLOADING, BatchStatus.UPLOADED, BatchStatus.FAILED)
             )
             
             if (pendingBatches.isEmpty()) {
@@ -718,8 +723,7 @@ class FileQueueManager @Inject constructor(
      * 清空待发送队列
      */
     suspend fun clearPendingQueue() {
-        Log.i(TAG, "清空待发送队列")
-        // TODO: 实现队列清空
+        clearAllPendingPackets()
     }
 }
 

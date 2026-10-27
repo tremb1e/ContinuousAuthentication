@@ -1,12 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <full-backup-content>
-    <!-- 
-    Exclude sensitive data from backups
-    -->
-    <exclude domain="sharedpref" path="crypto_preferences.xml"/>
-    <exclude domain="sharedpref" path="session_preferences.xml"/>
-    <exclude domain="database" path="sensor_data.db"/>
-        <exclude domain="database" path="auth_history.db"/>
-        <exclude domain="sharedpref" path="authentication_state.xml"/>
-    <exclude domain="file" path="encrypted_queue/"/>
+    <!-- Only portable preferences are restored. Keystore-encrypted preferences,
+         consent, running sessions and upload queues belong to this installation. -->
+    <include domain="sharedpref" path="user_settings.xml" />
+    <include domain="sharedpref" path="server_config.xml" />
 </full-backup-content>

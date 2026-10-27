@@ -61,6 +61,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.livedata.observeAsState
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -68,7 +69,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
@@ -89,6 +90,7 @@ import com.continuousauth.auth.AuthHistoryEntry
 import com.continuousauth.privacy.ConsentState
 import com.continuousauth.settings.ProtectionMode
 import com.continuousauth.ui.AuthDecision
+import com.continuousauth.ui.AuthHistoryAppSummary
 import com.continuousauth.ui.AuthHistoryBucket
 import com.continuousauth.ui.AuthHistoryDateRange
 import com.continuousauth.ui.AuthHistoryPeriod
@@ -102,6 +104,9 @@ import com.continuousauth.ui.compose.components.ExpandableSection
 import com.continuousauth.ui.formatAuthHistoryTime
 import com.continuousauth.ui.summarizeAuthHistoryApps
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import androidx.lifecycle.repeatOnLifecycle
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
@@ -134,10 +139,12 @@ fun PrivacySettingsScreen(
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
-    LaunchedEffect(Unit) {
-        while (true) {
-            delay(60_000)
-            nowMs = System.currentTimeMillis()
+    LaunchedEffect(lifecycleOwner) {
+        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            while (true) {
+                delay(60_000)
+                nowMs = System.currentTimeMillis()
+            }
         }
     }
     AuthenticationContent(
@@ -177,7 +184,7 @@ fun AuthenticationContent(
             contentPadding = PaddingValues(16.dp, 20.dp, 16.dp, 32.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            item {
+            item(key = "authentication_header", contentType = "heading") {
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text("认证与分析", style = MaterialTheme.typography.headlineSmall,
                         fontWeight = FontWeight.Bold, modifier = Modifier.semantics { heading() })
@@ -185,15 +192,15 @@ fun AuthenticationContent(
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
-            item {
+            item(key = "authentication_status", contentType = "status") {
                 AuthenticationStatusCard(authUiState, protectionMode, consentGranted,
                     onStart, onStop, onOpenSettings, onReviewConsent)
             }
             if (authUiState.lastUpdateTime > 0 && authUiState.lastDecision == AuthDecision.ABNORMAL &&
                 protectionMode != ProtectionMode.OFF) {
-                item { AuthenticationWarning(authUiState.lastUpdateTime, protectionMode) }
+                item(key = "authentication_warning", contentType = "warning") { AuthenticationWarning(authUiState.lastUpdateTime, protectionMode) }
             }
-            item {
+            item(key = "authentication_history", contentType = "history") {
                 AuthenticationHistoryCard(history, hasUsageAccess, nowMs, onEnableUsageAccess,
                     if (protectionMode == ProtectionMode.OFF) onOpenSettings else if (!consentGranted) onReviewConsent else onStart,
                     when {
@@ -203,7 +210,7 @@ fun AuthenticationContent(
                     },
                     showStartAction = !authUiState.authActive && !authUiState.isStarting)
             }
-            item {
+            item(key = "authentication_help", contentType = "help") {
                 ExpandableSection("authentication_help", "如何使用持续认证", "开始后，像平常一样使用手机即可", Icons.Filled.HelpOutline) {
                     HelpStep("1", "先了解并选择", "在设置中阅读知情同意，选择允许采集的数据和防护方式。")
                     HelpStep("2", "轻点开始认证", "应用会自动准备连接。准备完成后，继续正常使用手机，系统会持续判断使用习惯是否相符。")
@@ -367,20 +374,38 @@ private fun AuthenticationHistoryCard(
     var customEndDay by rememberSaveable { mutableStateOf(today.toEpochDay()) }
     var showDatePicker by rememberSaveable { mutableStateOf(false) }
     var selectedBucketStart by rememberSaveable { mutableStateOf<Long?>(null) }
-    var eventLimit by rememberSaveable { mutableStateOf(20) }
+    var eventPage by rememberSaveable { mutableStateOf(0) }
+    var appPage by rememberSaveable { mutableStateOf(0) }
     val period = AuthHistoryPeriod.valueOf(periodName)
     val range = authHistoryDateRange(period, today, LocalDate.ofEpochDay(customStartDay), LocalDate.ofEpochDay(customEndDay))
-    val report = remember(history, range, nowMs, zoneId) { buildAuthHistoryReport(history, range, nowMs, zoneId) }
-    val selectedBucket = report.buckets.firstOrNull { it.startMs == selectedBucketStart }
-    val selectedEntries = remember(report, selectedBucket) {
-        if (selectedBucket == null) report.entries else report.entries.filter {
-            it.timestampMs >= selectedBucket.startMs && it.timestampMs < selectedBucket.endExclusiveMs
+    val emptyReport = remember(range, zoneId) { buildAuthHistoryReport(emptyList(), range, nowMs, zoneId) }
+    // A week of results can contain many thousands of entries. Sorting, filtering and
+    // grouping must not compete with scrolling on the Android main thread.
+    val request = remember(history, range, nowMs, zoneId, selectedBucketStart) {
+        HistoryCardRequest(history, range, nowMs, zoneId, selectedBucketStart)
+    }
+    val content by produceState<HistoryCardContent?>(null, request) {
+        // Retain the previous result until its replacement is ready. Clearing the card
+        // on every incoming result changes its height and pulls the scroll position.
+        value = withContext(Dispatchers.Default) {
+            val report = buildAuthHistoryReport(history, range, nowMs, zoneId)
+            val selected = report.buckets.firstOrNull { it.startMs == selectedBucketStart }
+            val entries = if (selected == null) report.entries else report.entries.filter {
+                it.timestampMs >= selected.startMs && it.timestampMs < selected.endExclusiveMs
+            }
+            HistoryCardContent(request, report, selected, entries, entries.filter { !it.accepted }, summarizeAuthHistoryApps(entries))
         }
     }
-    val failureCount = selectedEntries.count { !it.accepted }
-    val appSummary = remember(selectedEntries) { summarizeAuthHistoryApps(selectedEntries) }
+    val loading = content?.request != request
+    val report = content?.report ?: emptyReport
+    val selectedBucket = content?.selectedBucket
+    val selectedEntries = content?.selectedEntries.orEmpty()
+    val failures = content?.failures.orEmpty()
+    val failureCount = failures.size
+    val appSummary = content?.appSummary.orEmpty()
+    val visibleAppPage = appPage.coerceAtMost((appSummary.size - 1).coerceAtLeast(0) / 10)
     val stackAppCount = LocalDensity.current.fontScale > 1.3f
-    LaunchedEffect(range, selectedBucketStart) { eventLimit = 20 }
+    LaunchedEffect(range, selectedBucketStart) { eventPage = 0; appPage = 0 }
 
     if (showDatePicker) {
         HistoryDateRangeDialog(today, range, onDismiss = { showDatePicker = false }) { selectedRange ->
@@ -413,20 +438,23 @@ private fun AuthenticationHistoryCard(
                         modifier = Modifier.heightIn(min = 48.dp).testTag("history_period_${option.name}"))
                 }
             }
-            Text(formatDateRange(range), style = MaterialTheme.typography.bodyMedium,
+            Text(formatDateRange(content?.request?.range ?: range), style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.testTag("history_date_range"))
+            Box(Modifier.fillMaxWidth().height(4.dp)) {
+                if (loading) LinearProgressIndicator(Modifier.fillMaxSize().testTag("history_loading"))
+            }
             Column(Modifier.semantics(mergeDescendants = true) {}) {
-                Text(if (report.entries.isEmpty()) "暂无认证记录" else "${report.failureCount} 次不通过",
+                Text(if (content == null) "正在整理记录…" else if (report.entries.isEmpty()) "暂无认证记录" else "${report.failureCount} 次不通过",
                     style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold,
                     modifier = Modifier.testTag("history_total"))
-                Text(if (report.entries.isEmpty()) "这个时段没有收到认证结果，不代表全部通过。"
+                Text(if (content == null) "记录较多时需要一点时间，请稍候。" else if (report.entries.isEmpty()) "这个时段没有收到认证结果，不代表全部通过。"
                     else "共收到 ${report.entries.size} 次结果 · ${report.entries.size - report.failureCount} 次通过",
                     style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             AuthHistoryBarChart(report, selectedBucket?.startMs, nowMs) { start ->
                 selectedBucketStart = if (selectedBucketStart == start) null else start
             }
-            if (report.entries.isEmpty()) {
+            if (content != null && report.entries.isEmpty()) {
                 Surface(shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)) {
                     Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(if (showStartAction) "开始认证后，结果会自动出现在这里。也可以切换日期，查看已有记录。"
@@ -454,7 +482,7 @@ private fun AuthenticationHistoryCard(
                     color = MaterialTheme.colorScheme.onSurfaceVariant)
                 failureCount == 0 -> Text("已记录 ${selectedEntries.size} 次结果，未出现不通过。", style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant)
-                else -> appSummary.forEach { app ->
+                else -> appSummary.drop(visibleAppPage * 10).take(10).forEach { app ->
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(vertical = 4.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                             Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.secondaryContainer) {
@@ -474,6 +502,10 @@ private fun AuthenticationHistoryCard(
                     }
                 }
             }
+            if (appSummary.size > 10) {
+                HistoryPageControls(visibleAppPage, appSummary.size, 10,
+                    onPrevious = { appPage = (visibleAppPage - 1).coerceAtLeast(0) }, onNext = { appPage = visibleAppPage + 1 })
+            }
             if (!hasUsageAccess || appSummary.any { it.packageName.isEmpty() }) {
                 Surface(shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.4f)) {
                     Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -486,23 +518,52 @@ private fun AuthenticationHistoryCard(
                     }
                 }
             }
-            val failures = selectedEntries.filter { !it.accepted }
             if (failures.isNotEmpty()) {
                 ExpandableSection("failure_events", "查看发生时间", "${failures.size} 条不通过记录，按时间从近到远", Icons.Filled.History) {
-                    failures.take(eventLimit).forEach { entry ->
+                    val visiblePage = eventPage.coerceAtMost((failures.size - 1) / 20)
+                    failures.drop(visiblePage * 20).take(20).forEach { entry ->
                         Column(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                             Text(formatAuthHistoryTime(entry.timestampMs), style = MaterialTheme.typography.labelLarge)
                             Text(authHistoryAppName(entry), style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
-                    if (failures.size > eventLimit) {
-                        TextButton(onClick = { eventLimit += 20 }, modifier = Modifier.fillMaxWidth()) {
-                            Text("再显示 ${minOf(20, failures.size - eventLimit)} 条记录")
-                        }
+                    if (failures.size > 20) {
+                        HistoryPageControls(visiblePage, failures.size, 20,
+                            onPrevious = { eventPage = (visiblePage - 1).coerceAtLeast(0) }, onNext = { eventPage = visiblePage + 1 })
                     }
                 }
             }
+        }
+    }
+}
+
+private data class HistoryCardRequest(
+    val history: List<AuthHistoryEntry>,
+    val range: AuthHistoryDateRange,
+    val nowMs: Long,
+    val zoneId: ZoneId,
+    val selectedBucketStart: Long?
+)
+
+private data class HistoryCardContent(
+    val request: HistoryCardRequest,
+    val report: AuthHistoryReport,
+    val selectedBucket: AuthHistoryBucket?,
+    val selectedEntries: List<AuthHistoryEntry>,
+    val failures: List<AuthHistoryEntry>,
+    val appSummary: List<AuthHistoryAppSummary>
+)
+
+/** Bounded pages avoid retaining an ever-growing Column after repeated “show more” taps. */
+@Composable
+private fun HistoryPageControls(page: Int, total: Int, pageSize: Int, onPrevious: () -> Unit, onNext: () -> Unit) {
+    Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+        Text("第 ${page + 1} 页，共 ${(total + pageSize - 1) / pageSize} 页", style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            TextButton(onClick = onPrevious, enabled = page > 0) { Text("上一页") }
+            TextButton(onClick = onNext, enabled = (page + 1) * pageSize < total) { Text("下一页") }
         }
     }
 }

@@ -56,6 +56,12 @@ class FileQueueManagerTest {
         coEvery { dao.getStatusCounts() } answers {
             rows.values.groupingBy { it.status }.eachCount().map { StatusCount(it.key, it.value) }
         }
+        coEvery { dao.updateStatus(any(), any()) } answers {
+            val id = firstArg<String>()
+            rows.computeIfPresent(id) { _, row -> row.copy(status = secondArg()) }
+            Unit
+        }
+        coEvery { dao.deleteById(any()) } answers { rows.remove(firstArg<String>()); Unit }
         coEvery { dao.clearAll() } answers { rows.clear() }
         manager = FileQueueManager(context, dao)
     }
@@ -140,6 +146,67 @@ class FileQueueManagerTest {
 
         assertEquals(listOf("unconfirmed", "pending"),
             manager.getPendingPackets(retryUploadedAfterMs = 30_000).map { it.packetId })
+    }
+
+    @Test
+    fun missingAndCorruptFilesAreRemovedFromRetryCandidates() = runBlocking {
+        val missing = File(cacheDir, "data_queue/evicted.dat")
+        rows["evicted"] = metadata("evicted").copy(filePath = missing.absolutePath)
+        manager.saveDataPacket("tampered", byteArrayOf(1, 2, 3), metadata("tampered")).getOrThrow()
+            .writeBytes(byteArrayOf(9, 8, 7))
+        manager.saveDataPacket("healthy", byteArrayOf(4), metadata("healthy")).getOrThrow()
+
+        assertTrue(manager.readDataPacket("evicted").isFailure)
+        assertTrue(manager.readDataPacket("tampered").isFailure)
+        assertEquals(BatchStatus.CORRUPT, rows.getValue("evicted").status)
+        assertEquals(BatchStatus.CORRUPT, rows.getValue("tampered").status)
+        assertEquals(listOf("healthy"), manager.getPendingPackets().map { it.packetId })
+        assertEquals(2, manager.queueStats.value.corruptedPackets)
+    }
+
+    @Test
+    fun interruptedUploadingAndUnacknowledgedPacketsAreIncludedWhenClearingPendingData() = runBlocking {
+        manager.saveDataPacket("interrupted", byteArrayOf(1), metadata("interrupted", status = BatchStatus.UPLOADING)).getOrThrow()
+        manager.saveDataPacket("waiting-ack", byteArrayOf(2), metadata("waiting-ack", status = BatchStatus.UPLOADED)).getOrThrow()
+        assertEquals(listOf("interrupted"), manager.getPendingPackets().map { it.packetId })
+        assertEquals(2, manager.getQueueSize())
+        assertEquals(2, manager.getQueueStatistics().pendingPackets)
+
+        manager.clearPendingQueue()
+
+        assertEquals(BatchStatus.DISCARDED, rows.getValue("interrupted").status)
+        assertEquals(BatchStatus.DISCARDED, rows.getValue("waiting-ack").status)
+        assertEquals(0, manager.getQueueSize())
+        assertEquals(0L, manager.queueStats.value.totalSizeBytes)
+    }
+
+    @Test
+    fun failedDeletionCannotReportSuccessOrEraseRecoveryMetadata() = runBlocking {
+        val undeletable = File(durableDir, "data_queue/blocked.dat").apply { mkdirs() }
+        File(undeletable, "child").writeText("still present")
+        rows["blocked"] = metadata("blocked").copy(filePath = undeletable.absolutePath)
+        assertFalse(manager.deleteDataPacket("blocked"))
+        assertTrue(rows.containsKey("blocked"))
+
+        val result = runCatching { manager.clearQueue() }
+        assertTrue(result.isFailure)
+        assertTrue(rows.containsKey("blocked"))
+        assertTrue(undeletable.exists())
+    }
+
+    @Test
+    fun bulkDeletionKeepsOnlyFilesThatCouldNotBeDeletedAndCanBeRetried() = runBlocking {
+        manager.saveDataPacket("removable", byteArrayOf(1), metadata("removable")).getOrThrow()
+        val blocked = File(durableDir, "data_queue/blocked.dat").apply { mkdirs() }
+        val child = File(blocked, "child").apply { writeText("still present") }
+        rows["blocked"] = metadata("blocked").copy(filePath = blocked.absolutePath)
+
+        assertFalse(manager.deleteDataPackets(listOf("removable", "blocked", "already-deleted")))
+        assertEquals(setOf("blocked"), rows.keys)
+        assertTrue(child.delete())
+        assertTrue(manager.deleteDataPackets(listOf("blocked")))
+        assertTrue(rows.isEmpty())
+        assertEquals(0, manager.queueStats.value.fileCount)
     }
 
     private fun metadata(

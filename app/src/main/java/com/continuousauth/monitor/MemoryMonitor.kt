@@ -51,7 +51,8 @@ class MemoryMonitor @Inject constructor() {
         warningThreshold: Double = DEFAULT_THRESHOLD,
         criticalThreshold: Double = CRITICAL_THRESHOLD
     ) {
-        if (isMonitoring.get()) {
+        require(warningThreshold in 0.0..1.0 && criticalThreshold in warningThreshold..1.0)
+        if (!isMonitoring.compareAndSet(false, true)) {
             Log.w(TAG, "内存监控已在运行中")
             return
         }
@@ -63,7 +64,6 @@ class MemoryMonitor @Inject constructor() {
             performMonitoring()
         }
         
-        isMonitoring.set(true)
         Log.i(TAG, "内存监控已启动 - 警告阈值: ${(warningThreshold * 100).toInt()}%, 危险阈值: ${(criticalThreshold * 100).toInt()}%")
     }
     
@@ -205,8 +205,8 @@ class MemoryMonitor @Inject constructor() {
                         Log.w(TAG, "内存使用达到危险水平: ${(memoryStatus.usageRatio * 100).toInt()}%")
                         onMemoryCritical?.invoke(memoryStatus)
                         
-                        // 自动建议GC
-                        suggestGC()
+                        // Let ART schedule GC. Forcing a full collection here pauses rendering
+                        // and does not release objects that are still referenced.
                     }
                     memoryStatus.isWarning -> {
                         Log.i(TAG, "内存使用达到警告水平: ${(memoryStatus.usageRatio * 100).toInt()}%")

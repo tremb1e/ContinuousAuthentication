@@ -1,13 +1,11 @@
 package com.continuousauth.ui.theme
 
-import android.app.Activity
 import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.core.view.WindowCompat
@@ -111,9 +109,15 @@ fun ContinuousAuthTheme(
     val view = LocalView.current
     if (!view.isInEditMode) {
         SideEffect {
-            val window = (view.context as Activity).window
-            window.statusBarColor = colorScheme.primary.toArgb()
-            WindowCompat.getInsetsController(window, view).isAppearanceLightStatusBars = !darkTheme
+            // Android 16 draws edge to edge. Keep both system bars transparent and
+            // update only icon contrast; enableEdgeToEdge owns the window colours.
+            val activity = view.context.findActivity()
+            if (activity != null) {
+                WindowCompat.getInsetsController(activity.window, view).apply {
+                    isAppearanceLightStatusBars = !darkTheme
+                    isAppearanceLightNavigationBars = !darkTheme
+                }
+            }
         }
     }
     
@@ -157,4 +161,9 @@ object ExtendedColors {
     val warning = Color(0xFFFFC107)
     val error = Color(0xFFF44336)
     val info = Color(0xFF2196F3)
+}
+private tailrec fun android.content.Context.findActivity(): android.app.Activity? = when (this) {
+    is android.app.Activity -> this
+    is android.content.ContextWrapper -> if (baseContext !== this) baseContext.findActivity() else null
+    else -> null
 }

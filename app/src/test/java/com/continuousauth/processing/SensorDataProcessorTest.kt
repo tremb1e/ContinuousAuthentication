@@ -76,6 +76,7 @@ class SensorDataProcessorTest {
             val encrypted = fixture.encrypted.single()
             assertTrue(encrypted.aad.contains("01_packet_id=${packet.packetId}|"))
             assertTrue(encrypted.aad.contains("03_packet_seq_no=${packet.packetSeqNo}|"))
+            assertTrue(encrypted.aad.contains("app_version=${packet.metadata.appVersion}|"))
             assertArrayEquals(encrypted.payload, packet.encryptedSensorPayload.toByteArray())
             val saved = fixture.saved.single()
             assertEquals(packet.packetId, saved.id)

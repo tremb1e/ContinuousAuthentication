@@ -33,6 +33,7 @@ import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
+import io.mockk.verify
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -69,6 +70,10 @@ class MainViewModelConsentTest {
     private val authActive = MutableStateFlow(false)
     private val latestResult = MutableStateFlow<AuthResult?>(null)
     private val authentication: AuthenticationManager = mockk(relaxed = true)
+    private val upload: UploadManager = mockk(relaxed = true)
+    private var currentConnection = ConnectionStatus.DISCONNECTED
+    private var connectionError: String? = null
+    private var connectionErrorTimestamp: Long? = null
     private lateinit var application: Application
 
     @Before
@@ -79,6 +84,7 @@ class MainViewModelConsentTest {
             .edit().clear().commit()
         application.getSharedPreferences(AppSettingsRepository.PREFS_NAME, Context.MODE_PRIVATE)
             .edit().clear().commit()
+        application.getSharedPreferences("server_config", Context.MODE_PRIVATE).edit().clear().commit()
         every { authentication.active } returns authActive
         every { authentication.latestResult } returns latestResult
         every { authentication.stopAuthentication() } answers { authActive.value = false }
@@ -292,13 +298,104 @@ class MainViewModelConsentTest {
         runCurrent()
     }
 
+    @Test
+    fun authenticationStartKeepsSpecificGatewayFailureInsteadOfCallingPhoneOffline() = runTest(dispatcher) {
+        consent.value = ConsentState.GRANTED
+        collection.value = CollectionState(CollectionStatus.RUNNING)
+        connectionError = "服务器暂时无法提供认证服务（504），请稍后重试或联系服务管理员"
+        val model = createModel()
+        runCurrent()
+
+        model.startAuthentication()
+        runCurrent()
+        currentConnection = ConnectionStatus.ERROR
+        connectionErrorTimestamp = 123
+        advanceTimeBy(250)
+        runCurrent()
+
+        assertEquals(connectionError, model.errorMessage.value)
+        assertTrue(!model.authUiState.value.isStarting)
+        assertTrue(!model.authUiState.value.authActive)
+        coVerify(exactly = 0) { authentication.startAuthentication(any(), any()) }
+        store.clear()
+        runCurrent()
+    }
+
+    @Test
+    fun savingDifferentServerStopsOldAuthenticationAndReconfiguresRunningUploader() = runTest(dispatcher) {
+        consent.value = ConsentState.GRANTED
+        collection.value = CollectionState(CollectionStatus.RUNNING)
+        authActive.value = true
+        val model = createModel()
+        runCurrent()
+
+        model.saveServerConfig("https://new-server.example", 8443)
+        runCurrent()
+
+        assertTrue(!model.authUiState.value.authActive)
+        assertTrue(model.authUiState.value.authMessage.contains("重新开始认证"))
+        verify(exactly = 1) { upload.updateServerEndpoint("https://new-server.example:8443") }
+        assertEquals("new-server.example", model.getServerConfig().host)
+        store.clear()
+        runCurrent()
+    }
+
+    @Test
+    fun retryWaitsForANewConnectionAttemptInsteadOfReusingPreviousError() = runTest(dispatcher) {
+        consent.value = ConsentState.GRANTED
+        collection.value = CollectionState(CollectionStatus.RUNNING)
+        currentConnection = ConnectionStatus.ERROR
+        connectionErrorTimestamp = 10
+        connectionError = "上次连接失败"
+        val model = createModel()
+        runCurrent()
+
+        model.startAuthentication()
+        runCurrent()
+        advanceTimeBy(500)
+        runCurrent()
+        assertTrue(model.authUiState.value.isStarting)
+        assertNull(model.errorMessage.value)
+
+        connectionError = "本次服务器响应超时"
+        connectionErrorTimestamp = 20
+        advanceTimeBy(250)
+        runCurrent()
+        assertEquals(connectionError, model.errorMessage.value)
+        assertTrue(!model.authUiState.value.isStarting)
+        store.clear()
+        runCurrent()
+    }
+
+    @Test
+    fun retryAfterCollectionErrorWaitsForForegroundServiceToStart() = runTest(dispatcher) {
+        consent.value = ConsentState.GRANTED
+        collection.value = CollectionState(CollectionStatus.ERROR)
+        val model = createModel()
+        runCurrent()
+
+        model.startAuthentication()
+        runCurrent()
+
+        assertTrue(model.authUiState.value.isStarting)
+        assertEquals(DataCollectionService.ACTION_START_COLLECTION, shadowOf(application).nextStartedService.action)
+        assertNull(model.errorMessage.value)
+        collection.value = CollectionState(CollectionStatus.STARTING)
+        runCurrent()
+        collection.value = CollectionState(CollectionStatus.RUNNING)
+        runCurrent()
+        assertTrue(model.authUiState.value.isStarting)
+        store.clear()
+        runCurrent()
+    }
+
     private fun createModel(): MainViewModel {
-        val upload: UploadManager = mockk(relaxed = true)
         every { upload.authResultFlow } returns MutableSharedFlow()
         every { upload.getUploadStatus() } answers {
-            UploadStatus(true, false, ConnectionStatus.DISCONNECTED,
+            UploadStatus(true, false, currentConnection,
                 progress.value.acknowledgedPackets, 0,
-                ConnectionStats(ConnectionStatus.DISCONNECTED), QueueStats())
+                ConnectionStats(currentConnection, lastErrorMessage = connectionError,
+                    lastErrorTimestamp = connectionErrorTimestamp), QueueStats())
         }
         val network: NetworkEnvironmentDetector = mockk(relaxed = true)
         every { network.networkStateFlow } returns MutableStateFlow(NetworkState.UNKNOWN)

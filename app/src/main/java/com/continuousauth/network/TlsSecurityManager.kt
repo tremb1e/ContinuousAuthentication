@@ -2,7 +2,6 @@ package com.continuousauth.network
 
 import android.util.Log
 import io.grpc.okhttp.OkHttpChannelBuilder
-import okhttp3.CertificatePinner
 import javax.net.ssl.SSLContext
 import javax.net.ssl.SSLSocket
 import javax.net.ssl.SSLSocketFactory
@@ -33,62 +32,26 @@ class TlsSecurityManager @Inject constructor() {
         pinnedCertificates: Set<String> = emptySet(),
         hostname: String = ""
     ): OkHttpChannelBuilder {
-        return try {
-            val tlsSocketFactory = createTlsSocketFactory()
-            var configuredBuilder = builder.sslSocketFactory(tlsSocketFactory)
-            
-            // 配置证书固定
-            if (pinnedCertificates.isNotEmpty() && hostname.isNotEmpty()) {
-                val certificatePinner = createCertificatePinner(hostname, pinnedCertificates)
-                // 注意：gRPC的证书固定需要在底层OkHttp客户端中配置
-                // 这里我们只是创建了CertificatePinner，实际的证书固定验证
-                // 会通过自定义的TrustManager来实现
-                val customTrustManager = createPinningTrustManager(pinnedCertificates, hostname)
-                configuredBuilder = configuredBuilder.sslSocketFactory(
-                    createTlsSocketFactory()
-                )
-                Log.i(TAG, "SPKI证书固定已配置 - 主机: $hostname, 证书数: ${pinnedCertificates.size}")
-            }
-            
-            Log.i(TAG, "TLS 1.3/1.2 配置已应用到gRPC通道")
-            configuredBuilder
-        } catch (e: Exception) {
-            Log.e(TAG, "TLS 配置失败", e)
-            builder
+        val trustManager = if (pinnedCertificates.isEmpty()) null else {
+            require(hostname.isNotBlank()) { "启用证书固定时必须提供服务器地址" }
+            require(pinnedCertificates.all(::validateCertificatePin)) { "无效的服务器证书指纹" }
+            createPinningTrustManager(pinnedCertificates, hostname)
         }
+        // Pass the pinning manager into SSLContext. Constructing it without installing it
+        // silently disabled every configured pin in the previous implementation.
+        return builder.sslSocketFactory(createTlsSocketFactory(trustManager))
     }
-    
-    /**
-     * 创建证书固定器
-     */
-    private fun createCertificatePinner(hostname: String, pinnedCertificates: Set<String>): CertificatePinner {
-        val builder = CertificatePinner.Builder()
-        
-        pinnedCertificates.forEach { pin ->
-            // 确保pin格式正确（以sha256/开头）
-            val formattedPin = if (pin.startsWith("sha256/")) pin else "sha256/$pin"
-            builder.add(hostname, formattedPin)
-            Log.d(TAG, "添加证书Pin: $hostname -> $formattedPin")
-        }
-        
-        return builder.build()
-    }
-    
+
     /**
      * 验证证书Pin格式
      */
     fun validateCertificatePin(pin: String): Boolean {
-        return try {
-            // Pin应该是Base64编码的SHA256哈希，长度为44字符（不包括sha256/前缀）
-            val cleanPin = pin.removePrefix("sha256/")
-            cleanPin.length == 44 && 
-            cleanPin.matches(Regex("[A-Za-z0-9+/=]+"))
-        } catch (e: Exception) {
-            Log.w(TAG, "证书Pin格式验证失败: $pin", e)
-            false
-        }
+        val cleanPin = pin.removePrefix("sha256/")
+        return runCatching {
+            cleanPin.length == 44 && java.util.Base64.getDecoder().decode(cleanPin).size == 32
+        }.getOrDefault(false)
     }
-    
+
     /**
      * 从X509证书中提取SPKI Pin
      */
@@ -109,12 +72,13 @@ class TlsSecurityManager @Inject constructor() {
     /**
      * 创建自定义TrustManager以支持证书固定验证
      */
-    private fun createPinningTrustManager(
+    internal fun createPinningTrustManager(
         pinnedCertificates: Set<String>,
-        hostname: String
+        hostname: String,
+        defaultTrustManager: X509TrustManager = createDefaultTrustManager()
     ): X509TrustManager {
+        val normalizedPins = pinnedCertificates.map { "sha256/${it.removePrefix("sha256/")}" }.toSet()
         return object : X509TrustManager {
-            private val defaultTrustManager = createDefaultTrustManager()
             
             override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) {
                 defaultTrustManager.checkClientTrusted(chain, authType)
@@ -126,7 +90,7 @@ class TlsSecurityManager @Inject constructor() {
                 
                 // 然后验证证书固定
                 if (chain != null && pinnedCertificates.isNotEmpty()) {
-                    validateCertificatePinning(chain, pinnedCertificates, hostname)
+                    validateCertificatePinning(chain, normalizedPins, hostname)
                 }
             }
             
@@ -181,8 +145,8 @@ class TlsSecurityManager @Inject constructor() {
     /**
      * 创建TLS 1.3/1.2的SSLSocketFactory
      */
-    private fun createTlsSocketFactory(): SSLSocketFactory {
-        val sslContext = createSecureSSLContext()
+    private fun createTlsSocketFactory(trustManager: X509TrustManager? = null): SSLSocketFactory {
+        val sslContext = createSecureSSLContext(trustManager)
         
         return object : SSLSocketFactory() {
             private val delegate = sslContext.socketFactory
@@ -231,9 +195,9 @@ class TlsSecurityManager @Inject constructor() {
     /**
      * 创建安全的SSLContext
      */
-    private fun createSecureSSLContext(): SSLContext {
+    private fun createSecureSSLContext(trustManager: X509TrustManager? = null): SSLContext {
         val context = SSLContext.getInstance("TLS")
-        context.init(null, null, null)
+        context.init(null, trustManager?.let { arrayOf(it) }, null)
         Log.i(TAG, "成功创建TLS SSLContext")
         return context
     }
@@ -318,7 +282,7 @@ class TlsSecurityManager @Inject constructor() {
             val socketFactory = context.socketFactory
             val socket = socketFactory.createSocket() as? SSLSocket
             
-            socket?.let { sslSocket ->
+            socket?.use { sslSocket ->
                 val supportedProtocols = sslSocket.supportedProtocols?.toList() ?: emptyList()
                 val supportedCiphers = sslSocket.supportedCipherSuites?.toList() ?: emptyList()
                 

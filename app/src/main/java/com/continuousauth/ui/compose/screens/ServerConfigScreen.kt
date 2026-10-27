@@ -8,12 +8,11 @@ import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -62,14 +61,13 @@ fun ServerConfigScreen(
     val protectionMode by viewModel.protectionMode.collectAsStateWithLifecycle()
     val sensors by viewModel.sensorCollectionSettings.collectAsStateWithLifecycle()
     val wifiOnly by viewModel.uploadPolicyWiFiOnly.observeAsState(false)
-    val smartTransmission by viewModel.smartTransmissionEnabled.observeAsState(viewModel.getSmartTransmissionEnabled())
+    val initialSmartTransmission = remember(viewModel) { viewModel.getSmartTransmissionEnabled() }
+    val smartTransmission by viewModel.smartTransmissionEnabled.observeAsState(initialSmartTransmission)
     val isUploading by viewModel.isEncryptedUploading.observeAsState(false)
     val collectionStatus by viewModel.collectionStatus.observeAsState("")
-    val queueStats by viewModel.fileQueueStats.observeAsState(null)
     val debugEnabled by viewModel.debugModeEnabled.observeAsState(false)
     val visualizationEnabled by viewModel.visualizationEnabled.observeAsState(false)
     val serverTestResult by viewModel.serverTestResult.observeAsState(null)
-    val maintenanceMessage by detailViewModel.maintenanceMessage.collectAsStateWithLifecycle()
     val lifecycleOwner = LocalLifecycleOwner.current
     var systemAccess by remember { mutableStateOf(readSystemAccess(context, viewModel)) }
     var confirmation by rememberSaveable { mutableStateOf<String?>(null) }
@@ -79,7 +77,7 @@ fun ServerConfigScreen(
     val collectionChanging = collectionStatus == "STARTING" || collectionStatus == "STOPPING"
     val canEditServer = !isUploading && !collectionChanging
     val savedServer = remember(viewModel) { viewModel.getServerConfig() }
-    var serverAddress by rememberSaveable { mutableStateOf("${savedServer.scheme}://${savedServer.host}") }
+    var serverAddress by rememberSaveable { mutableStateOf("${savedServer.scheme}://${formatServerHost(savedServer.host)}") }
     var serverPort by rememberSaveable { mutableStateOf(savedServer.port.toString()) }
     var serverValidation by rememberSaveable { mutableStateOf<String?>(null) }
     var serverFeedback by rememberSaveable { mutableStateOf<String?>(null) }
@@ -119,210 +117,233 @@ fun ServerConfigScreen(
         focusManager.clearFocus()
         viewModel.saveServerConfig(serverAddress.trim(), serverPort.toInt())
         val normalized = viewModel.getServerConfig()
-        serverAddress = "${normalized.scheme}://${normalized.host}"
+        serverAddress = "${normalized.scheme}://${formatServerHost(normalized.host)}"
         serverPort = normalized.port.toString()
         serverFeedback = "服务器设置已保存"
         if (test) viewModel.testServerConnection(serverAddress, serverPort)
     }
 
-    Column(
-        modifier = Modifier.fillMaxSize().imePadding().verticalScroll(rememberScrollState()).padding(16.dp).testTag("settings_screen"),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        Text("按需调整，安心使用", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-        Text("点击栏目展开设置。你的选择会自动保留；服务器和保存天数需点击保存。", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Spacer(Modifier.height(4.dp))
-
-        ExpandableSection("consent", "知情同意", consentLabel(consent), Icons.Default.PrivacyTip) {
-            Text(consentLabel(consent), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-            PrivacyNoticeContent()
-            if (consent == ConsentState.GRANTED) {
-                OutlinedButton(onClick = { confirmation = "withdraw" }, enabled = !deleting, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag("withdraw_consent")) {
-                    Text(if (deleting) "正在停止采集并删除…" else "撤回同意并删除数据")
-                }
-            } else {
-                Button(onClick = onRequestConsent, enabled = !deleting, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag("review_consent")) {
-                    Text("查看并决定是否同意")
+    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
+        LazyColumn(
+            modifier = Modifier.widthIn(max = 800.dp).fillMaxSize().imePadding().testTag("settings_screen"),
+            contentPadding = PaddingValues(16.dp, 20.dp, 16.dp, 32.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            item(key = "settings_header", contentType = "heading") {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("按需调整，安心使用", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                    Text("点击栏目展开设置。你的选择会自动保留；服务器和保存天数需点击保存。", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
-            DeletionFeedback(deletion)
-            if (deletion == DeletionState.PARTIAL_SUCCESS) {
-                OutlinedButton(onClick = { viewModel.retryPendingDeletionRequests() }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("重试服务器删除请求") }
-            }
-            if (deletion == DeletionState.FAILED) {
-                OutlinedButton(onClick = { confirmation = "withdraw" }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("重试撤回和删除") }
-            }
-        }
 
-        ExpandableSection("sensors", "数据采集设置", "已允许 $sensorCount 种传感器", Icons.Default.Sensors) {
-            HelpText("通过手机的动作了解使用习惯。关闭部分传感器可能影响认证结果；关闭全部会停止采集。")
-            PreferenceSwitch("加速度计", "感知手机移动、拿起和放下", sensors.accelerometerEnabled, "sensor_accelerometer", !deleting) { viewModel.setSensorCollectionEnabled("accelerometer", it) }
-            PreferenceSwitch("陀螺仪", "感知手机转动和握持方向的变化", sensors.gyroscopeEnabled, "sensor_gyroscope", !deleting) { viewModel.setSensorCollectionEnabled("gyroscope", it) }
-            PreferenceSwitch("磁力计", "感知手机周围磁场的变化", sensors.magnetometerEnabled, "sensor_magnetometer", !deleting) { viewModel.setSensorCollectionEnabled("magnetometer", it) }
-            if (sensorCount == 0) Text("当前未允许采集传感器数据。开始认证前，请至少打开一项。", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium)
-        }
-
-        ExpandableSection("protection", "防护设置", protectionSummary(protectionMode, systemAccess.overlayAllowed), Icons.Default.Shield) {
-            HelpText("先选择提醒方式，再到“认证与分析”点击开始认证。这里的设置不会自动开始认证。")
-            Column(Modifier.selectableGroup()) {
-                ProtectionChoice(ProtectionMode.OFF, protectionMode, "关闭", "不启用持续认证；正在进行的认证会停止。", !deleting, viewModel::setProtectionMode)
-                ProtectionChoice(ProtectionMode.MONITOR_ONLY, protectionMode, "仅监测（默认）", "开始认证后，仅记录结果，不弹窗提醒。", !deleting, viewModel::setProtectionMode)
-                ProtectionChoice(ProtectionMode.ALERT, protectionMode, "即时警示", "开始认证后，认证不通过时通过系统弹窗提醒。", !deleting, viewModel::setProtectionMode)
-            }
-            if (protectionMode == ProtectionMode.ALERT) {
-                Text(if (systemAccess.overlayAllowed) "已允许系统弹窗" else "尚未允许系统弹窗，目前无法在其他应用上方提醒你。", style = MaterialTheme.typography.bodyMedium, color = if (systemAccess.overlayAllowed) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error)
-                OutlinedButton(
-                    onClick = { openSystemSettings(context, Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:${context.packageName}"))) },
-                    modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag("overlay_permission")
-                ) { Text(if (systemAccess.overlayAllowed) "管理系统弹窗权限" else "允许在其他应用上方显示") }
-            }
-        }
-
-        ExpandableSection("background", "后台运行与权限", if (systemAccess.backgroundRestricted) "后台受限制，可能影响持续使用" else "查看电池优化与系统权限", Icons.Default.BatterySaver) {
-            HelpText("想在切换应用后继续使用，可检查以下系统设置。不同手机的选项名称可能略有不同。")
-            InfoRow("电池优化", if (systemAccess.batteryExempt) "已允许不受电池优化限制" else "正在接受系统电池优化")
-            OutlinedButton(onClick = {
-                if (!BackgroundExecutionHelper.openBatterySettings(context) { context.startActivity(it) }) showSettingsError(context)
-            }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("打开电池优化设置") }
-            InfoRow("后台使用", if (systemAccess.backgroundRestricted) "受到系统限制" else "未检测到系统限制")
-            OutlinedButton(onClick = {
-                if (!BackgroundExecutionHelper.openAppSettings(context) { context.startActivity(it) }) showSettingsError(context)
-            }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("查看应用后台设置") }
-            HorizontalDivider()
-            InfoRow("应用使用情况权限", if (systemAccess.usageAllowed) "已允许" else "未允许")
-            HelpText("用于记录认证发生时你正在使用哪个应用。")
-            OutlinedButton(onClick = { openSystemSettings(context, Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS, Uri.parse("package:${context.packageName}"))) }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("管理应用使用情况权限") }
-            InfoRow("通知权限", if (systemAccess.notificationsAllowed) "已允许" else "未允许")
-            OutlinedButton(onClick = { openSystemSettings(context, Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)) }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("管理运行状态通知") }
-        }
-
-        ExpandableSection("transmission", "传输策略", if (wifiOnly) "仅通过 Wi-Fi 上传" else "Wi-Fi 和移动网络均可上传（默认）", Icons.Default.Wifi) {
-            PreferenceSwitch("仅通过 Wi-Fi 上传", "默认关闭。打开后，在没有 Wi-Fi 时暂停上传，认证结果可能延后。", wifiOnly, "wifi_only", !deleting, viewModel::setUploadPolicyWiFiOnly)
-            PreferenceSwitch("智能传输", "仅在凌晨、锁屏且电量高于 60% 时上传，其余时间先保存在本机（最多 3 GB）。开启后可能无法及时得到认证结果。", smartTransmission, "smart_transmission", !deleting, viewModel::setSmartTransmissionEnabled)
-            HorizontalDivider()
-            Text("单独采集与上传", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-            HelpText("保留单独采集传感器数据并上传的功能。日常使用请在“认证与分析”开始认证。")
-            InfoRow("采集与上传", when { collectionChanging -> "正在处理，请稍候"; isUploading -> "正在运行"; else -> "已停止" })
-            OutlinedButton(
-                onClick = { if (isUploading) viewModel.stopEncryptedUpload() else viewModel.startEncryptedUpload() },
-                enabled = !deleting && !collectionChanging && (isUploading || (consent == ConsentState.GRANTED && sensorCount > 0)),
-                modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag("collection_upload_toggle")
-            ) { Text(if (isUploading) "停止采集与上传" else "开始采集与上传") }
-            if (consent != ConsentState.GRANTED) HelpText("请先在“知情同意”中阅读并同意数据使用说明。")
-        }
-
-        ExpandableSection("server", "服务器设置", "设置认证服务的连接地址", Icons.Default.Cloud) {
-            HelpText("使用提供给你的服务器地址。一般无需更改；更换前请先停止采集和认证。")
-            OutlinedTextField(
-                value = serverAddress,
-                onValueChange = { serverAddress = it; serverValidation = null; serverFeedback = null },
-                label = { Text("服务器地址") },
-                placeholder = { Text("https://${ServerEndpointNormalizer.DEFAULT_HOST}") },
-                modifier = Modifier.fillMaxWidth().testTag("server_address"),
-                singleLine = true,
-                enabled = canEditServer && !testing,
-                isError = serverValidation != null,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Next)
-            )
-            OutlinedTextField(
-                value = serverPort,
-                onValueChange = { serverPort = it; serverValidation = null; serverFeedback = null },
-                label = { Text("端口") },
-                supportingText = { Text("通常为 443；以服务提供方给出的值为准") },
-                modifier = Modifier.fillMaxWidth().testTag("server_port"),
-                singleLine = true,
-                enabled = canEditServer && !testing,
-                isError = serverValidation != null,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Done)
-            )
-            serverValidation?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium) }
-            if (serverAddress.startsWith("http://", ignoreCase = true)) HelpText("当前填写的是 HTTP 地址，连接本身不加密。若服务器支持，请使用 HTTPS。")
-            Button(onClick = { saveServer(false) }, enabled = canEditServer && !testing, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("保存服务器设置") }
-            OutlinedButton(onClick = { saveServer(true) }, enabled = canEditServer && !testing && !deleting, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag("test_server")) { Text(if (testing) "正在测试连接…" else "保存并测试连接") }
-            TextButton(onClick = {
-                serverAddress = "https://${ServerEndpointNormalizer.DEFAULT_HOST}"
-                serverPort = ServerEndpointNormalizer.DEFAULT_HTTPS_PORT.toString()
-                serverValidation = null
-                serverFeedback = "已填入默认地址，请点击保存"
-            }, enabled = canEditServer && !testing, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("恢复默认地址") }
-            serverFeedback?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
-            if (!canEditServer) HelpText("停止采集与认证后，可以修改或测试服务器。")
-        }
-
-        ExpandableSection("storage", "数据与存储", "本机认证记录保留最近 7 天", Icons.Default.Storage) {
-            InfoRow("认证记录", "自动保留最近 7 天")
-            HelpText("下面的保存期限只影响传感器缓存，不改变认证记录的保存时间。")
-            OutlinedTextField(
-                value = retentionInput,
-                onValueChange = { retentionInput = it; retentionError = null; retentionSaved = false },
-                label = { Text("传感器缓存保存天数") },
-                supportingText = { Text(retentionError ?: "可设置 1 至 365 天") },
-                isError = retentionError != null,
-                singleLine = true,
-                enabled = !deleting,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Done),
-                modifier = Modifier.fillMaxWidth().testTag("retention_days")
-            )
-            Button(onClick = {
-                val days = retentionInput.toIntOrNull()
-                if (days == null || days !in 1..365) retentionError = "请输入 1 至 365 之间的整数"
-                else {
-                    viewModel.setDataRetentionDays(days)
-                    retentionInput = days.toString()
-                    retentionSaved = true
-                    focusManager.clearFocus()
-                }
-            }, enabled = !deleting, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("保存天数") }
-            if (retentionSaved) Text("保存期限已更新", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary)
-            HorizontalDivider()
-            InfoRow("待上传数据", "${queueStats?.pendingPackets ?: 0} 个数据包")
-            InfoRow("本机缓存占用", formatStorageBytes(queueStats?.totalSizeBytes ?: 0L))
-            HelpText("清理缓存会删除本机等待上传的传感器数据，无法恢复。")
-            OutlinedButton(onClick = { confirmation = "clear_queue" }, enabled = !isUploading && !collectionChanging && !deleting, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag("clear_queue")) { Text("清理本机传感器缓存") }
-            if (isUploading || collectionChanging) HelpText("请先停止采集与上传，再清理缓存。")
-        }
-
-        ExpandableSection("maintenance", "维护工具", "排查问题时使用", Icons.Default.Build) {
-            HelpText("这些功能用于排查问题。导出时可通过系统选择保存位置；导出的文件可能包含使用记录，请自行保管和删除。")
-            PreferenceSwitch("调试信息", "显示更详细的运行信息，供排查问题使用", debugEnabled, "debug_mode", !deleting) { if (it != debugEnabled) viewModel.toggleDebugMode() }
-            PreferenceSwitch("数据可视化", "保留原有传感器图表开关", visualizationEnabled, "visualization", !deleting) { if (it != visualizationEnabled) viewModel.toggleVisualization() }
-            OutlinedButton(onClick = {
-                scope.launch {
-                    maintenanceBusy = true
-                    try {
-                        detailViewModel.preparePendingDataExport()?.let { file ->
-                            preparedExportPath = file.absolutePath
-                            try { dataExportLauncher.launch(file.name) }
-                            catch (_: Exception) {
-                                detailViewModel.cancelPreparedExport(preparedExportPath)
-                                preparedExportPath = null
-                                Toast.makeText(context, "无法打开系统文件保存界面", Toast.LENGTH_LONG).show()
-                            }
+            item(key = "consent", contentType = "settings") {
+                ExpandableSection("consent", "知情同意", consentLabel(consent), Icons.Default.PrivacyTip) {
+                    Text(consentLabel(consent), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                    PrivacyNoticeContent()
+                    if (consent == ConsentState.GRANTED) {
+                        OutlinedButton(onClick = { confirmation = "withdraw" }, enabled = !deleting, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag("withdraw_consent")) {
+                            Text(if (deleting) "正在停止采集并删除…" else "撤回同意并删除数据")
                         }
-                    } finally { maintenanceBusy = false }
-                }
-            }, enabled = !maintenanceBusy && !deleting, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("导出待上传数据") }
-            OutlinedButton(onClick = {
-                scope.launch {
-                    maintenanceBusy = true
-                    try {
-                        detailViewModel.prepareDebugLogExport()?.let { file ->
-                            preparedExportPath = file.absolutePath
-                            try { logExportLauncher.launch(file.name) }
-                            catch (_: Exception) {
-                                detailViewModel.cancelPreparedExport(preparedExportPath)
-                                preparedExportPath = null
-                                Toast.makeText(context, "无法打开系统文件保存界面", Toast.LENGTH_LONG).show()
-                            }
+                    } else {
+                        Button(onClick = onRequestConsent, enabled = !deleting, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag("review_consent")) {
+                            Text("查看并决定是否同意")
                         }
-                    } finally { maintenanceBusy = false }
+                    }
+                    DeletionFeedback(deletion)
+                    if (deletion == DeletionState.PARTIAL_SUCCESS) {
+                        OutlinedButton(onClick = { viewModel.retryPendingDeletionRequests() }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("重试服务器删除请求") }
+                    }
+                    if (deletion == DeletionState.FAILED) {
+                        OutlinedButton(onClick = { confirmation = "withdraw" }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("重试撤回和删除") }
+                    }
                 }
-            }, enabled = !maintenanceBusy && !deleting, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("导出运行日志") }
-            OutlinedButton(onClick = { confirmation = "rotate_key" }, enabled = !maintenanceBusy && !deleting && !isUploading && !collectionChanging, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("更新密钥维护标记") }
-            if (maintenanceBusy) Text("正在处理，请稍候…", style = MaterialTheme.typography.bodyMedium)
-            maintenanceMessage?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
+            }
+
+            item(key = "sensors", contentType = "settings") {
+                ExpandableSection("sensors", "数据采集设置", "已允许 $sensorCount 种传感器", Icons.Default.Sensors) {
+                    HelpText("通过手机的动作了解使用习惯。关闭部分传感器可能影响认证结果；关闭全部会停止采集。")
+                    PreferenceSwitch("加速度计", "感知手机移动、拿起和放下", sensors.accelerometerEnabled, "sensor_accelerometer", !deleting) { viewModel.setSensorCollectionEnabled("accelerometer", it) }
+                    PreferenceSwitch("陀螺仪", "感知手机转动和握持方向的变化", sensors.gyroscopeEnabled, "sensor_gyroscope", !deleting) { viewModel.setSensorCollectionEnabled("gyroscope", it) }
+                    PreferenceSwitch("磁力计", "感知手机周围磁场的变化", sensors.magnetometerEnabled, "sensor_magnetometer", !deleting) { viewModel.setSensorCollectionEnabled("magnetometer", it) }
+                    if (sensorCount == 0) Text("当前未允许采集传感器数据。开始认证前，请至少打开一项。", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium)
+                }
+            }
+
+            item(key = "protection", contentType = "settings") {
+                ExpandableSection("protection", "防护设置", protectionSummary(protectionMode, systemAccess.overlayAllowed), Icons.Default.Shield) {
+                    HelpText("先选择提醒方式，再到“认证与分析”点击开始认证。这里的设置不会自动开始认证。")
+                    Column(Modifier.selectableGroup()) {
+                        ProtectionChoice(ProtectionMode.OFF, protectionMode, "关闭", "不启用持续认证；正在进行的认证会停止。", !deleting, viewModel::setProtectionMode)
+                        ProtectionChoice(ProtectionMode.MONITOR_ONLY, protectionMode, "仅监测（默认）", "开始认证后，仅记录结果，不弹窗提醒。", !deleting, viewModel::setProtectionMode)
+                        ProtectionChoice(ProtectionMode.ALERT, protectionMode, "即时警示", "开始认证后，认证不通过时通过系统弹窗提醒。", !deleting, viewModel::setProtectionMode)
+                    }
+                    if (protectionMode == ProtectionMode.ALERT) {
+                        Text(if (systemAccess.overlayAllowed) "已允许系统弹窗" else "尚未允许系统弹窗，目前无法在其他应用上方提醒你。", style = MaterialTheme.typography.bodyMedium, color = if (systemAccess.overlayAllowed) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error)
+                        OutlinedButton(
+                            onClick = { openSystemSettings(context, Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:${context.packageName}"))) },
+                            modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag("overlay_permission")
+                        ) { Text(if (systemAccess.overlayAllowed) "管理系统弹窗权限" else "允许在其他应用上方显示") }
+                    }
+                }
+            }
+
+            item(key = "background", contentType = "settings") {
+                ExpandableSection("background", "后台运行与权限", if (systemAccess.backgroundRestricted) "后台受限制，可能影响持续使用" else "查看电池优化与系统权限", Icons.Default.BatterySaver) {
+                    HelpText("想在切换应用后继续使用，可检查以下系统设置。不同手机的选项名称可能略有不同。")
+                    InfoRow("电池优化", if (systemAccess.batteryExempt) "已允许不受电池优化限制" else "正在接受系统电池优化")
+                    OutlinedButton(onClick = {
+                        if (!BackgroundExecutionHelper.openBatterySettings(context) { context.startActivity(it) }) showSettingsError(context)
+                    }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("打开电池优化设置") }
+                    InfoRow("后台使用", if (systemAccess.backgroundRestricted) "受到系统限制" else "未检测到系统限制")
+                    OutlinedButton(onClick = {
+                        if (!BackgroundExecutionHelper.openAppSettings(context) { context.startActivity(it) }) showSettingsError(context)
+                    }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("查看应用后台设置") }
+                    HorizontalDivider()
+                    InfoRow("应用使用情况权限", if (systemAccess.usageAllowed) "已允许" else "未允许")
+                    HelpText("用于记录认证发生时你正在使用哪个应用。")
+                    OutlinedButton(onClick = { openSystemSettings(context, Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS, Uri.parse("package:${context.packageName}"))) }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("管理应用使用情况权限") }
+                    InfoRow("通知权限", if (systemAccess.notificationsAllowed) "已允许" else "未允许")
+                    OutlinedButton(onClick = { openSystemSettings(context, Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)) }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("管理运行状态通知") }
+                }
+            }
+
+            item(key = "transmission", contentType = "settings") {
+                ExpandableSection("transmission", "传输策略", if (wifiOnly) "仅通过 Wi-Fi 上传" else "Wi-Fi 和移动网络均可上传（默认）", Icons.Default.Wifi) {
+                    PreferenceSwitch("仅通过 Wi-Fi 上传", "默认关闭。打开后，在没有 Wi-Fi 时暂停上传，认证结果可能延后。", wifiOnly, "wifi_only", !deleting, viewModel::setUploadPolicyWiFiOnly)
+                    PreferenceSwitch("智能传输", "仅在凌晨、锁屏且电量高于 60% 时上传，其余时间先保存在本机（最多 3 GB）。开启后可能无法及时得到认证结果。", smartTransmission, "smart_transmission", !deleting, viewModel::setSmartTransmissionEnabled)
+                    HorizontalDivider()
+                    Text("单独采集与上传", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                    HelpText("保留单独采集传感器数据并上传的功能。日常使用请在“认证与分析”开始认证。")
+                    InfoRow("采集与上传", when { collectionChanging -> "正在处理，请稍候"; isUploading -> "正在运行"; else -> "已停止" })
+                    OutlinedButton(
+                        onClick = { if (isUploading) viewModel.stopEncryptedUpload() else viewModel.startEncryptedUpload() },
+                        enabled = !deleting && !collectionChanging && (isUploading || (consent == ConsentState.GRANTED && sensorCount > 0)),
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag("collection_upload_toggle")
+                    ) { Text(if (isUploading) "停止采集与上传" else "开始采集与上传") }
+                    if (consent != ConsentState.GRANTED) HelpText("请先在“知情同意”中阅读并同意数据使用说明。")
+                }
+            }
+
+            item(key = "server", contentType = "settings") {
+                ExpandableSection("server", "服务器设置", "设置认证服务的连接地址", Icons.Default.Cloud) {
+                    HelpText("使用提供给你的服务器地址。一般无需更改；更换前请先停止采集和认证。")
+                    OutlinedTextField(
+                        value = serverAddress,
+                        onValueChange = { serverAddress = it; serverValidation = null; serverFeedback = null },
+                        label = { Text("服务器地址") },
+                        placeholder = { Text("https://${ServerEndpointNormalizer.DEFAULT_HOST}") },
+                        modifier = Modifier.fillMaxWidth().testTag("server_address"),
+                        singleLine = true,
+                        enabled = canEditServer && !testing,
+                        isError = serverValidation != null,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Next)
+                    )
+                    OutlinedTextField(
+                        value = serverPort,
+                        onValueChange = { serverPort = it; serverValidation = null; serverFeedback = null },
+                        label = { Text("端口") },
+                        supportingText = { Text("通常为 443；以服务提供方给出的值为准") },
+                        modifier = Modifier.fillMaxWidth().testTag("server_port"),
+                        singleLine = true,
+                        enabled = canEditServer && !testing,
+                        isError = serverValidation != null,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Done)
+                    )
+                    serverValidation?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium) }
+                    if (serverAddress.startsWith("http://", ignoreCase = true)) HelpText("当前填写的是 HTTP 地址，连接本身不加密。若服务器支持，请使用 HTTPS。")
+                    Button(onClick = { saveServer(false) }, enabled = canEditServer && !testing, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("保存服务器设置") }
+                    OutlinedButton(onClick = { saveServer(true) }, enabled = canEditServer && !testing && !deleting, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag("test_server")) { Text(if (testing) "正在测试连接…" else "保存并测试连接") }
+                    TextButton(onClick = {
+                        serverAddress = "https://${ServerEndpointNormalizer.DEFAULT_HOST}"
+                        serverPort = ServerEndpointNormalizer.DEFAULT_HTTPS_PORT.toString()
+                        serverValidation = null
+                        serverFeedback = "已填入默认地址，请点击保存"
+                    }, enabled = canEditServer && !testing, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("恢复默认地址") }
+                    serverFeedback?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
+                    if (!canEditServer) HelpText("停止采集与认证后，可以修改或测试服务器。")
+                }
+            }
+
+            item(key = "storage", contentType = "settings") {
+                ExpandableSection("storage", "数据与存储", "本机认证记录保留最近 7 天", Icons.Default.Storage) {
+                    val queueStats by viewModel.fileQueueStats.observeAsState(null)
+                    InfoRow("认证记录", "自动保留最近 7 天")
+                    HelpText("下面的保存期限只影响传感器缓存，不改变认证记录的保存时间。")
+                    OutlinedTextField(
+                        value = retentionInput,
+                        onValueChange = { retentionInput = it; retentionError = null; retentionSaved = false },
+                        label = { Text("传感器缓存保存天数") },
+                        supportingText = { Text(retentionError ?: "可设置 1 至 365 天") },
+                        isError = retentionError != null,
+                        singleLine = true,
+                        enabled = !deleting,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Done),
+                        modifier = Modifier.fillMaxWidth().testTag("retention_days")
+                    )
+                    Button(onClick = {
+                        val days = retentionInput.toIntOrNull()
+                        if (days == null || days !in 1..365) retentionError = "请输入 1 至 365 之间的整数"
+                        else {
+                            viewModel.setDataRetentionDays(days)
+                            retentionInput = days.toString()
+                            retentionSaved = true
+                            focusManager.clearFocus()
+                        }
+                    }, enabled = !deleting, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("保存天数") }
+                    if (retentionSaved) Text("保存期限已更新", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary)
+                    HorizontalDivider()
+                    InfoRow("待上传数据", "${queueStats?.pendingPackets ?: 0} 个数据包")
+                    InfoRow("本机缓存占用", formatStorageBytes(queueStats?.totalSizeBytes ?: 0L))
+                    HelpText("清理缓存会删除本机等待上传的传感器数据，无法恢复。")
+                    OutlinedButton(onClick = { confirmation = "clear_queue" }, enabled = !isUploading && !collectionChanging && !deleting, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag("clear_queue")) { Text("清理本机传感器缓存") }
+                    if (isUploading || collectionChanging) HelpText("请先停止采集与上传，再清理缓存。")
+                }
+            }
+
+            item(key = "maintenance", contentType = "settings") {
+                ExpandableSection("maintenance", "维护工具", "排查问题时使用", Icons.Default.Build) {
+                    val maintenanceMessage by detailViewModel.maintenanceMessage.collectAsStateWithLifecycle()
+                    HelpText("这些功能用于排查问题。导出时可通过系统选择保存位置；导出的文件可能包含使用记录，请自行保管和删除。")
+                    PreferenceSwitch("调试信息", "显示更详细的运行信息，供排查问题使用", debugEnabled, "debug_mode", !deleting) { if (it != debugEnabled) viewModel.toggleDebugMode() }
+                    PreferenceSwitch("数据可视化", "在传感器数据页展开曲线，了解最近的动作变化", visualizationEnabled, "visualization", !deleting) { if (it != visualizationEnabled) viewModel.toggleVisualization() }
+                    OutlinedButton(onClick = {
+                        scope.launch {
+                            maintenanceBusy = true
+                            try {
+                                detailViewModel.preparePendingDataExport()?.let { file ->
+                                    preparedExportPath = file.absolutePath
+                                    try { dataExportLauncher.launch(file.name) }
+                                    catch (_: Exception) {
+                                        detailViewModel.cancelPreparedExport(preparedExportPath)
+                                        preparedExportPath = null
+                                        Toast.makeText(context, "无法打开系统文件保存界面", Toast.LENGTH_LONG).show()
+                                    }
+                                }
+                            } finally { maintenanceBusy = false }
+                        }
+                    }, enabled = !maintenanceBusy && !deleting, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("导出待上传数据") }
+                    OutlinedButton(onClick = {
+                        scope.launch {
+                            maintenanceBusy = true
+                            try {
+                                detailViewModel.prepareDebugLogExport()?.let { file ->
+                                    preparedExportPath = file.absolutePath
+                                    try { logExportLauncher.launch(file.name) }
+                                    catch (_: Exception) {
+                                        detailViewModel.cancelPreparedExport(preparedExportPath)
+                                        preparedExportPath = null
+                                        Toast.makeText(context, "无法打开系统文件保存界面", Toast.LENGTH_LONG).show()
+                                    }
+                                }
+                            } finally { maintenanceBusy = false }
+                        }
+                    }, enabled = !maintenanceBusy && !deleting, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("导出运行日志") }
+                    OutlinedButton(onClick = { confirmation = "rotate_key" }, enabled = !maintenanceBusy && !deleting && !isUploading && !collectionChanging, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("更新密钥维护标记") }
+                    if (maintenanceBusy) Text("正在处理，请稍候…", style = MaterialTheme.typography.bodyMedium)
+                    maintenanceMessage?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
+                }
+            }
         }
-        Spacer(Modifier.height(12.dp))
     }
 
     confirmation?.let { action ->
@@ -443,3 +464,6 @@ private fun formatStorageBytes(bytes: Long): String = when {
     bytes < 1024 * 1024 * 1024 -> String.format("%.1f MB", bytes / (1024.0 * 1024.0))
     else -> String.format("%.1f GB", bytes / (1024.0 * 1024.0 * 1024.0))
 }
+
+private fun formatServerHost(host: String): String =
+    if (':' in host && !host.startsWith("[")) "[$host]" else host

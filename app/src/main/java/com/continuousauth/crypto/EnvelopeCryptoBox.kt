@@ -165,7 +165,7 @@ class EnvelopeCryptoBox @Inject constructor(
     override suspend fun decrypt(ciphertext: ByteArray, associatedData: ByteArray?): ByteArray? {
         return withContext(Dispatchers.IO) {
             try {
-                if (ciphertext.size <= IV_LENGTH + TAG_LENGTH) {
+                if (ciphertext.size < IV_LENGTH + TAG_LENGTH) {
                     handleCryptoFailure()
                     return@withContext null
                 }

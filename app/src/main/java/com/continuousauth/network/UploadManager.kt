@@ -54,7 +54,7 @@ class UploadManager internal constructor(
 
     // 添加离线模式状态变量
     @Volatile private var isOfflineMode = false
-    private var lastServerEndpoint: String? = null // 保存最后连接的服务器端点
+    @Volatile private var lastServerEndpoint: String? = null // 保存最后连接的服务器端点
 
     // 状态管理
     private val isRunning = AtomicBoolean(false)
@@ -87,6 +87,7 @@ class UploadManager internal constructor(
     suspend fun start(serverEndpoint: String): Boolean = lifecycleMutex.withLock {
         if (isRunning.get()) {
             Log.w(TAG, "上传管理器已在运行中")
+            updateServerEndpoint(serverEndpoint)
             return true
         }
         
@@ -140,12 +141,28 @@ class UploadManager internal constructor(
         
         Log.i(TAG, "上传管理器已停止")
     }
+
+    /** Apply a saved address to a running service too, preserving queued packets for retry. */
+    fun updateServerEndpoint(serverEndpoint: String) {
+        if (lastServerEndpoint == serverEndpoint) return
+        // Gate new sends immediately, before the IO coroutine can close the old channel.
+        lastServerEndpoint = serverEndpoint
+        managerScope.launch {
+            lifecycleMutex.withLock {
+                if (lastServerEndpoint != serverEndpoint) return@withLock
+                if (!isRunning.get()) return@withLock
+                connectionMonitorJob?.cancelAndJoin()
+                uploader.disconnect()
+                startConnectionMonitoring()
+            }
+        }
+    }
     
     /**
      * 手动发送数据包
      */
     suspend fun sendDataPacket(dataPacket: DataPacket): Boolean {
-        if (!isRunning.get() || isPaused.get() || isOfflineMode ||
+        if (!isRunning.get() || !isConnected() || isPaused.get() || isOfflineMode ||
             (isWifiOnlyMode && !networkEnvironmentDetector.isWifiConnected()) ||
             (smartTransmissionEnabled.get() && !smartTransmissionUploadAllowed.get())) {
             Log.w(TAG, "上传管理器未运行，无法发送数据包")
@@ -240,8 +257,11 @@ class UploadManager internal constructor(
      */
     fun getUploadStatus(): UploadStatus {
         val statusDetail = uploader.getConnectionStatus()
-        val status = ConnectionStatus.values().find { it.name == statusDetail.state } 
+        val actualStatus = ConnectionStatus.values().find { it.name == statusDetail.state }
             ?: ConnectionStatus.DISCONNECTED
+        val status = if (actualStatus == ConnectionStatus.CONNECTED && !isCurrentEndpoint(statusDetail)) {
+            ConnectionStatus.CONNECTING
+        } else actualStatus
         
         val queueStats = fileQueueManager.queueStats.value
         
@@ -371,18 +391,19 @@ class UploadManager internal constructor(
         val diskPackets = run {
             val pendingMetadata = fileQueueManager.getPendingPackets(ACK_RETRY_MS).take(currentBatchSize)
             pendingMetadata.mapNotNull { meta ->
-                val bytes = fileQueueManager.readDataPacket(meta.packetId).getOrNull()
+                val read = fileQueueManager.readDataPacket(meta.packetId)
+                read.exceptionOrNull()?.let { if (it is CancellationException) throw it }
+                val bytes = read.getOrNull()
                 if (bytes == null) {
                     Log.w(TAG, "读取待上传数据失败: ${meta.packetId}")
-                    fileQueueManager.updateFailedStatus(meta.packetId, "READ_FAILED")
-                    fileQueueManager.deleteDataPacket(meta.packetId)
+                    // Storage marks genuinely missing/corrupt files itself. An IO failure can
+                    // be temporary and must never delete a packet or overwrite CORRUPT.
                     null
                 } else {
                     runCatching { DataPacket.parseFrom(bytes) }
                         .onFailure { 
                             Log.e(TAG, "解析待上传数据失败: ${meta.packetId}", it)
-                            fileQueueManager.updateFailedStatus(meta.packetId, "PARSE_FAILED")
-                            fileQueueManager.deleteDataPacket(meta.packetId)
+                            fileQueueManager.markPacketCorrupt(meta.packetId, "PARSE_FAILED")
                         }
                         .getOrNull()
                 }
@@ -495,8 +516,11 @@ class UploadManager internal constructor(
      */
     private fun isConnected(): Boolean {
         val status = uploader.getConnectionStatus()
-        return status.state == ConnectionStatus.CONNECTED.name
+        return status.state == ConnectionStatus.CONNECTED.name && isCurrentEndpoint(status)
     }
+
+    private fun isCurrentEndpoint(status: ConnectionStatusDetail): Boolean =
+        lastServerEndpoint == null || status.endpoint == lastServerEndpoint
 
     /**
      * 处理服务器指令
@@ -517,6 +541,8 @@ class UploadManager internal constructor(
                     Log.w(TAG, "收到未知类型的服务器指令")
                 }
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.e(TAG, "处理服务器指令异常", e)
         }
@@ -764,7 +790,7 @@ class UploadManager internal constructor(
         }
         // 检查服务器连接状态
         val connectionStatus = uploader.getConnectionStatus()
-        if (connectionStatus.state != "CONNECTED") {
+        if (connectionStatus.state != "CONNECTED" || !isCurrentEndpoint(connectionStatus)) {
             Log.w(TAG, "服务器连接状态异常: ${connectionStatus.state}，无法重试数据包")
             return RetryResult(
                 packetId = packet.packetId,

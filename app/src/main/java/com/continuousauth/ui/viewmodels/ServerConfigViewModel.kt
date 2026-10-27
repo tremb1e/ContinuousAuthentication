@@ -12,6 +12,7 @@ import com.continuousauth.network.Uploader
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
@@ -90,7 +91,7 @@ class ServerConfigViewModel @Inject constructor(
                 schemeInput = prefs.getString("server_scheme", null)
             )
             
-            _serverConfig.value = ServerConfig("${endpoint.scheme}://${endpoint.host}", endpoint.port)
+            _serverConfig.value = ServerConfig(endpoint.endpoint.substringBeforeLast(':'), endpoint.port)
         }
     }
     
@@ -100,7 +101,7 @@ class ServerConfigViewModel @Inject constructor(
     fun saveServerConfig(ip: String, port: Int) {
         viewModelScope.launch {
             val endpoint = ServerEndpointNormalizer.normalize(ip, port)
-            _serverConfig.value = ServerConfig("${endpoint.scheme}://${endpoint.host}", endpoint.port)
+            _serverConfig.value = ServerConfig(endpoint.endpoint.substringBeforeLast(':'), endpoint.port)
             
             // 保存到SharedPreferences
             val prefs = context.getSharedPreferences("server_config", Context.MODE_PRIVATE)
@@ -120,23 +121,22 @@ class ServerConfigViewModel @Inject constructor(
             try {
                 _connectionStatus.postValue(ConnectionStatus.CONNECTING)
                 
-                val config = _serverConfig.value ?: return@withContext
-                val endpoint = ServerEndpointNormalizer.normalize(config.ip, config.port).endpoint
+                val config = _serverConfig.value ?: ServerConfig()
+                val endpoint = ServerEndpointNormalizer.normalize(config.ip, config.port)
                 
                 // 尝试连接并立即断开以测试连接
-                val result = uploader.connect(endpoint)
+                val result = uploader.testServerConnection(endpoint.host, endpoint.port, endpoint.useTls)
                 
-                if (result) {
+                if (result.isReachable) {
                     _connectionStatus.postValue(ConnectionStatus.CONNECTED)
                     // 使用字符串资源ID，支持国际化
                     _successMessage.postValue(context.getString(com.continuousauth.R.string.connection_test_success))
-                    // 测试后断开连接
-                    uploader.disconnect()
-                    _connectionStatus.postValue(ConnectionStatus.DISCONNECTED)
                 } else {
                     _connectionStatus.postValue(ConnectionStatus.ERROR)
-                    _errorMessage.postValue(context.getString(com.continuousauth.R.string.connection_test_failed))
+                    _errorMessage.postValue(uploader.getTestResultDescription(result))
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 _connectionStatus.postValue(ConnectionStatus.ERROR)
                 _errorMessage.postValue(context.getString(com.continuousauth.R.string.connection_test_error, e.message))

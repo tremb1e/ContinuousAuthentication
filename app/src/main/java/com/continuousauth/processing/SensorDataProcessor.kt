@@ -173,7 +173,7 @@ class SensorDataProcessor @Inject constructor(
             
             // 3. 生成包ID并构建AAD
             val packetId = UUID.randomUUID().toString()
-            val appVersion = getAppVersion()
+            val appVersion = dataPacketBuilder.getAppVersion()
             val packetSeqNo = envelopeCryptoBox.getNextPacketSeqNo()
             val dekKeyId = envelopeCryptoBox.getDekKeyId()
             
@@ -242,20 +242,6 @@ class SensorDataProcessor @Inject constructor(
         } catch (e: Exception) {
             android.util.Log.e(TAG, "处理批次失败", e)
         }
-    }
-    
-    /**
-     * 获取应用版本（简化版本）
-     */
-    private fun getAppVersion(): String {
-        return "1.0.0" // 在实际实现中应该从PackageManager获取
-    }
-    
-    /**
-     * 获取设备ID（简化版本）
-     */
-    private fun getDeviceId(): String {
-        return "device_${System.currentTimeMillis()}" // 在实际实现中应该使用真实的设备ID
     }
     
     /**

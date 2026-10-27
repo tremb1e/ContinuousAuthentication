@@ -15,7 +15,7 @@ data class ServerEndpoint(
         get() = useTls && port == ServerEndpointNormalizer.DEFAULT_HTTPS_PORT
 
     val endpoint: String
-        get() = "$scheme://$host:$port"
+        get() = "$scheme://${if (host.contains(':')) "[$host]" else host}:$port"
 }
 
 object ServerEndpointNormalizer {
@@ -37,11 +37,14 @@ object ServerEndpointNormalizer {
         val address = rawAddress.ifBlank { DEFAULT_HOST }
         val hasExplicitScheme = address.startsWith("http://", ignoreCase = true) ||
             address.startsWith("https://", ignoreCase = true)
-        val parseTarget = if (hasExplicitScheme) address else "$requestedScheme://$address"
+        val authority = if (!hasExplicitScheme && !address.startsWith("[") && address.count { it == ':' } > 1) {
+            "[$address]"
+        } else address
+        val parseTarget = if (hasExplicitScheme) address else "$requestedScheme://$authority"
         val uri = runCatching { Uri.parse(parseTarget) }.getOrNull()
 
         var scheme = uri?.scheme.normalizedScheme() ?: requestedScheme
-        var host = uri?.host?.trim().orEmpty()
+        var host = uri?.host?.trim()?.removeSurrounding("[", "]").orEmpty()
         if (host.isBlank()) {
             host = address
                 .removePrefix("http://")
@@ -58,6 +61,7 @@ object ServerEndpointNormalizer {
             scheme == SCHEME_HTTP -> DEFAULT_HTTP_PORT
             else -> DEFAULT_HTTPS_PORT
         }
+        require(port in 1..65535) { "服务器端口必须在 1 到 65535 之间" }
 
         if (host.equals(LEGACY_BACKEND_HOST, ignoreCase = true)) {
             host = DEFAULT_HOST

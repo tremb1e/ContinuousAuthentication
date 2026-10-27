@@ -11,6 +11,10 @@ import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsOff
 import androidx.compose.ui.test.assertIsOn
 import androidx.compose.ui.test.assertIsSelected
+import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.test.hasTestTag
+import androidx.compose.ui.test.performScrollToNode
+import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.isDialog
@@ -110,7 +114,7 @@ class MainComposeNavigationTest {
         sections.forEach { key ->
             expand(key)
             compose.onNodeWithTag("section_content_$key").assertExists()
-            compose.onNodeWithTag("section_$key").performScrollTo().performClick()
+            scrollToTag("section_$key").performClick()
             compose.onNodeWithTag("section_content_$key").assertDoesNotExist()
         }
     }
@@ -122,7 +126,7 @@ class MainComposeNavigationTest {
         expand("consent")
         compose.onNodeWithText("会采集什么").assertExists()
         compose.onNodeWithText("保存多久").assertExists()
-        compose.onNodeWithTag("review_consent").performScrollTo().performClick()
+        scrollToTag("review_consent").performClick()
         compose.onNodeWithText("同意并继续").assertIsDisplayed()
         compose.onNodeWithText("暂不启用").performClick()
         compose.onNodeWithTag("settings_screen").assertIsDisplayed()
@@ -144,7 +148,7 @@ class MainComposeNavigationTest {
 
         tab("设置").performClick()
         expand("consent")
-        compose.onNodeWithTag("withdraw_consent").performScrollTo().assertIsDisplayed().performClick()
+        scrollToTag("withdraw_consent").assertIsDisplayed().performClick()
         compose.onNodeWithText("撤回同意并删除数据？").assertIsDisplayed()
         compose.onNodeWithText("确认删除").performClick()
         compose.waitUntil(15_000) {
@@ -164,11 +168,13 @@ class MainComposeNavigationTest {
 
         // The withdrawal confirmation closes in a native window. Its exit animation and
         // the deletion snackbar temporarily cover the review button despite Compose being idle.
-        // Verify the feedback and wait for the actual overlay to leave before the next user tap.
+        // Acknowledge the visible feedback through its real action. Accessibility settings
+        // and the Compose test clock can lengthen automatic snackbar dismissal.
         if (entryPoint.privacyManager().deletionState.value == DeletionState.PARTIAL_SUCCESS) {
             val feedback = "本地数据已删除，服务端删除尚未完成"
             compose.waitUntil(10_000) { compose.onAllNodesWithText(feedback).fetchSemanticsNodes().isNotEmpty() }
             compose.onNodeWithText(feedback).assertIsDisplayed()
+            compose.onNodeWithText("知道了").assertIsDisplayed().performClick()
             compose.waitUntil(10_000) { compose.onAllNodesWithText(feedback).fetchSemanticsNodes().isEmpty() }
         }
         compose.waitUntil(10_000) {
@@ -176,7 +182,7 @@ class MainComposeNavigationTest {
             scenario!!.onActivity { focused = it.window.decorView.hasWindowFocus() }
             focused
         }
-        compose.onNodeWithTag("review_consent").performScrollTo().assertIsDisplayed().performClick()
+        scrollToTag("review_consent").assertIsDisplayed().performClick()
         compose.onNodeWithText("同意并继续").assertIsDisplayed().performClick()
         compose.waitUntil(10_000) { entryPoint.privacyManager().consentState.value == ConsentState.GRANTED }
         compose.onNodeWithTag("withdraw_consent").assertExists()
@@ -195,21 +201,37 @@ class MainComposeNavigationTest {
         sections.forEach { key ->
             expand(key)
             compose.onNodeWithTag("section_content_$key").assertExists()
-            compose.onNodeWithTag("section_$key").performScrollTo().performClick()
+            scrollToTag("section_$key").performClick()
         }
     }
 
     @Test
-    fun originalSensorChartsStillExpandAndCollapse() {
+    fun sensorChartsRemainReachableAndExpandWithoutKeepingOffscreenChartsComposed() {
         launchAndDecline()
         tab("传感器数据").performClick()
-        compose.onAllNodesWithText("加速度计", useUnmergedTree = true).assertCountEquals(1)
-        compose.onNodeWithText("数据可视化", useUnmergedTree = true).performScrollTo().performClick()
-        compose.onAllNodesWithText("加速度计", useUnmergedTree = true).assertCountEquals(2)
-        compose.onAllNodesWithText("陀螺仪", useUnmergedTree = true).assertCountEquals(2)
-        compose.onAllNodesWithText("磁力计", useUnmergedTree = true).assertCountEquals(2)
-        compose.onNodeWithText("数据可视化", useUnmergedTree = true).performScrollTo().performClick()
-        compose.onAllNodesWithText("加速度计", useUnmergedTree = true).assertCountEquals(1)
+        scrollToTag("sensor_reading_accelerometer").assertIsDisplayed()
+        scrollToTag("sensor_chart_toggle").performClick()
+        listOf("accelerometer", "gyroscope", "magnetometer").forEach { sensor ->
+            scrollToTag("sensor_chart_$sensor").assertIsDisplayed()
+        }
+        scrollToTag("sensor_chart_toggle").performClick()
+        listOf("accelerometer", "gyroscope", "magnetometer").forEach { sensor ->
+            compose.onNodeWithTag("sensor_chart_$sensor").assertDoesNotExist()
+            scrollToTag("sensor_reading_$sensor").assertIsDisplayed()
+        }
+    }
+
+    @Test
+    fun visualizationPreferenceAndSensorPageUseTheSameSwitch() {
+        launchAndDecline()
+        tab("设置").performClick()
+        expand("maintenance")
+        scrollToTag("visualization").assertIsOff().performClick().assertIsOn()
+        tab("传感器数据").performClick()
+        scrollToTag("sensor_chart_accelerometer").assertIsDisplayed()
+        scrollToTag("sensor_chart_toggle").performClick()
+        tab("设置").performClick()
+        scrollToTag("visualization").assertIsOff()
     }
 
     @Test
@@ -218,22 +240,24 @@ class MainComposeNavigationTest {
         tab("设置").performClick()
         expand("sensors")
         listOf("accelerometer", "gyroscope", "magnetometer").forEach { sensor ->
-            compose.onNodeWithTag("sensor_$sensor").performScrollTo().assertIsOn().performClick().assertIsOff()
+            scrollToTag("sensor_$sensor").assertIsOn().performClick().assertIsOff()
         }
         assertFalse(entryPoint.settingsRepository().sensorSettings.value.anyEnabled)
         expand("protection")
         compose.onNodeWithTag("protection_monitor_only").assertIsSelected()
-        compose.onNodeWithTag("protection_off").performScrollTo().performClick().assertIsSelected()
+        scrollToTag("protection_off").performClick().assertIsSelected()
         assertEquals(ProtectionMode.OFF, entryPoint.settingsRepository().protectionMode.value)
-        compose.onNodeWithTag("protection_alert").performScrollTo().performClick().assertIsSelected()
+        scrollToTag("protection_alert").performClick().assertIsSelected()
         tab("详细信息").performClick()
         tab("设置").performClick()
+        scrollToTag("section_sensors")
         compose.onNodeWithTag("section_content_sensors").assertExists()
+        scrollToTag("section_protection")
         compose.onNodeWithTag("section_content_protection").assertExists()
         scenario!!.recreate()
-        compose.onNodeWithTag("protection_alert").performScrollTo().assertIsSelected()
+        scrollToTag("protection_alert").assertIsSelected()
         listOf("accelerometer", "gyroscope", "magnetometer").forEach { sensor ->
-            compose.onNodeWithTag("sensor_$sensor").performScrollTo().assertIsOff()
+            scrollToTag("sensor_$sensor").assertIsOff()
         }
     }
 
@@ -242,9 +266,9 @@ class MainComposeNavigationTest {
         launchAndDecline()
         tab("设置").performClick()
         expand("transmission")
-        compose.onNodeWithTag("wifi_only").performScrollTo().assertIsOff().performClick().assertIsOn()
+        scrollToTag("wifi_only").assertIsOff().performClick().assertIsOn()
         scenario!!.recreate()
-        compose.onNodeWithTag("wifi_only").performScrollTo().assertIsOn()
+        scrollToTag("wifi_only").assertIsOn()
     }
 
     @Test
@@ -252,11 +276,11 @@ class MainComposeNavigationTest {
         launchAndDecline()
         tab("设置").performClick()
         expand("storage")
-        compose.onNodeWithTag("retention_days").performScrollTo().performTextReplacement("0")
-        compose.onNodeWithText("保存天数").performScrollTo().performClick()
+        scrollToTag("retention_days").performTextReplacement("0")
+        scrollToText("保存天数").performClick()
         compose.onNodeWithText("请输入 1 至 365 之间的整数").assertExists()
         compose.onNodeWithTag("retention_days").performTextReplacement("7")
-        compose.onNodeWithText("保存天数").performScrollTo().performClick()
+        scrollToText("保存天数").performClick()
         compose.onNodeWithText("保存期限已更新").assertExists()
         assertEquals(7, entryPoint.privacyManager().getDataRetentionDays())
     }
@@ -266,15 +290,15 @@ class MainComposeNavigationTest {
         launchAndDecline()
         tab("设置").performClick()
         expand("server")
-        compose.onNodeWithTag("server_address").performScrollTo().performTextReplacement("https://example.com/page")
-        compose.onNodeWithText("保存服务器设置").performScrollTo().performClick()
+        scrollToTag("server_address").performTextReplacement("https://example.com/page")
+        scrollToText("保存服务器设置").performClick()
         compose.onNodeWithText("请输入主机地址，例如 https://ca.macrz.com，不要包含页面路径").assertExists()
-        compose.onNodeWithTag("server_address").performScrollTo().performTextReplacement("https://example.com")
-        compose.onNodeWithTag("server_port").performScrollTo().performTextReplacement("0")
-        compose.onNodeWithText("保存服务器设置").performScrollTo().performClick()
+        scrollToTag("server_address").performTextReplacement("https://example.com")
+        scrollToTag("server_port").performTextReplacement("0")
+        scrollToText("保存服务器设置").performClick()
         compose.onNodeWithText("端口应为 1 至 65535 之间的整数").assertExists()
-        compose.onNodeWithText("恢复默认地址").performScrollTo().performClick()
-        compose.onNodeWithText("保存服务器设置").performScrollTo().performClick()
+        scrollToText("恢复默认地址").performClick()
+        scrollToText("保存服务器设置").performClick()
         compose.onNodeWithText("服务器设置已保存").assertExists()
     }
 
@@ -283,7 +307,7 @@ class MainComposeNavigationTest {
         launchAndDecline()
         tab("设置").performClick()
         expand("storage")
-        compose.onNodeWithTag("clear_queue").performScrollTo().performClick()
+        scrollToTag("clear_queue").performClick()
         compose.onNodeWithText("清理本机传感器缓存？").assertIsDisplayed()
         compose.onNodeWithText("取消").performClick()
         compose.onNodeWithText("清理本机传感器缓存？").assertDoesNotExist()
@@ -295,14 +319,14 @@ class MainComposeNavigationTest {
         launchAndDecline()
         tab("设置").performClick()
         expand("protection")
-        compose.onNodeWithTag("protection_alert").performScrollTo().performClick()
+        scrollToTag("protection_alert").performClick()
         val overlayFilter = IntentFilter(Settings.ACTION_MANAGE_OVERLAY_PERMISSION).apply {
             // The actual button supplies a package: URI; action-only filters reject that data.
             addDataScheme("package")
         }
         val monitor = instrumentation.addMonitor(overlayFilter, null, false)
         try {
-            compose.onNodeWithTag("overlay_permission").performScrollTo().performClick()
+            scrollToTag("overlay_permission").performClick()
             compose.waitUntil(10_000) { monitor.hits > 0 }
             assertTrue(monitor.hits > 0)
             val systemPackage = Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION)
@@ -345,9 +369,27 @@ class MainComposeNavigationTest {
         }
     }
 
+    /** Lazy pages compose only visible items. Scroll the list to locate an item first,
+     * then scroll within a tall expanded item to expose the actual control. */
+    private fun scrollScreenTo(matcher: SemanticsMatcher) {
+        val screen = listOf("settings_screen", "details_screen", "sensors_screen", "authentication_screen")
+            .first { compose.onAllNodesWithTag(it).fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithTag(screen).performScrollToNode(matcher)
+    }
+
+    private fun scrollToTag(tag: String): SemanticsNodeInteraction {
+        scrollScreenTo(hasTestTag(tag))
+        return compose.onNodeWithTag(tag).performScrollTo()
+    }
+
+    private fun scrollToText(text: String): SemanticsNodeInteraction {
+        scrollScreenTo(hasText(text))
+        return compose.onNodeWithText(text).performScrollTo()
+    }
+
     private fun tab(title: String): SemanticsNodeInteraction = compose.onNode(hasText(title) and hasClickAction())
 
     private fun expand(key: String) {
-        compose.onNodeWithTag("section_$key").performScrollTo().performClick()
+        scrollToTag("section_$key").performClick()
     }
 }

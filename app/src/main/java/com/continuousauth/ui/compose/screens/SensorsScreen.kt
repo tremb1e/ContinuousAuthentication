@@ -1,889 +1,273 @@
 package com.continuousauth.ui.compose.screens
 
-import androidx.compose.animation.*
-import androidx.compose.animation.core.*
-import androidx.compose.foundation.*
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.*
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.*
-import androidx.compose.material.icons.outlined.*
+import androidx.compose.material.icons.filled.Apps
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.Sensors
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.livedata.observeAsState
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.rotate
-import androidx.compose.ui.draw.scale
-import androidx.compose.ui.graphics.*
+import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import com.continuousauth.R
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.continuousauth.ui.MainViewModel
 import com.continuousauth.ui.viewmodels.SensorDataViewModel
-import com.continuousauth.ui.theme.ExtendedColors
-import androidx.compose.ui.viewinterop.AndroidView
-import com.github.mikephil.charting.charts.LineChart
-import com.github.mikephil.charting.data.Entry
-import com.github.mikephil.charting.data.LineData
-import com.github.mikephil.charting.data.LineDataSet
-import com.github.mikephil.charting.components.XAxis
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.sample
+import java.text.DecimalFormat
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
-import kotlin.math.absoluteValue
 
-/**
- * 传感器数据页面
- * 显示实时传感器数据、图表和前台应用
- */
-@OptIn(ExperimentalMaterial3Api::class)
+/** Only visible cards collect display data; the service retains the full sensor stream. */
 @Composable
-fun SensorsScreen(
-    viewModel: MainViewModel,
-    sensorViewModel: SensorDataViewModel
-) {
-    // 图表区默认关闭
-    var isChartExpanded by remember { mutableStateOf(false) }
-    val scrollState = rememberScrollState()
-    
-    // 观察 ViewModel 数据
-    val sensorStatus by viewModel.sensorStatus.observeAsState(emptyMap())
-    val isCollectionRunning by viewModel.isCollectionRunning.observeAsState(false)
-    val isEncryptedUploading by viewModel.isEncryptedUploading.observeAsState(false)
-    
-    // 页面仅订阅预览，不启动或停止服务的采集。
-    DisposableEffect(sensorViewModel) {
-        sensorViewModel.startSensorCollection()
-        onDispose { sensorViewModel.stopSensorCollection() }
+fun SensorsScreen(viewModel: MainViewModel, sensorViewModel: SensorDataViewModel) {
+    val chartsExpanded by viewModel.visualizationEnabled.observeAsState(false)
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(sensorViewModel, lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_START -> sensorViewModel.startSensorCollection()
+                Lifecycle.Event.ON_STOP -> sensorViewModel.stopSensorCollection()
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        if (lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) {
+            sensorViewModel.startSensorCollection()
+        }
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            sensorViewModel.stopSensorCollection()
+        }
     }
-    
-    // 观察传感器实时数据
-    val accelerometerData by sensorViewModel.accelerometerData.collectAsStateWithLifecycle()
-    val gyroscopeData by sensorViewModel.gyroscopeData.collectAsStateWithLifecycle()
-    val magnetometerData by sensorViewModel.magnetometerData.collectAsStateWithLifecycle()
-    val recentApps by sensorViewModel.recentApps.collectAsStateWithLifecycle()
-    
-    // 观察图表数据
-    val chartAccelerometerData by sensorViewModel.chartAccelerometerData.collectAsStateWithLifecycle()
-    val chartGyroscopeData by sensorViewModel.chartGyroscopeData.collectAsStateWithLifecycle()
-    val chartMagnetometerData by sensorViewModel.chartMagnetometerData.collectAsStateWithLifecycle()
-    
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .verticalScroll(scrollState)
-                .padding(16.dp),
+    LaunchedEffect(chartsExpanded) {
+        if (chartsExpanded) sensorViewModel.resetChartData() else sensorViewModel.stopChartData()
+    }
+    Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+        LazyColumn(
+            modifier = Modifier.widthIn(max = 800.dp).fillMaxSize().align(Alignment.TopCenter).testTag("sensors_screen"),
+            contentPadding = PaddingValues(16.dp, 20.dp, 16.dp, 32.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            // 顶部标题卡片
-            HeaderCard()
-            
-            // 实时传感器数据卡片（带时间戳）
-            RealTimeSensorCard(
-                sensorStatus = sensorStatus,
-                isRunning = sensorStatus.values.any { it },
-                isEncryptedUploading = isEncryptedUploading,
-                accelerometerData = accelerometerData,
-                gyroscopeData = gyroscopeData,
-                magnetometerData = magnetometerData
-            )
-            
-            // 可折叠的图表区域（使用MPAndroidChart）
-            AnimatedChartSection(
-                isExpanded = isChartExpanded,
-                onToggleExpand = { 
-                    isChartExpanded = !isChartExpanded
-                    if (isChartExpanded) {
-                        // 展开时重置图表数据
-                        sensorViewModel.resetChartData()
-                    } else {
-                        // 关闭时停止图表数据更新
-                        sensorViewModel.stopChartData()
+            item(key = "sensor_header", contentType = "heading") {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("了解手机的感知", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                    Text("这些变化帮助识别使用习惯。日常使用无需读懂数值。", style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+            item(key = "sensor_status", contentType = "status") { SensorOverview(viewModel) }
+            item(key = "accelerometer", contentType = "sensor") {
+                SensorReading("加速度计", "感知手机移动、拿起和放下", "m/s²", "accelerometer", viewModel, sensorViewModel.accelerometerData)
+            }
+            item(key = "gyroscope", contentType = "sensor") {
+                SensorReading("陀螺仪", "感知手机转动和握持方向变化", "rad/s", "gyroscope", viewModel, sensorViewModel.gyroscopeData)
+            }
+            item(key = "magnetometer", contentType = "sensor") {
+                SensorReading("磁力计", "感知手机周围的磁场变化", "μT", "magnetometer", viewModel, sensorViewModel.magnetometerData)
+            }
+            item(key = "chart_toggle", contentType = "action") {
+                OutlinedCard(onClick = viewModel::toggleVisualization, modifier = Modifier.fillMaxWidth().testTag("sensor_chart_toggle")) {
+                    Row(Modifier.fillMaxWidth().padding(18.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text("数据可视化", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                            Text(if (chartsExpanded) "查看最近的变化，点击收起" else "想了解变化时，再展开曲线", style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Icon(if (chartsExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                            contentDescription = if (chartsExpanded) "收起曲线" else "展开曲线")
                     }
-                },
-                accelerometerData = chartAccelerometerData,  // 使用图表专用数据
-                gyroscopeData = chartGyroscopeData,          // 使用图表专用数据
-                magnetometerData = chartMagnetometerData     // 使用图表专用数据
-            )
-            
-            // 最近前台应用（最多10个）
-            RecentAppsCard(recentApps = recentApps)
-            
-            Spacer(modifier = Modifier.height(80.dp)) // 为底部导航留出空间
+                }
+            }
+            if (chartsExpanded) {
+                item(key = "chart_accelerometer", contentType = "chart") {
+                    SensorChartCard("加速度计", "accelerometer", sensorViewModel.chartAccelerometerData)
+                }
+                item(key = "chart_gyroscope", contentType = "chart") {
+                    SensorChartCard("陀螺仪", "gyroscope", sensorViewModel.chartGyroscopeData)
+                }
+                item(key = "chart_magnetometer", contentType = "chart") {
+                    SensorChartCard("磁力计", "magnetometer", sensorViewModel.chartMagnetometerData)
+                }
+            }
+            item(key = "recent_apps", contentType = "apps") { RecentAppsCard(sensorViewModel) }
         }
     }
 }
 
-/**
- * 顶部标题卡片
- */
 @Composable
-fun HeaderCard() {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(24.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f)
-        )
-    ) {
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(
-                    Brush.horizontalGradient(
-                        colors = listOf(
-                            MaterialTheme.colorScheme.primary.copy(alpha = 0.1f),
-                            MaterialTheme.colorScheme.tertiary.copy(alpha = 0.1f)
-                        )
-                    )
-                )
-                .padding(24.dp)
-        ) {
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Icon(
-                    imageVector = Icons.Filled.Sensors,
-                    contentDescription = null,
-                    modifier = Modifier.size(48.dp),
-                    tint = MaterialTheme.colorScheme.primary
-                )
-                Spacer(modifier = Modifier.height(8.dp))
-                Text(
-                    text = stringResource(R.string.sensor_data_visualization),
-                    style = MaterialTheme.typography.headlineSmall,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onPrimaryContainer
-                )
-                Text(
-                    text = stringResource(R.string.app_description),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f),
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.padding(top = 4.dp)
-                )
+private fun SensorOverview(viewModel: MainViewModel) {
+    val status by viewModel.sensorStatus.observeAsState(emptyMap())
+    val running = status.values.any { it }
+    val uploading by viewModel.isEncryptedUploading.observeAsState(false)
+    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer), shape = RoundedCornerShape(24.dp)) {
+        Row(Modifier.fillMaxWidth().padding(20.dp), horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Default.Sensors, null, Modifier.size(32.dp), tint = MaterialTheme.colorScheme.onPrimaryContainer)
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(if (running) "正在感知手机动作" else "当前未采集数据", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                Text(if (running) "数值会随手机动作变化，这是正常现象。" else "在“认证与分析”开始认证后，这里会显示实时数据。",
+                    style = MaterialTheme.typography.bodyMedium)
+                Text(if (uploading) "采集与上传服务已开启" else "采集与上传服务未开启", style = MaterialTheme.typography.bodySmall)
             }
         }
     }
 }
 
-/**
- * 实时传感器数据卡片（显示真实传感器数据和时间戳）
- */
+/** A 10 Hz preview is enough to read; collection and upload retain every original sample. */
+@OptIn(FlowPreview::class)
 @Composable
-fun RealTimeSensorCard(
-    sensorStatus: Map<String, Boolean>,
-    isRunning: Boolean,
-    isEncryptedUploading: Boolean,
-    accelerometerData: SensorDataViewModel.SensorData,
-    gyroscopeData: SensorDataViewModel.SensorData,
-    magnetometerData: SensorDataViewModel.SensorData
-) {
-    val timeFormatter = remember { SimpleDateFormat("HH:mm:ss.SSS", Locale.getDefault()) }
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(20.dp),
-        elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
-    ) {
-        Column(
-            modifier = Modifier.padding(20.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column {
-                    Text(
-                        text = "实时数据",
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.Bold
-                    )
-                    if (isRunning) {
-                        Text(
-                            text = "时间: ${timeFormatter.format(Date())}",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
-                
-                // 状态指示器容器
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    // 采集状态指示器
-                    StatusIndicator(isActive = isRunning)
-                    
-                    // 加密上传状态指示器
-                    EncryptionStatusIndicator(isEncrypted = isEncryptedUploading)
-                }
-            }
-            
-            // 加速度计实时数据
-            SensorDataRow(
-                icon = Icons.Outlined.Speed,
-                name = "加速度计",
-                isActive = sensorStatus["accelerometer"] == true,
-                values = Triple(accelerometerData.x, accelerometerData.y, accelerometerData.z),
-                timestamp = accelerometerData.timestamp,
-                color = ExtendedColors.chartAccelerometer
-            )
-            
-            HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
-            
-            // 陀螺仪实时数据
-            SensorDataRow(
-                icon = Icons.Outlined.RotateRight,
-                name = "陀螺仪",
-                isActive = sensorStatus["gyroscope"] == true,
-                values = Triple(gyroscopeData.x, gyroscopeData.y, gyroscopeData.z),
-                timestamp = gyroscopeData.timestamp,
-                color = ExtendedColors.chartGyroscope
-            )
-            
-            HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
-            
-            // 磁力计实时数据
-            SensorDataRow(
-                icon = Icons.Outlined.Explore,
-                name = "磁力计",
-                isActive = sensorStatus["magnetometer"] == true,
-                values = Triple(magnetometerData.x, magnetometerData.y, magnetometerData.z),
-                timestamp = magnetometerData.timestamp,
-                color = ExtendedColors.chartMagnetometer
-            )
-        }
-    }
+private fun StateFlow<SensorDataViewModel.SensorData>.displayState(): State<SensorDataViewModel.SensorData> {
+    val display = remember(this) { sample(100).flowOn(Dispatchers.Default) }
+    val initialSample = remember(this) { value }
+    return display.collectAsStateWithLifecycle(initialValue = initialSample)
 }
 
-/**
- * 传感器数据行（带时间戳）
- */
 @Composable
-fun SensorDataRow(
-    icon: ImageVector,
+private fun SensorReading(
     name: String,
-    isActive: Boolean,
-    values: Triple<Float, Float, Float>,
-    timestamp: Long,
-    color: Color
+    description: String,
+    unit: String,
+    key: String,
+    viewModel: MainViewModel,
+    samples: StateFlow<SensorDataViewModel.SensorData>
 ) {
-    val timeFormatter = remember { SimpleDateFormat("mm:ss.SSS", Locale.getDefault()) }
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        // 图标和名称
-        Box(
-            modifier = Modifier
-                .size(40.dp)
-                .clip(CircleShape)
-                .background(color.copy(alpha = 0.1f)),
-            contentAlignment = Alignment.Center
-        ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = name,
-                tint = if (isActive) color else Color.Gray,
-                modifier = Modifier.size(24.dp)
-            )
-        }
-        
-        Spacer(modifier = Modifier.width(12.dp))
-        
-        Column(modifier = Modifier.weight(1f)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Column {
-                    Text(
-                        text = name,
-                        style = MaterialTheme.typography.bodyLarge,
-                        fontWeight = FontWeight.Medium
-                    )
-                    if (isActive && timestamp > 0) {
-                        Text(
-                            text = timeFormatter.format(Date(timestamp)),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
-                        )
+    val status by viewModel.sensorStatus.observeAsState(emptyMap())
+    val sample by samples.displayState()
+    val active = status[key] == true
+    val number = remember { DecimalFormat("0.00") }
+    val clock = remember { SimpleDateFormat("HH:mm:ss", Locale.getDefault()) }
+    Card(modifier = Modifier.fillMaxWidth().testTag("sensor_reading_$key"), shape = RoundedCornerShape(20.dp)) {
+        Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Box(Modifier.size(8.dp).background(if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline, CircleShape))
+                Text(name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                Text(if (active) "采集中" else "未采集", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            Text(description, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf("X" to sample.x, "Y" to sample.y, "Z" to sample.z).forEach { (axis, value) ->
+                    Surface(modifier = Modifier.weight(1f), color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f), shape = RoundedCornerShape(12.dp)) {
+                        Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text(axis, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(if (sample.timestamp > 0 && value.isFinite()) number.format(value) else "—", style = MaterialTheme.typography.bodyMedium)
+                        }
                     }
                 }
             }
-            
-            Spacer(modifier = Modifier.height(8.dp))
-            
-            // XYZ 数值显示
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                ValueChip(label = "X", value = values.first, color = color)
-                ValueChip(label = "Y", value = values.second, color = color)
-                ValueChip(label = "Z", value = values.third, color = color)
+            Text(if (sample.timestamp > 0) "${clock.format(Date(sample.timestamp))} · $unit${if (!active) " · 上次记录" else ""}" else "等待数据 · $unit",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
+@Composable
+private fun SensorChartCard(title: String, key: String, samples: StateFlow<SensorDataViewModel.SensorData>) {
+    val window = remember { SensorChartWindow() }
+    var points by remember { mutableStateOf<List<SensorDataViewModel.SensorData>>(emptyList()) }
+    var paused by remember { mutableStateOf(false) }
+    if (!paused) {
+        val sample by samples.displayState()
+        LaunchedEffect(sample) {
+            if (window.add(sample)) points = window.snapshot()
+        }
+    }
+    Card(modifier = Modifier.fillMaxWidth().testTag("sensor_chart_$key"), shape = RoundedCornerShape(20.dp)) {
+        Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            Text("仅显示最近 120 个预览点，完整采集数据不受影响。", style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+            SensorTrendChart(points, Modifier.fillMaxWidth().height(160.dp))
+            TextButton(onClick = { paused = !paused }, modifier = Modifier.align(Alignment.End)) {
+                Text(if (paused) "继续更新" else "暂停查看")
             }
         }
     }
 }
 
-/**
- * 数值芯片
- */
+/** Paths are rebuilt only for new preview points or size changes, never on every scroll frame. */
 @Composable
-fun ValueChip(label: String, value: Float, color: Color) {
-    Surface(
-        shape = RoundedCornerShape(8.dp),
-        color = color.copy(alpha = 0.1f),
-        modifier = Modifier
-    ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.Center
-        ) {
-            Text(
-                text = "$label:",
-                style = MaterialTheme.typography.labelSmall,
-                color = color,
-                fontWeight = FontWeight.Bold
-            )
-            Spacer(modifier = Modifier.width(4.dp))
-            Text(
-                text = String.format("%.2f", value),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurface
-            )
+internal fun SensorTrendChart(points: List<SensorDataViewModel.SensorData>, modifier: Modifier = Modifier) {
+    val colors = listOf(MaterialTheme.colorScheme.primary, MaterialTheme.colorScheme.tertiary, MaterialTheme.colorScheme.secondary)
+    val grid = MaterialTheme.colorScheme.outlineVariant
+    Column(modifier) {
+        Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+            colors.forEachIndexed { index, color -> Text(listOf("X", "Y", "Z")[index], color = color, style = MaterialTheme.typography.labelSmall) }
         }
-    }
-}
-
-/**
- * 控制卡片
- */
-@Composable
-fun ControlCard(
-    isCollectionRunning: Boolean,
-    onToggleCollection: () -> Unit
-) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(20.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = if (isCollectionRunning) 
-                ExtendedColors.success.copy(alpha = 0.1f) 
-            else 
-                MaterialTheme.colorScheme.surface
-        )
-    ) {
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            contentAlignment = Alignment.Center
-        ) {
-            val infiniteTransition = rememberInfiniteTransition(label = "pulse")
-            val scale by infiniteTransition.animateFloat(
-                initialValue = 1f,
-                targetValue = 1.05f,
-                animationSpec = infiniteRepeatable(
-                    animation = tween(1000),
-                    repeatMode = RepeatMode.Reverse
-                ),
-                label = "scale"
-            )
-            
-            Button(
-                onClick = onToggleCollection,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(56.dp)
-                    .scale(if (isCollectionRunning) scale else 1f),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = if (isCollectionRunning) 
-                        ExtendedColors.error 
-                    else 
-                        MaterialTheme.colorScheme.primary
-                ),
-                shape = RoundedCornerShape(16.dp)
-            ) {
-                Icon(
-                    imageVector = if (isCollectionRunning) Icons.Filled.Stop else Icons.Filled.PlayArrow,
-                    contentDescription = null,
-                    modifier = Modifier.size(24.dp)
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(
-                    text = if (isCollectionRunning) "停止采集" else "开始采集",
-                    style = MaterialTheme.typography.labelLarge,
-                    fontSize = 16.sp
-                )
-            }
-        }
-    }
-}
-
-/**
- * 可折叠的图表区域（集成MPAndroidChart）
- */
-@Composable
-fun AnimatedChartSection(
-    isExpanded: Boolean,
-    onToggleExpand: () -> Unit,
-    accelerometerData: SensorDataViewModel.SensorData,
-    gyroscopeData: SensorDataViewModel.SensorData,
-    magnetometerData: SensorDataViewModel.SensorData
-) {
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable { onToggleExpand() },
-        shape = RoundedCornerShape(20.dp)
-    ) {
-        Column {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(20.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "数据可视化",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold
-                )
-                
-                val rotation by animateFloatAsState(
-                    targetValue = if (isExpanded) 180f else 0f,
-                    animationSpec = tween(300),
-                    label = "rotation"
-                )
-                
-                Icon(
-                    imageVector = Icons.Filled.ExpandMore,
-                    contentDescription = null,
-                    modifier = Modifier.rotate(rotation)
-                )
-            }
-            
-            AnimatedVisibility(
-                visible = isExpanded,
-                enter = expandVertically() + fadeIn(),
-                exit = shrinkVertically() + fadeOut()
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 20.dp, vertical = 10.dp)
-                ) {
-                    // 加速度计图表
-                    SensorChartCard(
-                        title = "加速度计",
-                        sensorData = accelerometerData,
-                        color = ExtendedColors.chartAccelerometer
-                    )
-                    
-                    Spacer(modifier = Modifier.height(12.dp))
-                    
-                    // 陀螺仪图表
-                    SensorChartCard(
-                        title = "陀螺仪",
-                        sensorData = gyroscopeData,
-                        color = ExtendedColors.chartGyroscope
-                    )
-                    
-                    Spacer(modifier = Modifier.height(12.dp))
-                    
-                    // 磁力计图表
-                    SensorChartCard(
-                        title = "磁力计",
-                        sensorData = magnetometerData,
-                        color = ExtendedColors.chartMagnetometer
-                    )
-                }
-            }
-        }
-    }
-}
-
-/**
- * 传感器图表卡片（使用MPAndroidChart）
- */
-@Composable
-fun SensorChartCard(
-    title: String,
-    sensorData: SensorDataViewModel.SensorData,
-    color: Color
-) {
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(200.dp),
-        shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surface
-        ),
-        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
-    ) {
-        Column(
-            modifier = Modifier.padding(12.dp)
-        ) {
-            Text(
-                text = title,
-                style = MaterialTheme.typography.labelLarge,
-                fontWeight = FontWeight.Bold,
-                color = color
-            )
-            
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(top = 8.dp)
-            ) {
-                InteractiveLineChart(
-                    xValue = sensorData.x,
-                    yValue = sensorData.y,
-                    zValue = sensorData.z,
-                    timestamp = sensorData.timestamp,
-                    color = color
-                )
-            }
-        }
-    }
-}
-
-/**
- * 交互式折线图表（使用MPAndroidChart）
- */
-@Composable
-fun InteractiveLineChart(
-    xValue: Float,
-    yValue: Float,
-    zValue: Float,
-    timestamp: Long,
-    color: Color
-) {
-    val maxDataPoints = 100 // 最多显示100个数据点
-    val xEntries = remember { mutableStateListOf<Entry>() }
-    val yEntries = remember { mutableStateListOf<Entry>() }
-    val zEntries = remember { mutableStateListOf<Entry>() }
-    var dataIndex by remember { mutableStateOf(0f) }
-    val startTime = remember { mutableStateOf(System.currentTimeMillis()) }
-    
-    // 更新数据
-    LaunchedEffect(timestamp) {
-        if (timestamp > 0) {
-            // 计算相对时间（以秒为单位）
-            val relativeTime = (System.currentTimeMillis() - startTime.value) / 1000f
-            
-            xEntries.add(Entry(relativeTime, xValue))
-            yEntries.add(Entry(relativeTime, yValue))
-            zEntries.add(Entry(relativeTime, zValue))
-            
-            // 不限制数据点数量，让图表自动缩放显示所有数据
-            
-            dataIndex = relativeTime
-        }
-    }
-    
-    AndroidView(
-        factory = { context ->
-            LineChart(context).apply {
-                description.isEnabled = false
-                legend.isEnabled = true
-                setTouchEnabled(true)
-                setScaleEnabled(true)
-                isDragEnabled = true
-                setPinchZoom(true)
-                
-                // X轴设置（显示时间）
-                xAxis.position = XAxis.XAxisPosition.BOTTOM
-                xAxis.setDrawGridLines(false)
-                xAxis.granularity = 1f
-                xAxis.valueFormatter = object : com.github.mikephil.charting.formatter.ValueFormatter() {
-                    override fun getFormattedValue(value: Float): String {
-                        return "${value.toInt()}s"  // 显示为秒数
+        Box(Modifier.fillMaxWidth().weight(1f).semantics { contentDescription = "三个方向的动作变化曲线，${points.size} 个预览点" }
+            .drawWithCache {
+                val paths = List(3) { Path() }
+                val values = points.flatMap { listOf(it.x, it.y, it.z) }
+                val low = values.minOrNull() ?: 0f
+                val high = values.maxOrNull() ?: 1f
+                val span = (high.toDouble() - low.toDouble()).coerceAtLeast(0.01)
+                val firstTime = points.firstOrNull()?.timestamp ?: 0L
+                val duration = ((points.lastOrNull()?.timestamp ?: firstTime) - firstTime).coerceAtLeast(1L)
+                points.forEachIndexed { index, point ->
+                    val x = if (points.size == 1) size.width / 2 else size.width * ((point.timestamp - firstTime).toDouble() / duration).toFloat()
+                    listOf(point.x, point.y, point.z).forEachIndexed { axis, value ->
+                        val y = size.height * (0.95f - 0.9f * ((value.toDouble() - low) / span).toFloat())
+                        if (index == 0) paths[axis].moveTo(x, y) else paths[axis].lineTo(x, y)
                     }
                 }
-                
-                // Y轴设置
-                axisLeft.setDrawGridLines(true)
-                axisRight.isEnabled = false
-                
-                // 设置背景颜色
-                setBackgroundColor(android.graphics.Color.TRANSPARENT)
-                setGridBackgroundColor(android.graphics.Color.TRANSPARENT)
-            }
-        },
-        update = { chart ->
-            val dataSets = mutableListOf<LineDataSet>()
-            
-            // X轴数据（使用柔和的颜色）
-            if (xEntries.isNotEmpty()) {
-                val xDataSet = LineDataSet(xEntries.toList(), "X").apply {
-                    setColor(android.graphics.Color.parseColor("#C08B8B")) // 柔和的淡红色
-                    lineWidth = 2f
-                    setDrawCircles(false)
-                    setDrawValues(false)
-                    mode = LineDataSet.Mode.CUBIC_BEZIER
+                val stroke = Stroke(width = 2.dp.toPx())
+                onDrawBehind {
+                    repeat(5) { index ->
+                        val y = size.height * index / 4
+                        drawLine(grid, Offset(0f, y), Offset(size.width, y), 1.dp.toPx())
+                    }
+                    paths.forEachIndexed { index, path -> drawPath(path, colors[index], style = stroke) }
                 }
-                dataSets.add(xDataSet)
-            }
-            
-            // Y轴数据（使用柔和的颜色）
-            if (yEntries.isNotEmpty()) {
-                val yDataSet = LineDataSet(yEntries.toList(), "Y").apply {
-                    setColor(android.graphics.Color.parseColor("#8BC08B")) // 柔和的淡绿色
-                    lineWidth = 2f
-                    setDrawCircles(false)
-                    setDrawValues(false)
-                    mode = LineDataSet.Mode.CUBIC_BEZIER
-                }
-                dataSets.add(yDataSet)
-            }
-            
-            // Z轴数据（使用柔和的颜色）
-            if (zEntries.isNotEmpty()) {
-                val zDataSet = LineDataSet(zEntries.toList(), "Z").apply {
-                    setColor(android.graphics.Color.parseColor("#8B8BC0")) // 柔和的淡蓝色
-                    lineWidth = 2f
-                    setDrawCircles(false)
-                    setDrawValues(false)
-                    mode = LineDataSet.Mode.CUBIC_BEZIER
-                }
-                dataSets.add(zDataSet)
-            }
-            
-            if (dataSets.isNotEmpty()) {
-                chart.data = LineData(dataSets.toList())
-                chart.invalidate()
-                
-                // 自动滚动到最新数据
-                chart.moveViewToX(dataIndex)
-            }
-        },
-        modifier = Modifier.fillMaxSize()
-    )
+            }, contentAlignment = Alignment.Center) {
+            if (points.size < 2) Text("等待动作数据", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
 }
 
-/**
- * 最近前台应用卡片（显示最近10个应用）
- */
 @Composable
-fun RecentAppsCard(
-    recentApps: List<SensorDataViewModel.RecentApp>
-) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(20.dp)
-    ) {
-        Column(
-            modifier = Modifier.padding(20.dp)
-        ) {
-            Text(
-                text = "最近前台应用",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.padding(bottom = 12.dp)
-            )
-
-            if (recentApps.isEmpty()) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 16.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = "暂无应用记录",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
-                    )
-                }
+private fun RecentAppsCard(viewModel: SensorDataViewModel) {
+    val recentApps by viewModel.recentApps.collectAsStateWithLifecycle()
+    val apps = remember(recentApps) { recentApps.sortedByDescending { it.timestamp }.distinctBy { it.packageName }.take(10) }
+    val clock = remember { SimpleDateFormat("HH:mm:ss", Locale.getDefault()) }
+    Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(20.dp)) {
+        Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text("最近使用的应用", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            Text("帮助回顾认证发生时的使用场景。", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (apps.isEmpty()) {
+                Text("暂无记录。开始采集并允许应用使用情况权限后，这里会显示最近使用的应用。", style = MaterialTheme.typography.bodyMedium)
             } else {
-                // 确保列表唯一性和正确排序
-                val uniqueApps = remember(recentApps) {
-                    recentApps.distinctBy { it.packageName }
-                        .take(10)
-                        .sortedByDescending { it.timestamp }
-                }
-
-                LazyColumn(
-                    modifier = Modifier.heightIn(max = 200.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    items(
-                        items = uniqueApps,
-                        key = { it.packageName } // 使用包名作为唯一键
-                    ) { app ->
-                        AppItem(
-                            packageName = app.packageName,
-                            appName = app.appName,
-                            timestamp = app.timestamp
-                        )
+                // At most ten rows: avoid a second vertical scroller fighting the page gesture.
+                apps.forEach { app ->
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Icon(Icons.Default.Apps, null, tint = MaterialTheme.colorScheme.primary)
+                        Text(app.appName, Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+                        Text(clock.format(Date(app.timestamp)), style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
             }
         }
-    }
-}
-
-/**
- * 应用项显示
- */
-@Composable
-fun AppItem(
-    packageName: String,
-    appName: String,
-    timestamp: Long
-) {
-    val timeFormatter = remember { SimpleDateFormat("HH:mm:ss", Locale.getDefault()) }
-    
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(8.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 8.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.weight(1f)
-            ) {
-                Icon(
-                    imageVector = Icons.Outlined.Apps,
-                    contentDescription = null,
-                    modifier = Modifier.size(20.dp),
-                    tint = MaterialTheme.colorScheme.primary
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Column {
-                    Text(
-                        text = appName,
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontWeight = FontWeight.Medium
-                    )
-                    Text(
-                        text = packageName,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-            }
-            Text(
-                text = timeFormatter.format(Date(timestamp)),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-    }
-}
-
-/**
- * 状态指示器
- */
-@Composable
-fun StatusIndicator(isActive: Boolean) {
-    val infiniteTransition = rememberInfiniteTransition(label = "status")
-    val alpha by infiniteTransition.animateFloat(
-        initialValue = 0.3f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(1000),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "alpha"
-    )
-    
-    Row(
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Box(
-            modifier = Modifier
-                .size(8.dp)
-                .clip(CircleShape)
-                .background(
-                    if (isActive) ExtendedColors.sensorActive.copy(alpha = alpha)
-                    else Color.Gray
-                )
-        )
-        Spacer(modifier = Modifier.width(4.dp))
-        Text(
-            text = if (isActive) "采集中" else "已停止",
-            style = MaterialTheme.typography.labelSmall,
-            color = if (isActive) ExtendedColors.sensorActive else Color.Gray
-        )
-    }
-}
-
-/**
- * 加密上传状态指示器
- */
-@Composable
-fun EncryptionStatusIndicator(isEncrypted: Boolean) {
-    val infiniteTransition = rememberInfiniteTransition(label = "encryption")
-    val alpha by infiniteTransition.animateFloat(
-        initialValue = 0.3f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(1500),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "alpha"
-    )
-    
-    Row(
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Icon(
-            imageVector = if (isEncrypted) Icons.Filled.Lock else Icons.Filled.LockOpen,
-            contentDescription = null,
-            modifier = Modifier.size(12.dp),
-            tint = if (isEncrypted) 
-                MaterialTheme.colorScheme.primary.copy(alpha = alpha) 
-            else 
-                MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
-        )
-        Spacer(modifier = Modifier.width(4.dp))
-        Text(
-            text = if (isEncrypted) "加密上传中" else "未加密上传",
-            style = MaterialTheme.typography.labelSmall,
-            color = if (isEncrypted) 
-                MaterialTheme.colorScheme.primary 
-            else 
-                MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
-        )
     }
 }

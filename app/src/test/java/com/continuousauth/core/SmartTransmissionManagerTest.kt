@@ -48,6 +48,7 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [30], application = Application::class, manifest = Config.NONE)
 class SmartTransmissionManagerTest {
+    private val privacy: PrivacyManager = mockk(relaxed = true)
     private val sensor: SensorCollector = mockk(relaxed = true)
     private val processor: SensorDataProcessor = mockk(relaxed = true)
     private val upload: UploadManager = mockk(relaxed = true)
@@ -61,7 +62,6 @@ class SmartTransmissionManagerTest {
     fun setUp() {
         val context: Context = mockk()
         preferences = mockk(relaxed = true)
-        val privacy: PrivacyManager = mockk()
         every { context.getSharedPreferences(any(), any()) } returns preferences
         every { preferences.getString(any(), any()) } returns null
         every { privacy.consentState } returns MutableStateFlow(ConsentState.GRANTED)
@@ -82,6 +82,31 @@ class SmartTransmissionManagerTest {
 
     @After
     fun tearDown() = runBlocking { manager.stop() }
+
+    @Test
+    fun expiredDataIsCleanedBeforeCollectionAndUploadResume() = runBlocking {
+        every { privacy.shouldPerformRetentionCleanup() } returns true
+        manager.start()
+        coVerifyOrder {
+            privacy.performRetentionCleanup()
+            upload.start(any())
+            sensor.startCollection()
+        }
+    }
+
+    @Test
+    fun sessionKeystoreAndSensorStartupRunOffTheCallingThread() = runBlocking {
+        val caller = Thread.currentThread()
+        every { sessions.getCurrentSessionId() } answers {
+            assertTrue("Session preferences must not block the service thread", Thread.currentThread() !== caller)
+            "session-1"
+        }
+        coEvery { sensor.startCollection() } coAnswers {
+            assertTrue("Sensor registration must not block the service thread", Thread.currentThread() !== caller)
+        }
+        manager.start()
+        assertEquals(CollectionStatus.RUNNING, manager.collectionState.value.status)
+    }
 
     @Test
     fun offlineUploadManagerCanStartCollectionAndStopDrainsBeforeEndingSession() = runBlocking {

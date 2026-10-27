@@ -2,10 +2,9 @@ package com.continuousauth.ui.compose.components
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.expandVertically
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
@@ -34,7 +33,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
@@ -82,12 +81,12 @@ fun ExpandableSection(
                 Text(summary, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             Spacer(Modifier.width(8.dp))
-            Icon(Icons.Default.ExpandMore, contentDescription = null, modifier = Modifier.rotate(rotation))
+            Icon(Icons.Default.ExpandMore, contentDescription = null, modifier = Modifier.graphicsLayer { rotationZ = rotation })
         }
         AnimatedVisibility(
             visible = expanded,
-            enter = expandVertically() + fadeIn(),
-            exit = shrinkVertically() + fadeOut()
+            enter = fadeIn(tween(120)),
+            exit = fadeOut(tween(100))
         ) {
             Column(
                 modifier = Modifier.fillMaxWidth().testTag("section_content_$sectionKey").padding(horizontal = 20.dp).padding(bottom = 20.dp),

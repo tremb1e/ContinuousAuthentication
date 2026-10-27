@@ -20,8 +20,7 @@ import javax.net.ssl.X509TrustManager
 
 /**
  * 轻量级的 gRPC/TLS 能力探测器。
- * 在 gRPC 端口上直接做 TLS 1.3/1.2 握手探测，成功则优先走 TLS，
- * 握手不可用时指导客户端降级到 h2c（HTTP/2 over cleartext）。
+ * 仅用于诊断 TLS 能力；真实连接由认证服务的心跳 RPC 验证。
  */
 @Singleton
 class GrpcTlsInspector @Inject constructor() {
@@ -32,16 +31,6 @@ class GrpcTlsInspector @Inject constructor() {
         private const val CONNECT_TIMEOUT_MS = 3_000
         private const val SOCKET_TIMEOUT_MS = 3_000
 
-        // 与服务端保持一致的 TLS 1.2/1.3 密码套件优先级
-        private val TLS12_13_CIPHERS = listOf(
-            "TLS_AES_256_GCM_SHA384",
-            "TLS_AES_128_GCM_SHA256",
-            "TLS_CHACHA20_POLY1305_SHA256",
-            "ECDHE-ECDSA-AES256-GCM-SHA384",
-            "ECDHE-RSA-AES256-GCM-SHA384",
-            "ECDHE-ECDSA-AES128-GCM-SHA256",
-            "ECDHE-RSA-AES128-GCM-SHA256"
-        )
     }
 
     private data class CachedProbe(
@@ -62,7 +51,7 @@ class GrpcTlsInspector @Inject constructor() {
         }
 
         val result = probe(host, port)
-        cache[cacheKey] = CachedProbe(now, result)
+        if (result.success) cache[cacheKey] = CachedProbe(now, result)
         result
     }
 
@@ -92,7 +81,7 @@ class GrpcTlsInspector @Inject constructor() {
             TlsProbeResult(
                 success = ok,
                 tlsVersion = tlsVersion,
-                negotiatedProtocol = negotiated ?: "h2",
+                negotiatedProtocol = negotiated?.takeIf { it.isNotBlank() },
                 errorMessage = null
             )
         } catch (e: Exception) {
@@ -128,16 +117,15 @@ class GrpcTlsInspector @Inject constructor() {
             socket.enabledProtocols = protocols.toTypedArray()
         }
 
-        val supportedCipherSet = socket.supportedCipherSuites.toSet()
-        val preferredCiphers = TLS12_13_CIPHERS.filter { supportedCipherSet.contains(it) }
-        if (preferredCiphers.isNotEmpty()) {
-            socket.enabledCipherSuites = preferredCiphers.toTypedArray()
+        socket.sslParameters = socket.sslParameters.apply {
+            endpointIdentificationAlgorithm = "HTTPS"
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) applicationProtocols = arrayOf("h2")
         }
     }
 
     /**
      * 使用系统信任锚的SSL配置，确保探测结果与真实gRPC握手一致。
-     * 当服务端未部署可信TLS证书时，探测会失败，从而触发客户端降级到h2c。
+     * 不缓存失败结果，也不将失败结果用作明文降级的依据。
      */
     private fun buildSystemTrustedSsl(): Pair<SSLSocketFactory, X509TrustManager> {
         val trustManagerFactory = TrustManagerFactory.getInstance(

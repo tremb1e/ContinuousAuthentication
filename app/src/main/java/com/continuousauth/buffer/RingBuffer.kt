@@ -32,13 +32,13 @@ class RingBuffer @Inject constructor() {
     }
     
     // Direct ByteBuffer，分配在堆外内存中，减少GC压力
-    private val buffer: ByteBuffer = ByteBuffer.allocateDirect(DEFAULT_BUFFER_SIZE)
+    @Volatile private var buffer: ByteBuffer = ByteBuffer.allocateDirect(DEFAULT_BUFFER_SIZE)
         .order(ByteOrder.nativeOrder())
     
     // 读写位置
     private var writePosition = 0
     private var readPosition = 0
-    private var size = 0
+    @Volatile private var size = 0
     
     // 线程安全锁
     private val bufferMutex = Mutex()
@@ -54,7 +54,7 @@ class RingBuffer @Inject constructor() {
      */
     suspend fun write(sample: SensorSample): Boolean = bufferMutex.withLock {
         // 检查是否有足够空间
-        if (size >= buffer.capacity() - SAMPLE_SIZE_BYTES) {
+        if (size + SAMPLE_SIZE_BYTES > buffer.capacity()) {
             // 缓冲区满，覆盖最旧的数据
             overflowCount++
             android.util.Log.w(TAG, "环形缓冲区溢出，覆盖最旧数据。溢出次数: $overflowCount")
@@ -113,7 +113,7 @@ class RingBuffer @Inject constructor() {
             return samples
         }
         
-        val samplesToRead = minOf(maxSamples, size / SAMPLE_SIZE_BYTES)
+        val samplesToRead = minOf(maxSamples.coerceAtLeast(0), size / SAMPLE_SIZE_BYTES)
         
         try {
             repeat(samplesToRead) {
@@ -204,7 +204,7 @@ class RingBuffer @Inject constructor() {
      * 注意：这会清空现有数据
      */
     suspend fun resize(newSize: Int): Boolean = bufferMutex.withLock {
-        val actualSize = newSize.coerceIn(MIN_BUFFER_SIZE, MAX_BUFFER_SIZE)
+        val actualSize = newSize.coerceIn(MIN_BUFFER_SIZE, MAX_BUFFER_SIZE) / SAMPLE_SIZE_BYTES * SAMPLE_SIZE_BYTES
         
         try {
             // 分配新的ByteBuffer
@@ -217,8 +217,9 @@ class RingBuffer @Inject constructor() {
                 android.util.Log.w(TAG, "调整缓冲区大小会丢失现有数据")
             }
             
-            // 替换缓冲区（让旧缓冲区被GC回收）
-            buffer.clear()
+            // Replace the allocation; the previous implementation cleared the old buffer
+            // and discarded the newly allocated buffer, leaving the capacity unchanged.
+            buffer = newBuffer
             writePosition = 0
             readPosition = 0
             size = 0
@@ -252,7 +253,7 @@ class RingBuffer @Inject constructor() {
      * 检查是否已满
      */
     fun isFull(): Boolean {
-        return size >= buffer.capacity() - SAMPLE_SIZE_BYTES
+        return size + SAMPLE_SIZE_BYTES > buffer.capacity()
     }
 }
 

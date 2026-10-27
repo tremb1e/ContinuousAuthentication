@@ -51,6 +51,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.dropWhile
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
@@ -60,7 +61,8 @@ import javax.inject.Inject
 import androidx.core.app.NotificationManagerCompat
 import android.os.Process
 import com.continuousauth.utils.Constant.UPLOAD_POLICY
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 data class ContinuousAuthUiState(
     val modelVersion: String = "",
@@ -177,6 +179,7 @@ class MainViewModel @Inject constructor(
     val sessionDuration: LiveData<String> = _sessionDuration
 
     // 上传统计更新任务
+    private var debugInfoJob: Job? = null
     private var uploadStatsJob: Job? = null
     private var sessionDurationJob: Job? = null
     private var authAnalysisTimerJob: Job? = null
@@ -403,8 +406,6 @@ class MainViewModel @Inject constructor(
                 // 设置内存危险回调
                 memoryMonitor.setOnMemoryCritical { memoryStatus ->
                     Log.e(TAG, "内存使用危险: ${(memoryStatus.usageRatio * 100).toInt()}%")
-                    // 自动触发GC
-                    memoryMonitor.suggestGC()
                 }
             } catch (e: Exception) {
                 _errorMessage.value = "内存监控启动失败: ${e.message}"
@@ -442,12 +443,22 @@ class MainViewModel @Inject constructor(
         // 允许输入 http://host:port 或 https://host:port
         val trimmed = ipInput.trim()
         val normalized = ServerEndpointNormalizer.normalize(trimmed, portInput)
+        val previous = getServerConfig()
 
         serverPrefs.edit()
             .putString("server_ip", normalized.host)
             .putInt("server_port", normalized.port)
             .putString("server_scheme", normalized.scheme)
             .apply()
+        if (previous != ServerConfig(normalized.host, normalized.port, normalized.scheme)) {
+            val wasAuthenticating = authenticationManager.active.value || authStartJob?.isActive == true
+            authStartJob?.cancel()
+            authenticationManager.stopAuthentication()
+            if (wasAuthenticating) {
+                _authUiState.value = ContinuousAuthUiState(authMessage = "服务器设置已更新，请重新开始认证")
+            }
+            uploadManager.updateServerEndpoint(normalized.endpoint)
+        }
     }
 
     /**
@@ -526,7 +537,10 @@ class MainViewModel @Inject constructor(
         _authUiState.value = _authUiState.value.copy(isStarting = true, authMessage = "正在准备认证，请稍候")
         authStartJob = viewModelScope.launch {
             try {
-                if (_isEncryptedUploading.value != true && _collectionStatus.value != "STARTING") {
+                val previousConnectionError = uploadManager.getUploadStatus().connectionStats.lastErrorTimestamp
+                val initialCollectionState = smartTransmissionManager.collectionState.value
+                val startsNewCollection = _isEncryptedUploading.value != true && _collectionStatus.value != "STARTING"
+                if (startsNewCollection) {
                     _collectionStatus.value = "STARTING"
                     startForegroundCollectionService()
                 } else if (smartTransmissionManager.collectionState.value.status == SmartTransmissionManager.CollectionStatus.PAUSED) {
@@ -534,26 +548,35 @@ class MainViewModel @Inject constructor(
                         .setAction(DataCollectionService.ACTION_RESUME_COLLECTION))
                 }
                 withTimeout(30_000L) {
-                    val state = smartTransmissionManager.collectionState.first {
-                        it.status == SmartTransmissionManager.CollectionStatus.RUNNING ||
-                            it.status == SmartTransmissionManager.CollectionStatus.PAUSED ||
-                            it.status == SmartTransmissionManager.CollectionStatus.ERROR
-                    }
+                    val state = smartTransmissionManager.collectionState
+                        .dropWhile { startsNewCollection && it == initialCollectionState }
+                        .first {
+                            it.status == SmartTransmissionManager.CollectionStatus.RUNNING ||
+                                it.status == SmartTransmissionManager.CollectionStatus.PAUSED ||
+                                it.status == SmartTransmissionManager.CollectionStatus.ERROR
+                        }
                     check(state.status != SmartTransmissionManager.CollectionStatus.ERROR) {
                         "数据采集未能启动，请检查设置后重试"
                     }
                     while (uploadManager.getUploadStatus().connectionStatus != ConnectionStatus.CONNECTED) {
+                        val status = uploadManager.getUploadStatus()
+                        if (status.connectionStatus == ConnectionStatus.ERROR &&
+                            status.connectionStats.lastErrorTimestamp != previousConnectionError) {
+                            throw AuthenticationConnectionException(status.connectionStats.lastErrorMessage
+                                ?: "暂时无法连接认证服务器，请稍后重试")
+                        }
                         delay(250)
                     }
                 }
                 if (protectionMode.value == ProtectionMode.OFF || privacyManager.consentState.value != ConsentState.GRANTED) return@launch
-                envelopeCryptoBox.initialize()
+                check(envelopeCryptoBox.initialize()) { "无法准备安全存储" }
                 val deviceIdHash = envelopeCryptoBox.getDeviceIdHash()
                 val currentSession = sessionManager.getCurrentSessionId()
                 check(!currentSession.isNullOrBlank()) { "数据采集尚未准备好，请稍后再试" }
                 val response = authenticationManager.startAuthentication(deviceIdHash, currentSession)
                 if (response == null) {
-                    showAuthenticationStartError("暂时无法开始认证，请检查网络或服务器设置后重试")
+                    showAuthenticationStartError(uploadManager.getUploadStatus().connectionStats.lastErrorMessage
+                        ?: "暂时无法开始认证，请稍后重试")
                     return@launch
                 }
                 if (!response.accepted) {
@@ -569,6 +592,8 @@ class MainViewModel @Inject constructor(
                     decisionTimeSec = response.decisionTimeSec,
                     authAnalysis = _authUiState.value.authAnalysis
                 )
+            } catch (e: AuthenticationConnectionException) {
+                showAuthenticationStartError(e.message ?: "暂时无法连接认证服务器，请稍后重试")
             } catch (e: TimeoutCancellationException) {
                 showAuthenticationStartError(when {
                     getSmartTransmissionEnabled() && !smartTransmissionManager.smartUploadWindowOpen.value ->
@@ -587,6 +612,8 @@ class MainViewModel @Inject constructor(
             }
         }
     }
+
+    private class AuthenticationConnectionException(message: String) : Exception(message)
 
     private fun showAuthenticationStartError(message: String) {
         _errorMessage.value = message
@@ -865,22 +892,8 @@ class MainViewModel @Inject constructor(
                 
                 stopCollectionAndAwait()
                 _collectionStatus.value = smartTransmissionManager.collectionState.value.status.name
-                _authUiState.value = _authUiState.value.copy(
-                    authActive = false,
-                    authMessage = "",
-                    lastDecision = AuthDecision.UNKNOWN,
-                    lastDecisionMessage = "",
-                    lastScore = 0f,
-                    lastThreshold = 0f,
-                    lastWindowId = 0L,
-                    lastUpdateTime = 0L,
-                    serverLatencyMs = null,
-                    serverTimestampMs = null,
-                    windowSizeSec = 0f,
-                    decisionTimeSec = 0f,
-                    modelVersion = "",
-                    authFailure = false,
-                    scoreValid = false
+                _authUiState.value = ContinuousAuthUiState(
+                    authAnalysis = _authUiState.value.authAnalysis
                 )
 
                 updateDebugInfo()
@@ -937,7 +950,7 @@ class MainViewModel @Inject constructor(
     fun refreshTlsConfig() {
         viewModelScope.launch {
             try {
-                val configInfo = tlsSecurityManager.getTlsConfigInfo()
+                val configInfo = withContext(Dispatchers.IO) { tlsSecurityManager.getTlsConfigInfo() }
                 _tlsConfigInfo.value = configInfo
             } catch (e: Exception) {
                 // 忽略错误，TLS信息只是展示用
@@ -1003,151 +1016,159 @@ class MainViewModel @Inject constructor(
      * 更新调试信息
      */
     private fun updateDebugInfo() {
-        if (_debugModeEnabled.value != true) return
-        
-        val debugText = buildString {
-            appendLine("=== 智能传输状态 ===")
-            appendLine("管理器状态: ${if (_isCollectionRunning.value == true) "运行中" else "已停止"}")
-            appendLine("传输策略: 1秒窗口批处理")
-            appendLine("批处理间隔: 1000ms")
-            appendLine()
-            
-            appendLine("=== gRPC 连接状态 ===")
-            val cfg = getServerConfig()
-            val transport = uploadManager.getTransportState()
-            appendLine("连接端点: ${cfg.scheme}://${cfg.host}:${cfg.port}")
-            appendLine("连接状态: ${_connectionStatus.value}")
-            val modeLabel = if (transport.mode == TransportMode.HTTPS) {
-                val detail = listOfNotNull(
-                    transport.tlsVersion,
-                    transport.negotiatedProtocol
-                ).filter { it.isNotBlank() }.joinToString(" / ")
-                if (detail.isBlank()) "TLS" else "TLS $detail"
-            } else {
-                "h2c 明文" + if (transport.downgradedToCleartext) "（TLS不可用/失败）" else ""
-            }
-            appendLine("传输通道: $modeLabel")
-            val stats = _transmissionStats.value
-            stats?.lastAckLatency?.let { appendLine("最近ACK延迟: ${it}ms") }
-            appendLine()
-            
-            appendLine("=== 缓冲与传输统计 ===")
-            val metricsSnapshot = metricsCollector.getSnapshot()
-            // 获取内存缓冲区状态
-            val uploadStatus = uploadManager.getUploadStatus()
-            val memorySamples = uploadStatus.bufferedPackets
-
-            // 获取磁盘队列统计
-            val queueStats = runBlocking { fileQueueManager.getQueueStatistics() }
-
-            appendLine("内存待发包数: $memorySamples")
-            appendLine("磁盘队列包数: ${queueStats.pendingPackets}")
-            appendLine("服务器已确认数据包: ${uploadStatus.uploadedPackets}")
-            appendLine("上传失败数: ${(metricsSnapshot.counters[com.continuousauth.observability.MetricType.UPLOADS_FAILED_NETWORK] ?: 0) + 
-                (metricsSnapshot.counters[com.continuousauth.observability.MetricType.UPLOADS_FAILED_SERVER] ?: 0)}")
-            appendLine("磁盘已丢弃数据包: ${queueStats.totalDiscarded}")
-            appendLine("上传成功率: ${"%.1f".format(metricsSnapshot.summary.currentUploadSuccessRate)}%")
-            appendLine()
-            
-            appendLine("=== 传感器信息 ===")
-            val sensorManager = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
-            val accelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
-            val gyroscope = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE)
-            val magnetometer = sensorManager.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD)
-            
-            accelerometer?.let {
-                appendLine("加速度计: ${it.vendor}")
-                appendLine("  最大采样率: ${1_000_000 / it.minDelay}Hz")
-                appendLine("  FIFO最大事件数: ${it.fifoMaxEventCount}")
-            }
-            gyroscope?.let {
-                appendLine("陀螺仪: ${it.vendor}")
-                appendLine("  最大采样率: ${1_000_000 / it.minDelay}Hz")
-                appendLine("  FIFO最大事件数: ${it.fifoMaxEventCount}")
-            }
-            magnetometer?.let {
-                appendLine("磁力计: ${it.vendor}")
-                appendLine("  最大采样率: ${1_000_000 / it.minDelay}Hz")
-                appendLine("  FIFO最大事件数: ${it.fifoMaxEventCount}")
-            }
-            appendLine()
-            
-            appendLine("=== 设备与密钥库 ===")
-            appendLine("设备型号: ${Build.MODEL}")
-            appendLine("Android版本: ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})")
-            appendLine("制造商: ${Build.MANUFACTURER}")
-            appendLine("产品: ${Build.PRODUCT}")
-            
+        if (_debugModeEnabled.value != true || debugInfoJob?.isActive == true) return
+        debugInfoJob = viewModelScope.launch {
             try {
-                val keyStore = KeyStore.getInstance("AndroidKeyStore")
-                keyStore.load(null)
-                appendLine("Keystore Provider: AndroidKeyStore")
-                appendLine("支持StrongBox: ${Build.VERSION.SDK_INT >= Build.VERSION_CODES.P}")
-                appendLine("密钥别名数量: ${keyStore.aliases().toList().size}")
+                val debugText = withContext(Dispatchers.IO) { buildDebugInfo() }
+                if (_debugModeEnabled.value == true) _debugInfo.value = debugText
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
-                appendLine("Keystore Provider: 获取失败")
-                appendLine("支持StrongBox: 未知")
+                Log.w(TAG, "无法刷新诊断信息", e)
             }
-            appendLine()
-            
-            appendLine("=== 异常检测策略 ===")
-            appendLine("异常检测: 已禁用（规范中已移除）")
-            appendLine()
-            
-            appendLine("=== 性能监控 ===")
-            val performanceStats = performanceMonitor.getPerformanceStats(60000L)
-            appendLine("采样数量: ${performanceStats.sampleCount}")
-            appendLine("当前内存: ${performanceStats.memoryUsageAvg.toInt()}MB")
-            appendLine("峰值内存: ${performanceStats.memoryUsagePeak}MB")
-            appendLine("平均CPU: ${"%.1f".format(performanceStats.cpuUsageAvg)}%")
-            appendLine("峰值CPU: ${"%.1f".format(performanceStats.cpuUsagePeak)}%")
-            appendLine("堆利用率: ${"%.1f".format(performanceStats.heapUtilization)}%")
-            appendLine()
-            
-            appendLine("=== 内存监控器 ===")
-            val memoryStatus = memoryMonitor.getCurrentMemoryStatus()
-            val memoryStats = memoryMonitor.getMonitoringStats()
-            appendLine("内存使用: ${(memoryStatus.usedMemoryBytes / (1024 * 1024))}MB / ${(memoryStatus.maxMemoryBytes / (1024 * 1024))}MB")
-            appendLine("内存利用率: ${"%.1f".format(memoryStatus.usageRatio * 100)}%")
-            appendLine("状态: ${when {
-                memoryStatus.isCritical -> "危险"
-                memoryStatus.isWarning -> "警告"
-                else -> "正常"
-            }}")
-            appendLine("监控样本数: ${memoryStats.samplesCount}")
-            appendLine("平均使用率: ${"%.1f".format(memoryStats.averageUsageRatio * 100)}%")
-            appendLine("峰值使用率: ${"%.1f".format(memoryStats.peakUsageRatio * 100)}%")
-            appendLine("警告次数: ${memoryStats.warningCount}")
-            appendLine("危险次数: ${memoryStats.criticalCount}")
-            appendLine()
-            
-            appendLine("=== 对象池状态 ===")
-            val poolStatus = sensorEventPool.getPoolStatus()
-            appendLine("当前池大小: ${poolStatus.currentSize}/${poolStatus.maxSize}")
-            appendLine("对象获取总数: ${poolStatus.totalAcquired}")
-            appendLine("对象释放总数: ${poolStatus.totalReleased}")
-            appendLine("新创建对象数: ${poolStatus.totalCreated}")
-            appendLine("对象池命中率: ${"%.1f".format(poolStatus.hitRate * 100)}%")
-            appendLine()
-            
-            appendLine("=== 网络环境 ===")
-            appendLine("网络类型: ${_networkState.value}")
-            val networkConfig = networkEnvironmentDetector.getTransmissionConfig()
-            appendLine("最大并发上传: ${networkConfig.maxConcurrentUploads}")
-            appendLine("上传超时: ${networkConfig.uploadTimeoutMs}ms")
-            appendLine("重试延迟: ${networkConfig.retryDelayMs}ms")
-            appendLine("最大重试次数: ${networkConfig.maxRetryAttempts}")
-            appendLine()
-            
-            appendLine("=== 指标摘要 ===")
-            appendLine("运行时长: ${metricsCollector.getUptime() / 1000}秒")
-            appendLine("异常检测数: ${metricsSnapshot.counters[com.continuousauth.observability.MetricType.ANOMALIES_DETECTED] ?: 0}")
-            appendLine("模式切换(快→慢): ${metricsSnapshot.counters[com.continuousauth.observability.MetricType.MODE_SWITCHES_TO_SLOW] ?: 0}")
-            appendLine("模式切换(慢→快): ${metricsSnapshot.counters[com.continuousauth.observability.MetricType.MODE_SWITCHES_TO_FAST] ?: 0}")
-            appendLine("快速模式总时间: ${(metricsSnapshot.counters[com.continuousauth.observability.MetricType.FAST_MODE_TOTAL_TIME] ?: 0) / 1000}秒")
         }
+    }
         
-        _debugInfo.value = debugText
+    private suspend fun buildDebugInfo(): String = buildString {
+        appendLine("=== 智能传输状态 ===")
+        appendLine("管理器状态: ${if (_isCollectionRunning.value == true) "运行中" else "已停止"}")
+        appendLine("传输策略: 1秒窗口批处理")
+        appendLine("批处理间隔: 1000ms")
+        appendLine()
+            
+        appendLine("=== gRPC 连接状态 ===")
+        val cfg = getServerConfig()
+        val transport = uploadManager.getTransportState()
+        appendLine("连接端点: ${cfg.scheme}://${cfg.host}:${cfg.port}")
+        appendLine("连接状态: ${_connectionStatus.value}")
+        val modeLabel = if (transport.mode == TransportMode.HTTPS) {
+            val detail = listOfNotNull(
+                transport.tlsVersion,
+                transport.negotiatedProtocol
+            ).filter { it.isNotBlank() }.joinToString(" / ")
+            if (detail.isBlank()) "TLS" else "TLS $detail"
+        } else {
+            "h2c 明文" + if (transport.downgradedToCleartext) "（TLS不可用/失败）" else ""
+        }
+        appendLine("传输通道: $modeLabel")
+        val stats = _transmissionStats.value
+        stats?.lastAckLatency?.let { appendLine("最近ACK延迟: ${it}ms") }
+        appendLine()
+            
+        appendLine("=== 缓冲与传输统计 ===")
+        val metricsSnapshot = metricsCollector.getSnapshot()
+        // 获取内存缓冲区状态
+        val uploadStatus = uploadManager.getUploadStatus()
+        val memorySamples = uploadStatus.bufferedPackets
+
+        // 获取磁盘队列统计
+        val queueStats = fileQueueManager.getQueueStatistics()
+
+        appendLine("内存待发包数: $memorySamples")
+        appendLine("磁盘队列包数: ${queueStats.pendingPackets}")
+        appendLine("服务器已确认数据包: ${uploadStatus.uploadedPackets}")
+        appendLine("上传失败数: ${(metricsSnapshot.counters[com.continuousauth.observability.MetricType.UPLOADS_FAILED_NETWORK] ?: 0) +
+            (metricsSnapshot.counters[com.continuousauth.observability.MetricType.UPLOADS_FAILED_SERVER] ?: 0)}")
+        appendLine("磁盘已丢弃数据包: ${queueStats.totalDiscarded}")
+        appendLine("上传成功率: ${"%.1f".format(metricsSnapshot.summary.currentUploadSuccessRate)}%")
+        appendLine()
+            
+        appendLine("=== 传感器信息 ===")
+        val sensorManager = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
+        val accelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
+        val gyroscope = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE)
+        val magnetometer = sensorManager.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD)
+            
+        accelerometer?.let {
+            appendLine("加速度计: ${it.vendor}")
+            appendLine("  最大采样率: ${if (it.minDelay > 0) 1_000_000 / it.minDelay else 0}Hz")
+            appendLine("  FIFO最大事件数: ${it.fifoMaxEventCount}")
+        }
+        gyroscope?.let {
+            appendLine("陀螺仪: ${it.vendor}")
+            appendLine("  最大采样率: ${if (it.minDelay > 0) 1_000_000 / it.minDelay else 0}Hz")
+            appendLine("  FIFO最大事件数: ${it.fifoMaxEventCount}")
+        }
+        magnetometer?.let {
+            appendLine("磁力计: ${it.vendor}")
+            appendLine("  最大采样率: ${if (it.minDelay > 0) 1_000_000 / it.minDelay else 0}Hz")
+            appendLine("  FIFO最大事件数: ${it.fifoMaxEventCount}")
+        }
+        appendLine()
+            
+        appendLine("=== 设备与密钥库 ===")
+        appendLine("设备型号: ${Build.MODEL}")
+        appendLine("Android版本: ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})")
+        appendLine("制造商: ${Build.MANUFACTURER}")
+        appendLine("产品: ${Build.PRODUCT}")
+            
+        try {
+            val keyStore = KeyStore.getInstance("AndroidKeyStore")
+            keyStore.load(null)
+            appendLine("Keystore Provider: AndroidKeyStore")
+            appendLine("支持StrongBox: ${Build.VERSION.SDK_INT >= Build.VERSION_CODES.P}")
+            appendLine("密钥别名数量: ${keyStore.aliases().toList().size}")
+        } catch (e: Exception) {
+            appendLine("Keystore Provider: 获取失败")
+            appendLine("支持StrongBox: 未知")
+        }
+        appendLine()
+            
+        appendLine("=== 异常检测策略 ===")
+        appendLine("异常检测: 已禁用（规范中已移除）")
+        appendLine()
+            
+        appendLine("=== 性能监控 ===")
+        val performanceStats = performanceMonitor.getPerformanceStats(60000L)
+        appendLine("采样数量: ${performanceStats.sampleCount}")
+        appendLine("当前内存: ${performanceStats.memoryUsageAvg.toInt()}MB")
+        appendLine("峰值内存: ${performanceStats.memoryUsagePeak}MB")
+        appendLine("平均CPU: ${"%.1f".format(performanceStats.cpuUsageAvg)}%")
+        appendLine("峰值CPU: ${"%.1f".format(performanceStats.cpuUsagePeak)}%")
+        appendLine("堆利用率: ${"%.1f".format(performanceStats.heapUtilization)}%")
+        appendLine()
+            
+        appendLine("=== 内存监控器 ===")
+        val memoryStatus = memoryMonitor.getCurrentMemoryStatus()
+        val memoryStats = memoryMonitor.getMonitoringStats()
+        appendLine("内存使用: ${(memoryStatus.usedMemoryBytes / (1024 * 1024))}MB / ${(memoryStatus.maxMemoryBytes / (1024 * 1024))}MB")
+        appendLine("内存利用率: ${"%.1f".format(memoryStatus.usageRatio * 100)}%")
+        appendLine("状态: ${when {
+            memoryStatus.isCritical -> "危险"
+            memoryStatus.isWarning -> "警告"
+            else -> "正常"
+        }}")
+        appendLine("监控样本数: ${memoryStats.samplesCount}")
+        appendLine("平均使用率: ${"%.1f".format(memoryStats.averageUsageRatio * 100)}%")
+        appendLine("峰值使用率: ${"%.1f".format(memoryStats.peakUsageRatio * 100)}%")
+        appendLine("警告次数: ${memoryStats.warningCount}")
+        appendLine("危险次数: ${memoryStats.criticalCount}")
+        appendLine()
+            
+        appendLine("=== 对象池状态 ===")
+        val poolStatus = sensorEventPool.getPoolStatus()
+        appendLine("当前池大小: ${poolStatus.currentSize}/${poolStatus.maxSize}")
+        appendLine("对象获取总数: ${poolStatus.totalAcquired}")
+        appendLine("对象释放总数: ${poolStatus.totalReleased}")
+        appendLine("新创建对象数: ${poolStatus.totalCreated}")
+        appendLine("对象池命中率: ${"%.1f".format(poolStatus.hitRate * 100)}%")
+        appendLine()
+            
+        appendLine("=== 网络环境 ===")
+        appendLine("网络类型: ${_networkState.value}")
+        val networkConfig = networkEnvironmentDetector.getTransmissionConfig()
+        appendLine("最大并发上传: ${networkConfig.maxConcurrentUploads}")
+        appendLine("上传超时: ${networkConfig.uploadTimeoutMs}ms")
+        appendLine("重试延迟: ${networkConfig.retryDelayMs}ms")
+        appendLine("最大重试次数: ${networkConfig.maxRetryAttempts}")
+        appendLine()
+            
+        appendLine("=== 指标摘要 ===")
+        appendLine("运行时长: ${metricsCollector.getUptime() / 1000}秒")
+        appendLine("异常检测数: ${metricsSnapshot.counters[com.continuousauth.observability.MetricType.ANOMALIES_DETECTED] ?: 0}")
+        appendLine("模式切换(快→慢): ${metricsSnapshot.counters[com.continuousauth.observability.MetricType.MODE_SWITCHES_TO_SLOW] ?: 0}")
+        appendLine("模式切换(慢→快): ${metricsSnapshot.counters[com.continuousauth.observability.MetricType.MODE_SWITCHES_TO_FAST] ?: 0}")
+        appendLine("快速模式总时间: ${(metricsSnapshot.counters[com.continuousauth.observability.MetricType.FAST_MODE_TOTAL_TIME] ?: 0) / 1000}秒")
     }
     
     /**
@@ -1233,49 +1254,20 @@ class MainViewModel @Inject constructor(
         viewModelScope.launch {
             try {
                 _serverTestResult.value = "正在测试服务器连接..."
-                _connectionStatus.value = ConnectionStatus.CONNECTING
-
-                // 解析并保存配置，保持与正式上传一致的端点构造
-                val cfg = persistServerConfig(serverIp, serverPort.toIntOrNull())
-
+                val endpoint = ServerEndpointNormalizer.normalize(serverIp, serverPort.toIntOrNull())
                 val result = uploadManager.testServerConnection(
-                    serverHost = cfg.host,
-                    serverPort = cfg.port,
-                    useTls = cfg.scheme == "https",
+                    serverHost = endpoint.host,
+                    serverPort = endpoint.port,
+                    useTls = endpoint.useTls,
                     testGrpc = true
                 )
-
                 _serverTestResult.value = uploadManager.getTestResultDescription(result)
-
-                // 仅用于展示测试结果，不启动任何采集/上传任务
-                _connectionStatus.value = if (result.isReachable) {
-                    ConnectionStatus.CONNECTED
-                } else {
-                    ConnectionStatus.DISCONNECTED
-                }
-
-                // 3秒后清除提示，若未在上传则恢复为空闲状态
-                delay(3000)
-                _serverTestResult.value = null
-                if (_isEncryptedUploading.value != true) {
-                    _connectionStatus.value = ConnectionStatus.DISCONNECTED
-                }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
-                _serverTestResult.value = "测试失败: ${e.message}"
-                _connectionStatus.value = ConnectionStatus.DISCONNECTED
-
-                delay(3000)
-                _serverTestResult.value = null
+                _serverTestResult.value = "无法完成连接测试，请检查服务器地址后重试"
             }
         }
-    }
-
-    /**
-     * 解析并持久化服务器配置，返回生效的配置，避免重复解析。
-     */
-    private fun persistServerConfig(ipInput: String, portInput: Int?): ServerConfig {
-        saveServerConfig(ipInput, portInput)
-        return getServerConfig()
     }
     
     /**

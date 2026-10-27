@@ -1,6 +1,7 @@
 package com.continuousauth.data
 
 import android.content.Context
+import com.continuousauth.BuildConfig
 import android.os.Build
 import android.os.SystemClock
 import com.continuousauth.model.SensorSample
@@ -169,12 +170,5 @@ class DataPacketBuilder @Inject constructor(
     /**
      * 获取应用版本
      */
-    private fun getAppVersion(): String {
-        return try {
-            val packageInfo = context.packageManager.getPackageInfo(context.packageName, 0)
-            "${packageInfo.versionName} (${packageInfo.longVersionCode})"
-        } catch (e: Exception) {
-            "unknown"
-        }
-    }
+    internal fun getAppVersion(): String = "${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})"
 }

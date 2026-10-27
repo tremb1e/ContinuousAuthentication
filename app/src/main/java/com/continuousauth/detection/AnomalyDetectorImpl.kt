@@ -32,15 +32,15 @@ class AnomalyDetectorImpl @Inject constructor(
     }
     
     // 检测状态
-    private var isDetecting = false
+    @Volatile private var isDetecting = false
     private var detectionJob: Job? = null
     private var detectorScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     
     // 监听器
-    private var anomalyListener: OnAnomalyListener? = null
+    @Volatile private var anomalyListener: OnAnomalyListener? = null
     
     // 当前检测策略
-    private var currentPolicy = DetectionPolicy()
+    @Volatile private var currentPolicy = DetectionPolicy()
     
     // 设备解锁监听
     private var unlockReceiver: BroadcastReceiver? = null
@@ -75,13 +75,18 @@ class AnomalyDetectorImpl @Inject constructor(
     }
     
     override suspend fun startDetection() {
+        startImmediately()
+    }
+
+    @Synchronized
+    private fun startImmediately() {
         if (isDetecting) return
         
         Log.i(TAG, "启动异常检测")
         isDetecting = true
         
         // 注册设备解锁监听
-        if (currentPolicy.deviceUnlockEnabled) {
+        if (currentPolicy.enabled && currentPolicy.deviceUnlockEnabled) {
             registerUnlockReceiver()
         }
         
@@ -92,6 +97,11 @@ class AnomalyDetectorImpl @Inject constructor(
     }
     
     override suspend fun stopDetection() {
+        stopImmediately()
+    }
+
+    @Synchronized
+    private fun stopImmediately() {
         if (!isDetecting) return
         
         Log.i(TAG, "停止异常检测")
@@ -106,6 +116,13 @@ class AnomalyDetectorImpl @Inject constructor(
         
         // 清理数据
         accelerometerData.clear()
+        shortTermWindow.clear()
+        longTermWindow.clear()
+        cooldownEndTimeNs = 0L
+        cooldownCount = 0
+        lastAccelerometerTrigger = 0L
+        lastUnlockTime = 0L
+        lastForegroundApp = null
         
         Log.i(TAG, "异常检测已停止")
     }
@@ -131,6 +148,11 @@ class AnomalyDetectorImpl @Inject constructor(
     }
     
     override suspend fun updatePolicy(config: DetectionPolicy) {
+        applyPolicy(config)
+    }
+
+    @Synchronized
+    private fun applyPolicy(config: DetectionPolicy) {
         Log.d(TAG, "更新检测策略")
         val oldPolicy = currentPolicy
         currentPolicy = config
@@ -138,28 +160,39 @@ class AnomalyDetectorImpl @Inject constructor(
         // 如果检测正在运行，需要重新应用新策略
         if (isDetecting) {
             // 重新注册解锁监听（如果设置发生变化）
-            if (oldPolicy.deviceUnlockEnabled != config.deviceUnlockEnabled) {
-                if (config.deviceUnlockEnabled) {
+            if (oldPolicy.deviceUnlockEnabled != config.deviceUnlockEnabled || oldPolicy.enabled != config.enabled) {
+                if (config.enabled && config.deviceUnlockEnabled) {
                     registerUnlockReceiver()
                 } else {
                     unregisterUnlockReceiver()
                 }
             }
+            if (oldPolicy.sensitiveApps != config.sensitiveApps ||
+                oldPolicy.enabled != config.enabled ||
+                oldPolicy.appCheckIntervalMs != config.appCheckIntervalMs) {
+                detectionJob?.cancel()
+                detectionJob = null
+                lastForegroundApp = null
+                startForegroundAppMonitoring()
+            }
         }
     }
     
+    @Synchronized
     override fun processSensorData(x: Float, y: Float, z: Float, timestamp: Long) {
         if (!isDetecting || !currentPolicy.enabled) return
+        if (!x.isFinite() || !y.isFinite() || !z.isFinite()) return
         
         // 计算加速度幅度
-        val magnitude = sqrt(x * x + y * y + z * z)
+        val magnitude = sqrt(x.toDouble() * x + y.toDouble() * y + z.toDouble() * z).toFloat()
+        if (!magnitude.isFinite()) return
         val sample = AccelerometerSample(magnitude, timestamp)
         
         // 添加到数据队列
         accelerometerData.offer(sample)
         
         // 保持窗口大小
-        while (accelerometerData.size > currentPolicy.accelerometerWindowSize) {
+        while (accelerometerData.size > currentPolicy.accelerometerWindowSize.coerceAtLeast(1)) {
             accelerometerData.poll()
         }
         
@@ -206,7 +239,9 @@ class AnomalyDetectorImpl @Inject constructor(
     /**
      * 处理设备解锁事件
      */
+    @Synchronized
     private fun handleDeviceUnlock() {
+        if (!isDetecting || !currentPolicy.enabled || !currentPolicy.deviceUnlockEnabled) return
         val currentTime = timeProvider()
         
         // 检查冷却期
@@ -228,7 +263,7 @@ class AnomalyDetectorImpl @Inject constructor(
      * 启动前台应用监控
      */
     private fun startForegroundAppMonitoring() {
-        if (currentPolicy.sensitiveApps.isEmpty()) {
+        if (!currentPolicy.enabled || currentPolicy.sensitiveApps.isEmpty()) {
             return
         }
         
@@ -239,7 +274,7 @@ class AnomalyDetectorImpl @Inject constructor(
                 } catch (e: Exception) {
                     Log.w(TAG, "前台应用检查异常", e)
                 }
-                delay(currentPolicy.appCheckIntervalMs)
+                delay(currentPolicy.appCheckIntervalMs.coerceAtLeast(50L))
             }
         }
         
@@ -337,7 +372,9 @@ class AnomalyDetectorImpl @Inject constructor(
     /**
      * 处理敏感应用进入事件
      */
+    @Synchronized
     private fun handleSensitiveAppEntered(packageName: String) {
+        if (!isDetecting || !currentPolicy.enabled || packageName !in currentPolicy.sensitiveApps) return
         if (currentPolicy.debugMode) {
             Log.d(TAG, "检测到敏感应用进入: $packageName")
         }
@@ -373,7 +410,7 @@ class AnomalyDetectorImpl @Inject constructor(
             handleAnomalyDetection(magnitude, timestamp)
         } else {
             // 未检测到异常，逐步降低冷却计数
-            if (cooldownCount > 0 && System.nanoTime() > cooldownEndTimeNs) {
+            if (cooldownCount > 0 && timestamp > cooldownEndTimeNs) {
                 cooldownCount--
             }
         }
@@ -491,9 +528,10 @@ class AnomalyDetectorImpl @Inject constructor(
      * 清理资源
      */
     fun cleanup() {
-        detectorScope.launch {
-            stopDetection()
-        }
+        // Scheduling cleanup and immediately cancelling its scope can prevent it
+        // from running at all, leaving the broadcast receiver registered.
+        stopImmediately()
+        anomalyListener = null
         detectorScope.cancel()
     }
 }

@@ -5,13 +5,12 @@ import android.content.Context
 import android.os.Build
 import android.os.Debug
 import android.os.Process
+import android.os.SystemClock
 import android.util.Log
 import androidx.annotation.RequiresApi
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
-import java.io.File
-import java.io.RandomAccessFile
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -63,6 +62,7 @@ data class PerformanceStats(
  * 用于高效存储固定数量的性能样本
  */
 class RingBuffer<T>(private val capacity: Int) {
+    init { require(capacity > 0) { "缓冲区容量必须大于0" } }
     private val buffer = arrayOfNulls<Any>(capacity)
     private var head = 0
     private var tail = 0
@@ -106,7 +106,7 @@ class RingBuffer<T>(private val capacity: Int) {
      */
     @Synchronized
     fun getRecent(count: Int): List<T> {
-        val actualCount = minOf(count, size)
+        val actualCount = minOf(count.coerceAtLeast(0), size)
         val result = mutableListOf<T>()
         
         var current = (tail - actualCount + capacity) % capacity
@@ -119,10 +119,12 @@ class RingBuffer<T>(private val capacity: Int) {
         return result
     }
     
+    @Synchronized
     fun size(): Int = size
     
     @Synchronized
     fun clear() {
+        buffer.fill(null)
         head = 0
         tail = 0
         size = 0
@@ -204,10 +206,11 @@ class PerformanceMonitorImpl @Inject constructor(
     // CPU使用率计算相关
     private var lastCpuTime = 0L
     private var lastAppCpuTime = 0L
-    private var cpuStatsAvailable = true
+    private val availableProcessors = Runtime.getRuntime().availableProcessors().coerceAtLeast(1)
     
     
     override suspend fun startMonitoring(intervalMs: Long) {
+        require(intervalMs > 0L) { "性能采样间隔必须大于0" }
         if (_monitoringStateFlow.value) {
             Log.w(TAG, "性能监控已在运行中")
             return
@@ -305,7 +308,9 @@ class PerformanceMonitorImpl @Inject constructor(
         val memoryUsageMB = processMemInfo.totalPss / 1024L  // PSS内存（KB转MB）
         val memoryAvailableMB = memInfo.availMem / 1024L / 1024L
         val totalMemoryMB = memInfo.totalMem / 1024L / 1024L
-        val memoryUsagePercent = (totalMemoryMB - memoryAvailableMB).toDouble() / totalMemoryMB * 100.0
+        val memoryUsagePercent = if (totalMemoryMB > 0) {
+            ((totalMemoryMB - memoryAvailableMB).toDouble() / totalMemoryMB * 100.0).coerceIn(0.0, 100.0)
+        } else 0.0
         
         val heapUsageMB = heapUsed / 1024L / 1024L
         val heapMaxMB = heapMax / 1024L / 1024L
@@ -329,101 +334,29 @@ class PerformanceMonitorImpl @Inject constructor(
     /**
      * 初始化CPU时间基线
      */
+    @Synchronized
     private fun initializeCpuBaseline() {
-        if (!cpuStatsAvailable) return
-        try {
-            lastCpuTime = getTotalCpuTime()
-            lastAppCpuTime = getProcessCpuTime()
-        } catch (e: Exception) {
-            Log.w(TAG, "初始化CPU基线失败", e)
-            lastCpuTime = 0L
-            lastAppCpuTime = 0L
-            cpuStatsAvailable = false
-        }
+        lastCpuTime = SystemClock.elapsedRealtime()
+        lastAppCpuTime = Process.getElapsedCpuTime()
     }
-    
-    /**
-     * 计算CPU使用率
-     */
+
+    /** /proc/stat is inaccessible on modern Android; public clocks use milliseconds. */
+    @Synchronized
     private fun calculateCpuUsage(): Double {
-        if (!cpuStatsAvailable) return 0.0
-        return try {
-            val currentCpuTime = getTotalCpuTime()
-            val currentAppCpuTime = getProcessCpuTime()
-            
-            if (lastCpuTime == 0L || lastAppCpuTime == 0L) {
-                initializeCpuBaseline()
-                return 0.0
-            }
-            
-            val totalCpuDelta = currentCpuTime - lastCpuTime
-            val appCpuDelta = currentAppCpuTime - lastAppCpuTime
-            
-            val cpuUsage = if (totalCpuDelta > 0) {
-                (appCpuDelta.toDouble() / totalCpuDelta * 100.0).coerceIn(0.0, 100.0)
-            } else {
-                0.0
-            }
-            
-            lastCpuTime = currentCpuTime
-            lastAppCpuTime = currentAppCpuTime
-            
-            cpuUsage
-        } catch (e: Exception) {
-            Log.w(TAG, "计算CPU使用率失败", e)
-            cpuStatsAvailable = false
+        val wallTime = SystemClock.elapsedRealtime()
+        val processTime = Process.getElapsedCpuTime()
+        val wallDelta = wallTime - lastCpuTime
+        val processDelta = processTime - lastAppCpuTime
+        val initialized = lastCpuTime != 0L
+        lastCpuTime = wallTime
+        lastAppCpuTime = processTime
+        return if (initialized && wallDelta > 0 && processDelta >= 0) {
+            (processDelta.toDouble() / wallDelta / availableProcessors * 100.0).coerceIn(0.0, 100.0)
+        } else {
             0.0
         }
     }
-    
-    /**
-     * 获取系统总CPU时间
-     */
-    private fun getTotalCpuTime(): Long {
-        return try {
-            val file = RandomAccessFile("/proc/stat", "r")
-            val line = file.readLine()
-            file.close()
-            
-            // 解析第一行：cpu user nice system idle iowait irq softirq
-            val tokens = line.split("\\s+".toRegex())
-            var totalTime = 0L
-            for (i in 1 until minOf(tokens.size, 8)) {
-                totalTime += tokens[i].toLongOrNull() ?: 0L
-            }
-            totalTime
-        } catch (e: Exception) {
-            Log.w(TAG, "获取总CPU时间失败", e)
-            cpuStatsAvailable = false
-            0L
-        }
-    }
-    
-    /**
-     * 获取进程CPU时间
-     */
-    private fun getProcessCpuTime(): Long {
-        return try {
-            val pid = Process.myPid()
-            val file = RandomAccessFile("/proc/$pid/stat", "r")
-            val line = file.readLine()
-            file.close()
-            
-            // 解析stat文件，utime和stime分别在第14和15个字段
-            val tokens = line.split("\\s+".toRegex())
-            if (tokens.size >= 15) {
-                val utime = tokens[13].toLongOrNull() ?: 0L
-                val stime = tokens[14].toLongOrNull() ?: 0L
-                utime + stime
-            } else {
-                0L
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "获取进程CPU时间失败", e)
-            0L
-        }
-    }
-    
+
     /**
      * 计算性能统计
      */
@@ -520,9 +453,10 @@ class PerformanceMonitorImpl @Inject constructor(
      * 清理资源
      */
     fun cleanup() {
-        monitorScope.launch {
-            stopMonitoring()
-        }
+        _monitoringStateFlow.value = false
+        monitoringJob?.cancel()
+        monitoringJob = null
         monitorScope.cancel()
+        performanceBuffer.clear()
     }
 }

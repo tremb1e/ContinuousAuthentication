@@ -110,7 +110,8 @@ class SmartTransmissionManager @Inject constructor(
     /**
      * 启动智能传输管理器
      */
-    suspend fun start() = lifecycleMutex.withLock {
+    // Service commands arrive on Main; preference decryption and sensor registration may block.
+    suspend fun start() = withContext(Dispatchers.IO) { lifecycleMutex.withLock {
         if (isRunning.get()) {
             Log.w(TAG, "Already running")
             return@withLock
@@ -128,6 +129,10 @@ class SmartTransmissionManager @Inject constructor(
 
             if (privacyManager.consentState.value != com.continuousauth.privacy.ConsentState.GRANTED) {
                 throw IllegalStateException("用户未同意隐私协议，阻止采集")
+            }
+
+            if (privacyManager.shouldPerformRetentionCleanup()) {
+                privacyManager.performRetentionCleanup()
             }
 
             val endpoint = resolveServerEndpoint()
@@ -159,12 +164,12 @@ class SmartTransmissionManager @Inject constructor(
             _collectionState.value = CollectionState(CollectionStatus.ERROR, e.message)
             throw e
         }
-    }
+    } }
 
     /**
      * 停止智能传输管理器
      */
-    suspend fun stop(endSession: Boolean = true) = lifecycleMutex.withLock {
+    suspend fun stop(endSession: Boolean = true) = withContext(Dispatchers.IO) { lifecycleMutex.withLock {
         if (!isRunning.getAndSet(false)) {
             Log.w(TAG, "Not running")
             if (endSession) {
@@ -191,7 +196,7 @@ class SmartTransmissionManager @Inject constructor(
         _smartUploadWindowOpen.value = false
         _collectionState.value = CollectionState(CollectionStatus.STOPPED)
         Log.i(TAG, "SmartTransmissionManager stopped successfully")
-    }
+    } }
 
     private suspend fun stopComponents() {
         // Stop producers first so the processor can persist the final partial batch.
@@ -214,7 +219,7 @@ class SmartTransmissionManager @Inject constructor(
     /**
      * 暂停数据采集（保持连接）
      */
-    suspend fun pause(allowBufferedUpload: Boolean = false) = lifecycleMutex.withLock {
+    suspend fun pause(allowBufferedUpload: Boolean = false) = withContext(Dispatchers.IO) { lifecycleMutex.withLock {
         if (!isRunning.get()) {
             return@withLock
         }
@@ -226,12 +231,12 @@ class SmartTransmissionManager @Inject constructor(
         Log.i(TAG, "Pausing data collection")
         sensorCollector.stopCollection()
         _collectionState.value = CollectionState(CollectionStatus.PAUSED)
-    }
+    } }
 
     /**
      * 恢复数据采集
      */
-    suspend fun resume() = lifecycleMutex.withLock {
+    suspend fun resume() = withContext(Dispatchers.IO) { lifecycleMutex.withLock {
         if (!isRunning.get() || !isPaused.get()) {
             return@withLock
         }
@@ -242,10 +247,10 @@ class SmartTransmissionManager @Inject constructor(
         allowBufferedUploadWhilePaused = false
         updatePauseUploadGate()
         _collectionState.value = CollectionState(CollectionStatus.RUNNING)
-    }
+    } }
 
     /** Stop feeding an authentication session while retaining the user's collection choice. */
-    suspend fun rotateSession() = lifecycleMutex.withLock {
+    suspend fun rotateSession() = withContext(Dispatchers.IO) { lifecycleMutex.withLock {
         if (!isRunning.get()) {
             sessionManager.endSession()
             return@withLock
@@ -270,7 +275,7 @@ class SmartTransmissionManager @Inject constructor(
             _collectionState.value = CollectionState(CollectionStatus.ERROR, "认证已停止，数据采集需要重新开启")
             throw e
         }
-    }
+    } }
 
     private suspend fun stopCoreCoroutines() {
         collectionJob?.cancel()
@@ -348,7 +353,17 @@ class SmartTransmissionManager @Inject constructor(
     private fun startMonitoring() {
         monitoringJob?.cancel()
         monitoringJob = scope.launch {
+            var lastRetentionCheck = android.os.SystemClock.elapsedRealtime()
             while (isRunning.get()) {
+                val now = android.os.SystemClock.elapsedRealtime()
+                if (now - lastRetentionCheck >= 60 * 60 * 1000L) {
+                    withContext(Dispatchers.IO) {
+                        if (privacyManager.shouldPerformRetentionCleanup()) {
+                            privacyManager.performRetentionCleanup()
+                        }
+                    }
+                    lastRetentionCheck = now
+                }
                 updateSmartTransmissionGate()
                 delay(10000) // 每10秒监控一次
                 ensureProcessingActive()

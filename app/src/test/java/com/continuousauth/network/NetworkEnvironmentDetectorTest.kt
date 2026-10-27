@@ -75,6 +75,21 @@ class NetworkEnvironmentDetectorTest {
         assertFalse(detector.isNetworkAvailableForUpload(wifiOnly = true))
     }
 
+    @Test
+    fun internetProbeFailureDoesNotBlockReachablePrivateServerOrVpn() {
+        activeNetwork.set(mockk())
+        capabilities.set(mockk<NetworkCapabilities>(relaxed = true) {
+            every { hasTransport(NetworkCapabilities.TRANSPORT_VPN) } returns true
+            every { hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) } returns true
+            every { hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) } returns false
+        })
+        assertTrue(detector.isNetworkAvailableForUpload(wifiOnly = false))
+        assertFalse(detector.isNetworkAvailableForUpload(wifiOnly = true))
+        activeNetwork.set(null)
+        capabilities.set(null)
+        assertFalse(detector.isNetworkAvailableForUpload(wifiOnly = false))
+    }
+
     private fun capabilitiesFor(transport: Int) = mockk<NetworkCapabilities>(relaxed = true) {
         every { hasTransport(any()) } answers { firstArg<Int>() == transport }
     }

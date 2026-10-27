@@ -14,8 +14,6 @@ import androidx.compose.animation.ExperimentalAnimationApi
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInHorizontally
-import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.padding
@@ -35,6 +33,7 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -171,8 +170,9 @@ class MainComposeActivity : FragmentActivity() {
         val context = LocalContext.current
 
         // 检查隐私协议状态
-        val prefs =
+        val prefs = remember(context) {
             context.getSharedPreferences(MainComposeActivity.PREFS_NAME, Context.MODE_PRIVATE)
+        }
         var showPrivacyDialog by rememberSaveable {
             mutableStateOf(!prefs.getBoolean(MainComposeActivity.PRIVACY_AGREEMENT_SHOWN, false))
         }
@@ -210,7 +210,9 @@ class MainComposeActivity : FragmentActivity() {
         val errorMessage by viewModel.errorMessage.observeAsState()
         LaunchedEffect(errorMessage) {
             errorMessage?.takeIf { it.isNotBlank() }?.let { message ->
-                snackbarHostState.showSnackbar(message)
+                snackbarHostState.showSnackbar(
+                    message = message, actionLabel = "知道了", duration = SnackbarDuration.Short
+                )
                 viewModel.clearErrorMessage()
             }
         }
@@ -238,16 +240,10 @@ class MainComposeActivity : FragmentActivity() {
                     startDestination = Screen.Privacy.route,
                     modifier = Modifier.padding(paddingValues).consumeWindowInsets(paddingValues),
                     enterTransition = {
-                        fadeIn(animationSpec = tween(300)) + slideInHorizontally(
-                            initialOffsetX = { it },
-                            animationSpec = tween(300)
-                        )
+                        fadeIn(animationSpec = tween(160))
                     },
                     exitTransition = {
-                        fadeOut(animationSpec = tween(300)) + slideOutHorizontally(
-                            targetOffsetX = { -it },
-                            animationSpec = tween(300)
-                        )
+                        fadeOut(animationSpec = tween(120))
                     }
                 ) {
                     composable(Screen.Sensors.route) {

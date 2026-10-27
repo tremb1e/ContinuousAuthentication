@@ -180,27 +180,11 @@ class PrivacyManager @Inject constructor(
             try {
                 Log.i(TAG, "开始删除本地数据")
                 
-                // 1. 删除数据库中的所有批次记录
-                val batchDao = database.batchMetadataDao()
-                // Use getPendingBatches with all statuses to get all batches as a List
-                val allBatches = batchDao.getPendingBatches(
-                    listOf(BatchStatus.PENDING, BatchStatus.UPLOADING, BatchStatus.UPLOADED, 
-                           BatchStatus.FAILED, BatchStatus.ACKNOWLEDGED, BatchStatus.CORRUPT)
-                )
-                Log.d(TAG, "需要删除的批次数: ${allBatches.size}")
-                
-                for (batch in allBatches) {
-                    // 删除文件
-                    val file = File(batch.filePath)
-                    if (file.exists()) {
-                        file.delete()
-                        Log.d(TAG, "删除文件: ${batch.filePath}")
-                    }
-                    
-                    // 删除数据库记录
-                    batchDao.delete(batch)
+                val allBatches = database.batchMetadataDao().getPendingBatches(BatchStatus.entries)
+                check(fileQueueManager.deleteDataPackets(allBatches.map { it.packetId })) {
+                    "部分本地数据包无法删除，请稍后重试"
                 }
-                
+
                 // 2. 清空文件队列
                 fileQueueManager.clearQueue()
                 fileQueueManager.resetUploadProgress()
@@ -372,26 +356,12 @@ class PrivacyManager @Inject constructor(
                 
                 Log.i(TAG, "执行数据保留清理，删除 ${java.util.Date(cutoffTime)} 之前的数据")
                 
-                // 删除过期的批次
-                val batchDao = database.batchMetadataDao()
-                // Get all batches and filter for expired ones
-                val allBatches = batchDao.getPendingBatches(
-                    listOf(BatchStatus.PENDING, BatchStatus.UPLOADING, BatchStatus.UPLOADED, 
-                           BatchStatus.FAILED, BatchStatus.ACKNOWLEDGED, BatchStatus.CORRUPT)
-                )
+                val allBatches = database.batchMetadataDao().getPendingBatches(BatchStatus.entries)
                 val expiredBatches = allBatches.filter { it.createdTime < cutoffTime }
-                
-                for (batch in expiredBatches) {
-                    // 删除文件
-                    val file = File(batch.filePath)
-                    if (file.exists()) {
-                        file.delete()
-                    }
-                    
-                    // 删除数据库记录
-                    batchDao.delete(batch)
+                check(fileQueueManager.deleteDataPackets(expiredBatches.map { it.packetId })) {
+                    "部分过期数据包无法删除，请稍后重试"
                 }
-                
+
                 Log.i(TAG, "数据保留清理完成，删除了 ${expiredBatches.size} 个过期批次")
                 
                 // 更新最后清理时间

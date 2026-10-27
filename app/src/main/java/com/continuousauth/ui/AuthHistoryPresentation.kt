@@ -38,7 +38,7 @@ data class AuthHistoryReport(
     val buckets: List<AuthHistoryBucket>,
     val isHourly: Boolean
 ) {
-    val failureCount: Int get() = entries.count { !it.accepted }
+    val failureCount: Int = entries.count { !it.accepted }
 }
 
 fun authHistoryDateRange(
@@ -131,7 +131,7 @@ fun summarizeAuthHistoryApps(history: List<AuthHistoryEntry>): List<AuthHistoryA
             val displayName = if (packageName.isEmpty()) {
                 "未识别的应用"
             } else {
-                entries.sortedByDescending { it.timestampMs }.firstOrNull { it.appName.isNotBlank() }
+                entries.asSequence().filter { it.appName.isNotBlank() }.maxByOrNull { it.timestampMs }
                     ?.appName ?: packageName
             }
             AuthHistoryAppSummary(packageName, displayName, entries.size, latest.timestampMs)
@@ -148,5 +148,7 @@ fun authHistoryAppName(entry: AuthHistoryEntry): String = when {
 private fun isUnknownAppPackage(packageName: String): Boolean =
     packageName.isBlank() || packageName.equals("unknown", ignoreCase = true)
 
+private val historyTimeFormat = DateTimeFormatter.ofPattern("M月d日 HH:mm:ss")
+
 fun formatAuthHistoryTime(timestampMs: Long, zoneId: ZoneId = ZoneId.systemDefault()): String =
-    DateTimeFormatter.ofPattern("M月d日 HH:mm:ss").format(Instant.ofEpochMilli(timestampMs).atZone(zoneId))
+    historyTimeFormat.format(Instant.ofEpochMilli(timestampMs).atZone(zoneId))
